@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+from pydantic import BaseModel
+
 from bertrand.env.git import (
     CONTAINER_ARTIFACT_MOUNT,
     WORKTREE_MOUNT,
@@ -150,7 +152,7 @@ exec "$@"
 
 
 @resource("vscode")
-class VSCodeWorkspace(Resource):
+class VSCodeWorkspace(Resource[BaseModel]):
     """Render VS Code managed workspace artifacts.
 
     The workspace lets VS Code attach to a running container context through the

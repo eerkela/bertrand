@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
-from .api._helpers import _validate_delete_status
+from .api._helpers import (
+    DeletionPropagationPolicy,
+    _delete_options,
+    _validate_delete_status,
+)
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import ResourceClient
 from .job import JobCompletionMode, _job_spec_manifest
@@ -22,7 +26,6 @@ if TYPE_CHECKING:
     from .api.watch import WatchEvent
 
 type CronJobConcurrencyPolicy = Literal["Allow", "Forbid", "Replace"]
-type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 
 
 @dataclass(frozen=True)
@@ -554,27 +557,18 @@ class CronJob(NamespacedKubeMetadata[kubernetes.client.V1CronJob]):
         grace_period_seconds : int | None, optional
             Optional Kubernetes deletion grace period.
 
-        Raises
-        ------
-        ValueError
-            If `propagation_policy` is invalid or `grace_period_seconds` is
-            negative.
         """
         namespace, name = self._require_namespace_name("delete CronJob")
-        if propagation_policy not in ("Background", "Foreground", "Orphan"):
-            msg = f"invalid CronJob deletion propagation policy: {propagation_policy!r}"
-            raise ValueError(msg)
-        if grace_period_seconds is not None and grace_period_seconds < 0:
-            msg = "CronJob deletion grace period cannot be negative"
-            raise ValueError(msg)
+        delete_options = _delete_options(
+            kind="CronJob",
+            propagation_policy=propagation_policy,
+            grace_period_seconds=grace_period_seconds,
+        )
         payload = await kube.run(
             lambda request_timeout: kube.batch.delete_namespaced_cron_job(
                 name=name,
                 namespace=namespace,
-                body=kubernetes.client.V1DeleteOptions(
-                    grace_period_seconds=grace_period_seconds,
-                    propagation_policy=propagation_policy,
-                ),
+                body=delete_options,
                 _request_timeout=request_timeout,
             ),
             timeout=timeout,

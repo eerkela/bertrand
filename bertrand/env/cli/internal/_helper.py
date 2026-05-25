@@ -88,7 +88,7 @@ async def image_build_context(
     *,
     timeout: float = INFINITY,
 ) -> AsyncIterator[Config]:
-    """Open a standalone image-build snapshot config.
+    """Open a standalone image-build config.
 
     Parameters
     ----------
@@ -100,7 +100,7 @@ async def image_build_context(
     Yields
     ------
     Config
-        Active parsed snapshot configuration.
+        Active parsed image-build configuration.
 
     Raises
     ------
@@ -111,7 +111,7 @@ async def image_build_context(
         msg = f"`bertrand {command}` requires a Bertrand image-build context"
         raise RuntimeError(msg)
 
-    async with await Config.load_snapshot(WORKTREE_MOUNT, timeout=timeout) as config:
+    async with await Config.load(WORKTREE_MOUNT, kube=None, timeout=timeout) as config:
         yield config
 
 

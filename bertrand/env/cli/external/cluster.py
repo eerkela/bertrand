@@ -10,7 +10,11 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.cli.external._device import device_line, device_payload
+from bertrand.env.cli.external._device import (
+    cluster_device_inventory,
+    device_line,
+    device_payload,
+)
 from bertrand.env.cli.external._runtime import emit_json
 from bertrand.env.cli.external._storage import (
     print_storage_csi_line,
@@ -24,11 +28,11 @@ from bertrand.env.cli.external.init import (
     ensure_shared_runtime_installed,
 )
 from bertrand.env.cli.external.secret import (
-    add_capability,
-    list_capabilities,
-    remove_capability,
-    shared_capability_ref,
-    shared_scope_targets,
+    _add_capability,
+    _list_capabilities,
+    _remove_capability,
+    _shared_capability_ref,
+    _shared_scope_targets,
 )
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
 from bertrand.env.kube.api.bootstrap import (
@@ -39,7 +43,6 @@ from bertrand.env.kube.api.bootstrap import (
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
-from bertrand.env.kube.capability.device import list_device_inventory
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
 from bertrand.env.kube.ceph.capacity import (
     STORAGE_NODE_REPORT_MAX_AGE_SECONDS,
@@ -70,7 +73,6 @@ from bertrand.env.kube.network.load_balancer import (
     metallb_status,
 )
 from bertrand.env.kube.network.profile import NETWORK_PROFILE_NAME, NetworkProfile
-from bertrand.env.kube.node_identity import list_bertrand_nodes
 from bertrand.env.kube.volume import StorageClass
 
 if TYPE_CHECKING:
@@ -251,24 +253,27 @@ async def bertrand_cluster_join(
 
 async def _bertrand_cluster_secret(args: argparse.Namespace) -> None:
     command = args.cluster_secret_command
-    if command == "add":
-        ref = shared_capability_ref(kind=args.kind, capability_id=args.id)
-        await add_capability(ref, source=args.source, timeout=args.timeout)
-        return
-    if command == "rm":
-        ref = shared_capability_ref(kind=args.kind, capability_id=args.id)
-        await remove_capability(ref, timeout=args.timeout)
-        return
-    if command == "list":
-        await list_capabilities(
-            shared_scope_targets(),
-            kind=args.kind,
-            json_output=args.json,
-            timeout=args.timeout,
-        )
-        return
-    msg = f"unsupported cluster secret command: {command!r}"
-    raise ValueError(msg)
+    if command not in {"add", "rm", "list"}:
+        msg = f"unsupported cluster secret command: {command!r}"
+        raise ValueError(msg)
+    with await Kube.host(timeout=args.timeout) as kube:
+        if command == "add":
+            ref = _shared_capability_ref(kind=args.kind, capability_id=args.id)
+            await _add_capability(kube, ref, source=args.source, timeout=args.timeout)
+            return
+        if command == "rm":
+            ref = _shared_capability_ref(kind=args.kind, capability_id=args.id)
+            await _remove_capability(kube, ref, timeout=args.timeout)
+            return
+        if command == "list":
+            await _list_capabilities(
+                kube,
+                _shared_scope_targets(),
+                kind=args.kind,
+                json_output=args.json,
+                timeout=args.timeout,
+            )
+            return
 
 
 async def _bertrand_cluster_device(args: argparse.Namespace) -> None:
@@ -318,16 +323,12 @@ async def bertrand_cluster_device_list(
         Maximum Kubernetes request budget in seconds.
     """
     with await Kube.host(timeout=timeout) as kube:
-        records = await list_device_inventory(
+        records, nodes = await cluster_device_inventory(
             kube,
+            node=node,
             capability_id=capability_id,
-            host_ids=None if node is None else (node,),
             timeout=timeout,
         )
-        nodes = {
-            item.host_id: item
-            for item in await list_bertrand_nodes(kube, timeout=timeout)
-        }
     payload = [
         device_payload(
             record,

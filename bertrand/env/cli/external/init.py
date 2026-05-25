@@ -19,14 +19,21 @@ import sys
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, PositiveInt, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    PositiveInt,
+    StringConstraints,
+    ValidationError,
+)
 
 from bertrand.env.config.core import RESOURCE_NAMES, Config, Resource
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     INFINITY,
+    CommandError,
     Deadline,
     GitRepository,
     GroupStatus,
@@ -173,6 +180,21 @@ INIT_CHECK_PREREQS = (
     ("vgs", ("vgs",)),
     ("lvs", ("lvs",)),
     ("losetup", ("losetup",)),
+)
+_INIT_REPO_STAGE_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    ValueError,
+    CommandError,
+    ValidationError,
+)
+_INIT_FAILURE_MARK_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    ValueError,
+    ValidationError,
 )
 
 
@@ -560,8 +582,8 @@ def _parse_resource_specs(
     specs: list[str],
     *,
     for_disable: bool,
-) -> set[Resource]:
-    parsed: set[Resource] = set()
+) -> set[Resource[Any]]:
+    parsed: set[Resource[Any]] = set()
     protected = {RESOURCE_NAMES[name] for name in PROTECTED_DISABLE_RESOURCES}
     for spec in specs:
         for component in spec.split(","):
@@ -586,8 +608,8 @@ def _parse_resource_specs(
 
 @dataclass(frozen=True)
 class _RepoContext:
-    enable: set[Resource]
-    disable: set[Resource]
+    enable: set[Resource[Any]]
+    disable: set[Resource[Any]]
     assume_yes: bool
 
 
@@ -1077,7 +1099,7 @@ async def _mark_repo_failure(
     remaining = deadline.remaining()
     if remaining <= 0:
         return
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(*_INIT_FAILURE_MARK_ERRORS):
         await mark_repository_volume_failed(
             kube,
             repo_id=repo_id,
@@ -1152,7 +1174,7 @@ async def bertrand_init(
         return
 
     # fail fast if required tools are missing, and validate resource convergence input
-    enabled: set[Resource] = {RESOURCE_NAMES["bertrand"]}
+    enabled: set[Resource[Any]] = {RESOURCE_NAMES["bertrand"]}
     enabled.update(_parse_resource_specs(enable, for_disable=False))
     disabled = _parse_resource_specs(disable, for_disable=True)
     protected = {
@@ -1237,7 +1259,7 @@ async def bertrand_init(
             try:
                 for stage in REPO_STAGES:
                     await stage(state, repo_context)
-            except Exception as err:
+            except _INIT_REPO_STAGE_ERRORS as err:
                 await _mark_repo_failure(
                     kube,
                     repo_id=state.repo_id,

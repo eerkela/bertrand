@@ -50,120 +50,100 @@ async def bertrand_secret(args: argparse.Namespace) -> None:
         If the parsed secret subcommand is unsupported.
     """
     command = args.secret_command
-    if command == "add":
-        ref = await path_capability_ref(
-            args.path,
-            kind=args.kind,
-            capability_id=args.id,
-            timeout=args.timeout,
-        )
-        await add_capability(ref, source=args.source, timeout=args.timeout)
-        return
-    if command == "rm":
-        ref = await path_capability_ref(
-            args.path,
-            kind=args.kind,
-            capability_id=args.id,
-            timeout=args.timeout,
-        )
-        await remove_capability(ref, timeout=args.timeout)
-        return
-    if command == "list":
-        targets = await path_scope_targets(
-            args.path,
-            include_local_node=True,
-            timeout=args.timeout,
-        )
-        await list_capabilities(
-            targets,
-            kind=args.kind,
-            json_output=args.json,
-            timeout=args.timeout,
-        )
-        return
-    msg = f"unsupported secret command: {command!r}"
-    raise ValueError(msg)
+    if command not in {"add", "rm", "list"}:
+        msg = f"unsupported secret command: {command!r}"
+        raise ValueError(msg)
+    with await Kube.host(timeout=args.timeout) as kube:
+        if command == "add":
+            ref = await _path_capability_ref(
+                kube,
+                args.path,
+                kind=args.kind,
+                capability_id=args.id,
+                timeout=args.timeout,
+            )
+            await prune_repository_mounts_quietly(kube, timeout=args.timeout)
+            await _add_capability(
+                kube,
+                ref,
+                source=args.source,
+                timeout=args.timeout,
+            )
+            return
+        if command == "rm":
+            ref = await _path_capability_ref(
+                kube,
+                args.path,
+                kind=args.kind,
+                capability_id=args.id,
+                timeout=args.timeout,
+            )
+            await prune_repository_mounts_quietly(kube, timeout=args.timeout)
+            await _remove_capability(kube, ref, timeout=args.timeout)
+            return
+        if command == "list":
+            targets = await _path_scope_targets(
+                kube,
+                args.path,
+                include_local_node=True,
+                timeout=args.timeout,
+            )
+            await prune_repository_mounts_quietly(kube, timeout=args.timeout)
+            await _list_capabilities(
+                kube,
+                targets,
+                kind=args.kind,
+                json_output=args.json,
+                timeout=args.timeout,
+            )
+            return
 
 
-async def add_capability(
+async def _add_capability(
+    kube: Kube,
     ref: CapabilityRef,
     *,
     source: str | None,
     timeout: float,
 ) -> None:
-    """Create or patch one scoped capability payload.
-
-    Parameters
-    ----------
-    ref : CapabilityRef
-        Capability identity to create or update.
-    source : str | None
-        File path, ``-`` for stdin, or ``None`` to read piped stdin.
-    timeout : float
-        Maximum Kubernetes request budget in seconds.
-    """
     payload = _read_payload(source)
-    with await Kube.host(timeout=timeout) as kube:
-        capability = await Capability.upsert(
-            kube,
-            ref=ref,
-            payload=payload,
-            timeout=timeout,
-        )
+    capability = await Capability.upsert(
+        kube,
+        ref=ref,
+        payload=payload,
+        timeout=timeout,
+    )
     print(_format_capability_line(capability))
 
 
-async def remove_capability(ref: CapabilityRef, *, timeout: float) -> None:
-    """Delete one scoped capability if it exists.
-
-    Parameters
-    ----------
-    ref : CapabilityRef
-        Capability identity to delete.
-    timeout : float
-        Maximum Kubernetes request budget in seconds.
-    """
-    with await Kube.host(timeout=timeout) as kube:
-        capability = await Capability.get(kube, ref=ref, timeout=timeout)
-        if capability is None:
-            print(f"{ref.kind} {ref.capability_id}: not found")
-            return
-        await capability.delete(kube, timeout=timeout)
+async def _remove_capability(kube: Kube, ref: CapabilityRef, *, timeout: float) -> None:
+    capability = await Capability.get(kube, ref=ref, timeout=timeout)
+    if capability is None:
+        print(f"{ref.kind} {ref.capability_id}: not found")
+        return
+    await capability.delete(kube, timeout=timeout)
     print(f"{ref.kind} {ref.capability_id}: deleted")
 
 
-async def list_capabilities(
+async def _list_capabilities(
+    kube: Kube,
     targets: tuple[_ScopeTarget, ...],
     *,
     kind: CapabilityKind | None,
     json_output: bool,
     timeout: float,
 ) -> None:
-    """List capability metadata for a set of scope targets.
-
-    Parameters
-    ----------
-    targets : tuple[_ScopeTarget, ...]
-        Ordered scopes to list.
-    kind : CapabilityKind | None
-        Optional capability kind filter.
-    json_output : bool
-        Whether to emit machine-readable JSON.
-    timeout : float
-        Maximum Kubernetes request budget in seconds.
-    """
-    with await Kube.host(timeout=timeout) as kube:
-        capabilities: list[Capability] = []
-        for target in targets:
-            capabilities.extend(
-                await Capability.list(
-                    kube,
-                    kind=kind,
-                    scope=target.scope,
-                    scope_value=target.value,
-                    timeout=timeout,
-                )
+    capabilities: list[Capability] = []
+    for target in targets:
+        capabilities.extend(
+            await Capability.list(
+                kube,
+                kind=kind,
+                scope=target.scope,
+                scope_value=target.value,
+                timeout=timeout,
             )
+        )
     scope_order = {target.scope: index for index, target in enumerate(targets)}
     capabilities.sort(
         key=lambda item: (
@@ -189,44 +169,19 @@ async def list_capabilities(
         print(_format_capability_line(capability))
 
 
-async def path_capability_ref(
+async def _path_capability_ref(
+    kube: Kube,
     path: str,
     *,
     kind: CapabilityKind,
     capability_id: KubeName,
     timeout: float,
 ) -> CapabilityRef:
-    """Return the exact repository/worktree-scoped ref for a path target.
-
-    Parameters
-    ----------
-    path : str
-        Repository root or explicit worktree path. Repository-root targets do not
-        substitute HEAD.
-    kind : CapabilityKind
-        Capability category.
-    capability_id : KubeName
-        Host-agnostic capability ID.
-    timeout : float
-        Maximum Kubernetes request budget in seconds.
-
-    Returns
-    -------
-    CapabilityRef
-        Repository or worktree scoped reference.
-
-    Raises
-    ------
-    OSError
-        If no initialized repository is found for `path`.
-    """
-    with await Kube.host(timeout=timeout) as kube:
-        repo, worktree = await resolve_project_scope(
-            kube,
-            Path(path),
-            timeout=timeout,
-        )
-        await prune_repository_mounts_quietly(kube, timeout=timeout)
+    repo, worktree = await resolve_project_scope(
+        kube,
+        Path(path),
+        timeout=timeout,
+    )
     if not repo:
         msg = f"no initialized Git repository found for target: {path}"
         raise OSError(msg)
@@ -236,46 +191,23 @@ async def path_capability_ref(
     return CapabilityRef.worktree(kind, capability_id, worktree_id)
 
 
-async def path_scope_targets(
+async def _path_scope_targets(
+    kube: Kube,
     path: str,
     *,
     include_local_node: bool,
     timeout: float,
 ) -> tuple[_ScopeTarget, ...]:
-    """Return resolution-ordered scope targets for a path.
-
-    Parameters
-    ----------
-    path : str
-        Repository root or explicit worktree path.
-    include_local_node : bool
-        Whether to include the local node scope before shared cluster scope.
-    timeout : float
-        Maximum Kubernetes request budget in seconds when local node discovery is
-        needed.
-
-    Returns
-    -------
-    tuple[_ScopeTarget, ...]
-        Ordered scope targets matching capability resolution precedence.
-
-    Raises
-    ------
-    OSError
-        If no initialized repository is found for `path`.
-    """
-    with await Kube.host(timeout=timeout) as kube:
-        repo, worktree = await resolve_project_scope(
-            kube,
-            Path(path),
-            timeout=timeout,
-        )
-        local_node = (
-            await ensure_local_bertrand_node(kube, timeout=timeout)
-            if include_local_node
-            else None
-        )
-        await prune_repository_mounts_quietly(kube, timeout=timeout)
+    repo, worktree = await resolve_project_scope(
+        kube,
+        Path(path),
+        timeout=timeout,
+    )
+    local_node = (
+        await ensure_local_bertrand_node(kube, timeout=timeout)
+        if include_local_node
+        else None
+    )
     if not repo:
         msg = f"no initialized Git repository found for target: {path}"
         raise OSError(msg)
@@ -296,27 +228,16 @@ async def path_scope_targets(
     return tuple(targets)
 
 
-def shared_scope_targets() -> tuple[_ScopeTarget, ...]:
-    """Return the shared cluster capability target.
-
-    Returns
-    -------
-    tuple[_ScopeTarget, ...]
-        Single shared-cluster scope target.
-    """
+def _shared_scope_targets() -> tuple[_ScopeTarget, ...]:
     return (_ScopeTarget("shared", None, "shared cluster"),)
 
 
-async def local_node_scope_targets(*, timeout: float) -> tuple[_ScopeTarget, ...]:
-    """Return local node and shared capability targets.
-
-    Returns
-    -------
-    tuple[_ScopeTarget, ...]
-        Ordered local-node then shared-cluster scope targets.
-    """
-    with await Kube.host(timeout=timeout) as kube:
-        node = await ensure_local_bertrand_node(kube, timeout=timeout)
+async def _local_node_scope_targets(
+    kube: Kube,
+    *,
+    timeout: float,
+) -> tuple[_ScopeTarget, ...]:
+    node = await ensure_local_bertrand_node(kube, timeout=timeout)
     label = node.display_name or node.host_id
     return (
         _ScopeTarget("node", node.host_id, f"node {label}"),
@@ -324,52 +245,22 @@ async def local_node_scope_targets(*, timeout: float) -> tuple[_ScopeTarget, ...
     )
 
 
-async def local_node_capability_ref(
+async def _local_node_capability_ref(
+    kube: Kube,
     *,
     kind: CapabilityKind,
     capability_id: KubeName,
     timeout: float,
 ) -> CapabilityRef:
-    """Return the local node-scoped capability reference.
-
-    Parameters
-    ----------
-    kind : CapabilityKind
-        Capability category.
-    capability_id : KubeName
-        Host-agnostic capability ID.
-    timeout : float
-        Maximum Kubernetes request budget in seconds.
-
-    Returns
-    -------
-    CapabilityRef
-        Local node-scoped reference.
-    """
-    with await Kube.host(timeout=timeout) as kube:
-        node = await ensure_local_bertrand_node(kube, timeout=timeout)
+    node = await ensure_local_bertrand_node(kube, timeout=timeout)
     return CapabilityRef.node(kind, capability_id, node.host_id)
 
 
-def shared_capability_ref(
+def _shared_capability_ref(
     *,
     kind: CapabilityKind,
     capability_id: KubeName,
 ) -> CapabilityRef:
-    """Return a shared cluster capability reference.
-
-    Parameters
-    ----------
-    kind : CapabilityKind
-        Capability category.
-    capability_id : KubeName
-        Host-agnostic capability ID.
-
-    Returns
-    -------
-    CapabilityRef
-        Shared cluster-scoped reference.
-    """
     return CapabilityRef.shared(kind, capability_id)
 
 

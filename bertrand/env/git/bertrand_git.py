@@ -603,6 +603,15 @@ class TimeoutExpired(subprocess.TimeoutExpired, TimeoutError):  # noqa: N818
         return "\n\n".join(out)
 
 
+_HOOK_OPERATION_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    ValueError,
+    CommandError,
+)
+
+
 def can_escalate() -> bool:
     """Check whether the current system supports privilege escalation.
 
@@ -2738,7 +2747,7 @@ class GitRepository:
                 create_branch=create_branch,
             )
             current[branch] = target
-        except Exception as err:  # noqa: BLE001
+        except _HOOK_OPERATION_ERRORS as err:
             _warn(
                 f"failed to create worktree for branch '{branch}' at {target}:\n{err}"
             )
@@ -2757,7 +2766,7 @@ class GitRepository:
             if old_branch is not None:
                 current.pop(old_branch, None)
             current[branch] = target
-        except Exception as err:  # noqa: BLE001
+        except _HOOK_OPERATION_ERRORS as err:
             _warn(
                 f"failed to move worktree for branch '{branch}' from {source} "
                 f"to {target}:\n{err}"
@@ -2772,7 +2781,7 @@ class GitRepository:
         try:
             if await self.destroy_worktree(branch, target=path):
                 current.pop(branch, None)
-        except Exception as err:  # noqa: BLE001
+        except _HOOK_OPERATION_ERRORS as err:
             _warn(f"failed to destroy worktree for branch '{branch}' at {path}:\n{err}")
 
     async def sync_worktrees(self, updates: Sequence[GitRefUpdate] = ()) -> None:

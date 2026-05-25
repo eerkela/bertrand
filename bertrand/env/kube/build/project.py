@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from bertrand.env.build_args import normalize_image_build_args
-from bertrand.env.config.bertrand import Bertrand, project_image_tag
-from bertrand.env.config.conan import ConanConfig
+from bertrand.env.config.bertrand import Bertrand, BertrandModel, project_image_tag
+from bertrand.env.config.conan import ConanConfig, ConanConfigModel
 from bertrand.env.config.core import Config, _check_uuid
 from bertrand.env.config.python import PyProject
 from bertrand.env.git import INFINITY, Deadline, ensure_worktree_id
@@ -329,8 +329,8 @@ def _config_id(
     *,
     repo_id: str,
     worktree_id: str,
-    image_config: Bertrand.Model.Image,
-    conan_config: ConanConfig.Model | None,
+    image_config: BertrandModel.Image,
+    conan_config: ConanConfigModel | None,
     dockerfile: str,
 ) -> str:
     payload = {

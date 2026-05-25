@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-import kubernetes
+import yaml
 
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
@@ -69,8 +69,8 @@ def kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
         context.
     """
     try:
-        raw = kubernetes.config.kube_config.yaml.safe_load(payload)
-    except Exception as err:
+        raw = yaml.safe_load(payload)
+    except yaml.YAMLError as err:
         msg = f"{source} is not valid kubeconfig YAML: {err}"
         raise OSError(msg) from err
     if not isinstance(raw, Mapping):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.spec import DeploymentStrategySpec
@@ -38,6 +38,7 @@ from bertrand.env.kube.workload_refs import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from bertrand.env.kube.api._helpers import DeletionPropagationPolicy
     from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.workload.config import (
         WorkloadConfig,
@@ -876,7 +877,7 @@ async def _delete_deployment(
     *,
     identity: WorkloadIdentity,
     timeout: float,
-    propagation_policy: str = "Background",
+    propagation_policy: DeletionPropagationPolicy = "Background",
     grace_period_seconds: int | None = None,
 ) -> bool:
     deadline = Deadline.from_timeout(
@@ -895,7 +896,7 @@ async def _delete_deployment(
     await deployment.delete(
         kube,
         timeout=deadline.remaining(),
-        propagation_policy=cast("Any", propagation_policy),
+        propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,
     )
     return True
@@ -906,7 +907,7 @@ async def _delete_cronjob(
     *,
     identity: WorkloadIdentity,
     timeout: float,
-    propagation_policy: str = "Background",
+    propagation_policy: DeletionPropagationPolicy = "Background",
     grace_period_seconds: int | None = None,
 ) -> bool:
     deadline = Deadline.from_timeout(
@@ -925,7 +926,7 @@ async def _delete_cronjob(
     await cronjob.delete(
         kube,
         timeout=deadline.remaining(),
-        propagation_policy=cast("Any", propagation_policy),
+        propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,
     )
     return True

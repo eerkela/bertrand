@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import kubernetes
 
@@ -15,6 +15,29 @@ if TYPE_CHECKING:
     from .client import Kube
 
 KUBE_WAIT_POLL_INTERVAL_SECONDS = 0.5
+type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
+
+
+def _delete_options(
+    *,
+    kind: str,
+    propagation_policy: DeletionPropagationPolicy | None = None,
+    grace_period_seconds: int | None = None,
+) -> kubernetes.client.V1DeleteOptions:
+    if propagation_policy is not None and propagation_policy not in (
+        "Background",
+        "Foreground",
+        "Orphan",
+    ):
+        msg = f"invalid {kind} deletion propagation policy: {propagation_policy!r}"
+        raise ValueError(msg)
+    if grace_period_seconds is not None and grace_period_seconds < 0:
+        msg = f"{kind} deletion grace period cannot be negative"
+        raise ValueError(msg)
+    return kubernetes.client.V1DeleteOptions(
+        grace_period_seconds=grace_period_seconds,
+        propagation_policy=propagation_policy,
+    )
 
 
 def _validate_delete_status(payload: object, *, label: str) -> None:

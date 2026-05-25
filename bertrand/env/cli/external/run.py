@@ -14,11 +14,13 @@ import termios
 import tty as tty_module
 from typing import TYPE_CHECKING, Any, Literal
 
+import websocket
+
 from bertrand.env.cli.external._helper import (
     _project_command_context,
 )
 from bertrand.env.cli.external.build import _publish_project_image
-from bertrand.env.config.bertrand import Bertrand
+from bertrand.env.config.bertrand import Bertrand, BertrandModel
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.build.execution import job_pod_diagnostics
 from bertrand.env.kube.cronjob import CronJob
@@ -46,6 +48,13 @@ _STDIN_CHANNEL = 0
 _STDOUT_CHANNEL = 1
 _STDERR_CHANNEL = 2
 _RESIZE_CHANNEL = 4
+_TTY_STREAM_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    ValueError,
+    websocket.WebSocketException,
+)
 type _AttachMode = Literal["logs", "tty"]
 type _PodSource = Callable[[float], Awaitable[Sequence[Pod]]]
 
@@ -221,7 +230,7 @@ async def run_configured_project(
 
 
 def _resolve_attach_mode(
-    bertrand: Bertrand.Model | None,
+    bertrand: BertrandModel | None,
     *,
     detach: bool,
     tty: bool | None,
@@ -248,7 +257,7 @@ def _require_local_tty() -> None:
     raise OSError(msg)
 
 
-def _require_tty_topology(bertrand: Bertrand.Model | None) -> None:
+def _require_tty_topology(bertrand: BertrandModel | None) -> None:
     if bertrand is None or not bertrand.containers:
         msg = "`bertrand run --tty` requires a configured immediate workload"
         raise OSError(msg)
@@ -273,7 +282,7 @@ def _require_tty_topology(bertrand: Bertrand.Model | None) -> None:
     raise OSError(msg)
 
 
-def _auto_tty_topology(bertrand: Bertrand.Model | None) -> bool:
+def _auto_tty_topology(bertrand: BertrandModel | None) -> bool:
     if bertrand is None or not bertrand.containers:
         return False
     topology = bertrand.topology.kind
@@ -282,18 +291,18 @@ def _auto_tty_topology(bertrand: Bertrand.Model | None) -> bool:
     return topology == "deployment" and _deployment_replicas(bertrand) == 1
 
 
-def _job_has_single_attach_target(bertrand: Bertrand.Model) -> bool:
+def _job_has_single_attach_target(bertrand: BertrandModel) -> bool:
     execution = bertrand.execution
     if execution is None:
         return True
     return execution.parallelism == 1 and execution.completions in (None, 1)
 
 
-def _deployment_replicas(bertrand: Bertrand.Model) -> int:
+def _deployment_replicas(bertrand: BertrandModel) -> int:
     return 1 if bertrand.scale is None else bertrand.scale.replicas
 
 
-def _primary_container_name(bertrand: Bertrand.Model | None) -> str:
+def _primary_container_name(bertrand: BertrandModel | None) -> str:
     if bertrand is None or not bertrand.containers:
         return ""
     return str(bertrand.containers[0].name).strip()
@@ -585,7 +594,7 @@ class _TTYAttachSession:
             self._stream.update(timeout=0)
             self._drain_output()
         finally:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_TTY_STREAM_ERRORS):
                 self._stream.close()
             signal.signal(signal.SIGWINCH, old_sigwinch)
             termios.tcsetattr(self._stdin_fd, termios.TCSADRAIN, old_terminal)
@@ -593,7 +602,7 @@ class _TTYAttachSession:
     def _resize(self, _signum: int | None = None, _frame: object | None = None) -> None:
         size = shutil.get_terminal_size(fallback=(80, 24))
         payload = json.dumps({"Width": size.columns, "Height": size.lines}).encode()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_TTY_STREAM_ERRORS):
             self._stream.write_channel(_RESIZE_CHANNEL, payload)
 
     def _drain_output(self) -> None:

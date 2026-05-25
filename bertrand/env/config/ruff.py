@@ -26,161 +26,162 @@ def _ruff_target_version() -> str:
     return f"py{major}{minor}"
 
 
-@resource("ruff")
-class RuffConfig(Resource):
-    """A resource describing the `[tool.ruff]` table in `pyproject.toml`."""
+class RuffConfigModel(BaseModel):
+    """Validate the `[tool.ruff]` table."""
 
-    class Model(BaseModel):
-        """Validate the `[tool.ruff]` table."""
+    class Format(BaseModel):
+        """Validate the `[tool.ruff.format]` table."""
 
-        class Format(BaseModel):
-            """Validate the `[tool.ruff.format]` table."""
+        model_config = ConfigDict(extra="allow")
+        quote_style: Annotated[
+            Trimmed,
+            Field(
+                default="preserve",
+                alias="quote-style",
+                description="String quote normalization mode used by Ruff format.",
+            ),
+        ]
+        indent_style: Annotated[
+            Trimmed,
+            Field(
+                default="space",
+                alias="indent-style",
+                description="Indentation style used by Ruff format.",
+            ),
+        ]
+        line_ending: Annotated[
+            Trimmed,
+            Field(
+                default="auto",
+                alias="line-ending",
+                description="Line-ending mode used by Ruff format.",
+            ),
+        ]
 
-            model_config = ConfigDict(extra="allow")
-            quote_style: Annotated[
-                Trimmed,
-                Field(
-                    default="preserve",
-                    alias="quote-style",
-                    description="String quote normalization mode used by Ruff format.",
-                ),
-            ]
-            indent_style: Annotated[
-                Trimmed,
-                Field(
-                    default="space",
-                    alias="indent-style",
-                    description="Indentation style used by Ruff format.",
-                ),
-            ]
-            line_ending: Annotated[
-                Trimmed,
-                Field(
-                    default="auto",
-                    alias="line-ending",
-                    description="Line-ending mode used by Ruff format.",
-                ),
-            ]
+    class Lint(BaseModel):
+        """Validate the `[tool.ruff.lint]` table."""
 
-        class Lint(BaseModel):
-            """Validate the `[tool.ruff.lint]` table."""
-
-            class Pydocstyle(BaseModel):
-                """Validate the `[tool.ruff.lint.pydocstyle]` table."""
-
-                model_config = ConfigDict(extra="allow")
-                convention: Annotated[
-                    Trimmed,
-                    Field(
-                        default="numpy",
-                        description=(
-                            "Docstring convention used by Ruff pydocstyle rules."
-                        ),
-                    ),
-                ]
-
-            class Flake8Annotations(BaseModel):
-                """Validate the `[tool.ruff.lint.flake8-annotations]` table."""
-
-                model_config = ConfigDict(extra="allow")
-                mypy_init_return: Annotated[
-                    bool,
-                    Field(
-                        default=True,
-                        alias="mypy-init-return",
-                        description=(
-                            "Whether `__init__` is allowed to omit explicit `-> None`."
-                        ),
-                    ),
-                ]
+        class Pydocstyle(BaseModel):
+            """Validate the `[tool.ruff.lint.pydocstyle]` table."""
 
             model_config = ConfigDict(extra="allow")
-            select: Annotated[
-                list[RuffRule],
+            convention: Annotated[
+                Trimmed,
                 Field(
-                    default_factory=lambda: ["E", "F", "I", "B", "UP", "DOC", "FIX"],
-                    description="Enabled Ruff lint rule families/codes.",
+                    default="numpy",
+                    description=(
+                        "Docstring convention used by Ruff pydocstyle rules."
+                    ),
                 ),
             ]
-            exclude: Annotated[
-                list[Trimmed],
+
+        class Flake8Annotations(BaseModel):
+            """Validate the `[tool.ruff.lint.flake8-annotations]` table."""
+
+            model_config = ConfigDict(extra="allow")
+            mypy_init_return: Annotated[
+                bool,
                 Field(
-                    default_factory=lambda: ["*.pyi"],
-                    description="Path globs excluded from Ruff linting.",
-                ),
-            ]
-            pydocstyle: Annotated[
-                Pydocstyle,
-                Field(
-                    default_factory=Pydocstyle.model_construct,
-                    description="pydocstyle plugin settings.",
-                ),
-            ]
-            flake8_annotations: Annotated[
-                Flake8Annotations,
-                Field(
-                    default_factory=Flake8Annotations.model_construct,
-                    alias="flake8-annotations",
-                    description="flake8-annotations plugin settings.",
+                    default=True,
+                    alias="mypy-init-return",
+                    description=(
+                        "Whether `__init__` is allowed to omit explicit `-> None`."
+                    ),
                 ),
             ]
 
         model_config = ConfigDict(extra="allow")
-        target_version: Annotated[
-            Trimmed,
+        select: Annotated[
+            list[RuffRule],
             Field(
-                default_factory=_ruff_target_version,
-                alias="target-version",
-                description=(
-                    "Target Python version used by Ruff for analysis/formatting."
-                ),
+                default_factory=lambda: ["E", "F", "I", "B", "UP", "DOC", "FIX"],
+                description="Enabled Ruff lint rule families/codes.",
             ),
         ]
-        line_length: Annotated[
-            PositiveInt,
+        exclude: Annotated[
+            list[Trimmed],
             Field(
-                default=100,
-                alias="line-length",
-                description=(
-                    "Maximum allowed line length for formatting/linting context."
-                ),
+                default_factory=lambda: ["*.pyi"],
+                description="Path globs excluded from Ruff linting.",
             ),
         ]
-        indent_width: Annotated[
-            PositiveInt,
+        pydocstyle: Annotated[
+            Pydocstyle,
             Field(
-                default=4,
-                alias="indent-width",
-                description="Indent width used by Ruff formatting behavior.",
+                default_factory=Pydocstyle.model_construct,
+                description="pydocstyle plugin settings.",
             ),
         ]
-        output_format: Annotated[
-            Trimmed,
+        flake8_annotations: Annotated[
+            Flake8Annotations,
             Field(
-                default="full",
-                alias="output-format",
-                description="Diagnostic output format used by Ruff commands.",
+                default_factory=Flake8Annotations.model_construct,
+                alias="flake8-annotations",
+                description="flake8-annotations plugin settings.",
             ),
         ]
-        respect_gitignore: Annotated[
-            bool,
-            Field(
-                default=True,
-                alias="respect-gitignore",
-                description="Whether Ruff should honor ignore files from Git.",
+
+    model_config = ConfigDict(extra="allow")
+    target_version: Annotated[
+        Trimmed,
+        Field(
+            default_factory=_ruff_target_version,
+            alias="target-version",
+            description=(
+                "Target Python version used by Ruff for analysis/formatting."
             ),
-        ]
-        format: Annotated[
-            Format,
-            Field(
-                default_factory=Format.model_construct,
-                description="Formatting settings for Ruff.",
+        ),
+    ]
+    line_length: Annotated[
+        PositiveInt,
+        Field(
+            default=100,
+            alias="line-length",
+            description=(
+                "Maximum allowed line length for formatting/linting context."
             ),
-        ]
-        lint: Annotated[
-            Lint,
-            Field(
-                default_factory=Lint.model_construct,
-                description="Linting settings for Ruff.",
-            ),
-        ]
+        ),
+    ]
+    indent_width: Annotated[
+        PositiveInt,
+        Field(
+            default=4,
+            alias="indent-width",
+            description="Indent width used by Ruff formatting behavior.",
+        ),
+    ]
+    output_format: Annotated[
+        Trimmed,
+        Field(
+            default="full",
+            alias="output-format",
+            description="Diagnostic output format used by Ruff commands.",
+        ),
+    ]
+    respect_gitignore: Annotated[
+        bool,
+        Field(
+            default=True,
+            alias="respect-gitignore",
+            description="Whether Ruff should honor ignore files from Git.",
+        ),
+    ]
+    format: Annotated[
+        Format,
+        Field(
+            default_factory=Format.model_construct,
+            description="Formatting settings for Ruff.",
+        ),
+    ]
+    lint: Annotated[
+        Lint,
+        Field(
+            default_factory=Lint.model_construct,
+            description="Linting settings for Ruff.",
+        ),
+    ]
+
+
+@resource("ruff")
+class RuffConfig(Resource[RuffConfigModel]):
+    """A resource describing the `[tool.ruff]` table in `pyproject.toml`."""

@@ -41,175 +41,162 @@ type ClangTidyOptionName = Annotated[
 ]
 
 
+class ClangTidyModel(BaseModel):
+    """Validate the `[clang-tidy]` table."""
+
+    class Check(BaseModel):
+        """Validate entries in the `[[tool.clang-tidy.Checks]]` AoT."""
+
+        model_config = ConfigDict(extra="forbid")
+        Enable: Annotated[
+            ClangTidyCheckPattern | None,
+            Field(
+                default=None,
+                examples=["modernize-use-auto", "performance-*"],
+                description=(
+                    "A clang-tidy check pattern to enable.  Must be unique across "
+                    "both 'Enable' and 'Disable' entries."
+                ),
+            ),
+        ]
+        Disable: Annotated[
+            ClangTidyCheckPattern | None,
+            Field(
+                default=None,
+                examples=["modernize-use-auto", "performance-*"],
+                description=(
+                    "A clang-tidy check pattern to explicitly disable.  This may "
+                    "be a subset of the 'Enabled' checks."
+                ),
+            ),
+        ]
+        Action: Annotated[
+            Literal["disable", "warn", "error"],
+            Field(
+                default="warn",
+                examples=["disable", "warn", "error"],
+                description=(
+                    "The action to take for this check pattern.  'disable' turns "
+                    "off the check, 'warn' enables the check and reports "
+                    "diagnostics as warnings, and 'error' promotes the check to an "
+                    "error."
+                ),
+            ),
+        ]
+        Options: Annotated[
+            dict[ClangTidyOptionName, Scalar],
+            Field(
+                default_factory=dict,
+                description=(
+                    "A mapping of custom options for this check.  See the "
+                    "clang-tidy documentation for which options are supported by "
+                    "each check, and how to format their values."
+                ),
+            ),
+        ]
+
+        @model_validator(mode="after")
+        def _validate_enable_or_disable(self) -> Self:
+            if (self.Enable is None) == (self.Disable is None):
+                msg = (
+                    "each entry in [[tool.clang-tidy.Checks]] must define "
+                    "exactly one of 'Enable' or 'Disable'"
+                )
+                raise ValueError(msg)
+            return self
+
+    @staticmethod
+    def _check_duplicate_checks(value: list[Check]) -> list[Check]:
+        seen: set[ClangTidyCheckPattern] = set()
+        for entry in value:
+            if entry.Enable is not None:
+                if entry.Enable in seen:
+                    msg = f"duplicate clang-tidy check entry: '{entry.Enable}'"
+                    raise ValueError(msg)
+                seen.add(entry.Enable)
+            if entry.Disable is not None:
+                if entry.Disable in seen:
+                    msg = f"duplicate clang-tidy check entry: '{entry.Disable}'"
+                    raise ValueError(msg)
+                seen.add(entry.Disable)
+        return value
+
+    model_config = ConfigDict(extra="forbid")
+    DisableFormat: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Enable clang-format fixes for clang-tidy diagnostics.",
+        ),
+    ]
+    HeaderFilterRegex: Annotated[
+        RegexPattern,
+        Field(
+            default="^.*$",
+            description=(
+                "A regex pattern to filter which headers are included in "
+                "clang-tidy diagnostics.  Only diagnostics from headers that match "
+                "this pattern will be included.  This can be used to focus "
+                "diagnostics on project headers and exclude external dependencies, "
+                "which often have noisy diagnostics that the user cannot fix."
+            ),
+        ),
+    ]
+    ExcludeHeaderFilterRegex: Annotated[
+        RegexPattern,
+        Field(
+            default="^$",
+            description=(
+                "A regex pattern to filter which headers are excluded from "
+                "clang-tidy diagnostics.  Only diagnostics from headers that do "
+                "not match this pattern will be included, regardless of whether "
+                "they match 'HeaderFilterRegex'."
+            ),
+        ),
+    ]
+    SystemHeaders: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "Control whether diagnostics from system headers are included.  "
+                "This overrides 'HeaderFilterRegex' and 'ExcludeHeaderFilterRegex' "
+                "for system headers."
+            ),
+        ),
+    ]
+    UseColor: Annotated[
+        bool,
+        Field(
+            default=True,
+            description=(
+                "Use color output where possible, if the terminal supports it."
+            ),
+        ),
+    ]
+    Checks: Annotated[
+        list[Check],
+        AfterValidator(_check_duplicate_checks),
+        Field(
+            default_factory=list,
+            description=(
+                "List of clang-tidy checks to enable or disable.  Checks will be "
+                "processed in order, so later entries can override earlier ones.  "
+                "See the clang-tidy documentation for available checks and their "
+                "options."
+            ),
+        ),
+    ]
+
+
 @resource("clang-tidy")
-class ClangTidy(Resource):
+class ClangTidy(Resource[ClangTidyModel]):
     """Describe a `.clang-tidy` configuration file.
 
     This expects native clang-tidy key names in TOML. `Checks` and
     `WarningsAsErrors` may be specified as arrays for convenience and will be joined
     to comma-separated strings.
     """
-
-    class Model(BaseModel):
-        """Validate the `[clang-tidy]` table."""
-
-        class Check(BaseModel):
-            """Validate entries in the `[[tool.clang-tidy.Checks]]` AoT."""
-
-            model_config = ConfigDict(extra="forbid")
-            Enable: Annotated[
-                ClangTidyCheckPattern | None,
-                Field(
-                    default=None,
-                    examples=["modernize-use-auto", "performance-*"],
-                    description=(
-                        "A clang-tidy check pattern to enable.  Must be unique across "
-                        "both 'Enable' and 'Disable' entries."
-                    ),
-                ),
-            ]
-            Disable: Annotated[
-                ClangTidyCheckPattern | None,
-                Field(
-                    default=None,
-                    examples=["modernize-use-auto", "performance-*"],
-                    description=(
-                        "A clang-tidy check pattern to explicitly disable.  This may "
-                        "be a subset of the 'Enabled' checks."
-                    ),
-                ),
-            ]
-            Action: Annotated[
-                Literal["disable", "warn", "error"],
-                Field(
-                    default="warn",
-                    examples=["disable", "warn", "error"],
-                    description=(
-                        "The action to take for this check pattern.  'disable' turns "
-                        "off the check, 'warn' enables the check and reports "
-                        "diagnostics as warnings, and 'error' promotes the check to an "
-                        "error."
-                    ),
-                ),
-            ]
-            Options: Annotated[
-                dict[ClangTidyOptionName, Scalar],
-                Field(
-                    default_factory=dict,
-                    description=(
-                        "A mapping of custom options for this check.  See the "
-                        "clang-tidy documentation for which options are supported by "
-                        "each check, and how to format their values."
-                    ),
-                ),
-            ]
-
-            @model_validator(mode="after")
-            def _validate_enable_or_disable(self) -> Self:
-                if (self.Enable is None) == (self.Disable is None):
-                    msg = (
-                        "each entry in [[tool.clang-tidy.Checks]] must define "
-                        "exactly one of 'Enable' or 'Disable'"
-                    )
-                    raise ValueError(msg)
-                return self
-
-        @staticmethod
-        def _check_duplicate_checks(value: list[Check]) -> list[Check]:
-            seen: set[ClangTidyCheckPattern] = set()
-            for entry in value:
-                if entry.Enable is not None:
-                    if entry.Enable in seen:
-                        msg = f"duplicate clang-tidy check entry: '{entry.Enable}'"
-                        raise ValueError(msg)
-                    seen.add(entry.Enable)
-                if entry.Disable is not None:
-                    if entry.Disable in seen:
-                        msg = f"duplicate clang-tidy check entry: '{entry.Disable}'"
-                        raise ValueError(msg)
-                    seen.add(entry.Disable)
-            return value
-
-        model_config = ConfigDict(extra="forbid")
-        DisableFormat: Annotated[
-            bool,
-            Field(
-                default=False,
-                description="Enable clang-format fixes for clang-tidy diagnostics.",
-            ),
-        ]
-        HeaderFilterRegex: Annotated[
-            RegexPattern,
-            Field(
-                default="^.*$",
-                description=(
-                    "A regex pattern to filter which headers are included in "
-                    "clang-tidy diagnostics.  Only diagnostics from headers that match "
-                    "this pattern will be included.  This can be used to focus "
-                    "diagnostics on project headers and exclude external dependencies, "
-                    "which often have noisy diagnostics that the user cannot fix."
-                ),
-            ),
-        ]
-        ExcludeHeaderFilterRegex: Annotated[
-            RegexPattern,
-            Field(
-                default="^$",
-                description=(
-                    "A regex pattern to filter which headers are excluded from "
-                    "clang-tidy diagnostics.  Only diagnostics from headers that do "
-                    "not match this pattern will be included, regardless of whether "
-                    "they match 'HeaderFilterRegex'."
-                ),
-            ),
-        ]
-        SystemHeaders: Annotated[
-            bool,
-            Field(
-                default=False,
-                description=(
-                    "Control whether diagnostics from system headers are included.  "
-                    "This overrides 'HeaderFilterRegex' and 'ExcludeHeaderFilterRegex' "
-                    "for system headers."
-                ),
-            ),
-        ]
-        UseColor: Annotated[
-            bool,
-            Field(
-                default=True,
-                description=(
-                    "Use color output where possible, if the terminal supports it."
-                ),
-            ),
-        ]
-        Checks: Annotated[
-            list[Check],
-            AfterValidator(_check_duplicate_checks),
-            Field(
-                default_factory=list,
-                description=(
-                    "List of clang-tidy checks to enable or disable.  Checks will be "
-                    "processed in order, so later entries can override earlier ones.  "
-                    "See the clang-tidy documentation for available checks and their "
-                    "options."
-                ),
-            ),
-        ]
-
-    async def validate(
-        self,
-        config: Config,  # noqa: ARG002
-        fragment: Any,
-    ) -> Model | None:
-        """Validate clang-tidy configuration.
-
-        Returns
-        -------
-        Model | None
-            Validated clang-tidy configuration.
-        """
-        return self.Model.model_validate(fragment)
 
     async def render(self, config: Config, *, image_build: bool) -> None:
         """Render the `.clang-tidy` artifact.

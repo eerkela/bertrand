@@ -172,8 +172,208 @@ type ConanOptionPattern = Annotated[
 type ConanOptions = dict[ConanOptionPattern, dict[ConanOptionName, Scalar]]
 
 
+class ConanConfigModel(BaseModel):
+    """Validate the global `[tool.conan]` table."""
+
+    class Require(BaseModel):
+        """Validate entries in `[[tool.conan.requires]]`."""
+
+        model_config = ConfigDict(extra="forbid")
+        package: Annotated[
+            ConanRequirement, Field(description="A Conan package specifier.")
+        ]
+        kind: Annotated[
+            Literal["host", "tool"],
+            Field(
+                default="host",
+                examples=["host", "tool"],
+                description=(
+                    "The kind of requirement, which controls how the requirement "
+                    "gets injected into the generated Conan profile.  'tool' "
+                    "requirements apply only to the build context, whereas 'host' "
+                    "requirements specify runtime dependencies."
+                ),
+            ),
+        ]
+        options: Annotated[
+            dict[ConanOptionName, Scalar],
+            Field(
+                default_factory=dict,
+                description=(
+                    "Mapping of option names to their values for this requirement, "
+                    "which get converted into '<package>:<option>=<value>' format "
+                    "in the generated Conan profile.  These options merge with any "
+                    "global options specified in the `options` field, and take "
+                    "precedence over any conflicting values."
+                ),
+            ),
+        ]
+
+    class Remote(BaseModel):
+        """Validate entries in `[[tool.conan.remotes]]`."""
+
+        @staticmethod
+        def _check_allowed_packages(
+            value: list[ConanAllowedPattern],
+        ) -> list[ConanAllowedPattern]:
+            seen: set[ConanAllowedPattern] = set()
+            for pattern in value:
+                if pattern in seen:
+                    msg = f"duplicate conan allowed-packages pattern: '{pattern}'"
+                    raise ValueError(msg)
+                seen.add(pattern)
+            return value
+
+        model_config = ConfigDict(extra="forbid")
+        name: Annotated[
+            ConanRemoteName,
+            Field(
+                description="Unique name for this Conan remote.",
+            ),
+        ]
+        url: Annotated[
+            URL,
+            Field(
+                description="Public URL for this Conan remote.",
+            ),
+        ]
+        verify_ssl: Annotated[
+            bool,
+            Field(
+                default=True,
+                alias="verify-ssl",
+                description=(
+                    "Whether to verify SSL certificates when communicating with "
+                    "this remote.  Should generally be left enabled unless the "
+                    "remote is known to have an invalid certificate, or is only "
+                    "accessible over insecure HTTP."
+                ),
+            ),
+        ]
+        enabled: Annotated[
+            bool,
+            Field(
+                default=True,
+                description=(
+                    "Whether to include this remote in Conan operations.  This can "
+                    "be used to temporarily disable a remote without removing it "
+                    "from config."
+                ),
+            ),
+        ]
+        recipes_only: Annotated[
+            bool,
+            Field(
+                default=False,
+                alias="recipes-only",
+                description=(
+                    "If true, only recipes will be loaded from this remote, and no "
+                    "binaries will be downloaded."
+                ),
+            ),
+        ]
+        allowed_packages: Annotated[
+            list[ConanAllowedPattern],
+            AfterValidator(_check_allowed_packages),
+            Field(
+                default_factory=list,
+                alias="allowed-packages",
+                description=(
+                    "List of recipes that are allowed to be downloaded from this "
+                    "remote. If the list is empty or not present, all packages are "
+                    "allowed. Uses fnmatch rules."
+                ),
+            ),
+        ]
+
+    @staticmethod
+    def _check_requires(value: list[Require]) -> list[Require]:
+        seen: set[tuple[str, str]] = set()
+        for req in value:
+            identity = (req.kind, req.package)
+            if identity in seen:
+                msg = (
+                    f"duplicate conan requirement identity for kind='{req.kind}', "
+                    f"package='{req.package}'"
+                )
+                raise ValueError(msg)
+            seen.add(identity)
+        return value
+
+    @staticmethod
+    def _check_remotes(value: list[Remote]) -> list[Remote]:
+        seen: set[ConanRemoteName] = set()
+        for remote in value:
+            if remote.name in seen:
+                msg = (
+                    f"duplicate conan remote name in [tool.conan]: '{remote.name}'"
+                )
+                raise ValueError(msg)
+            seen.add(remote.name)
+        return value
+
+    model_config = ConfigDict(extra="forbid")
+    build_type: Annotated[
+        Literal["Release", "Debug"],
+        Field(
+            default="Release",
+            alias="build-type",
+            examples=["Release", "Debug"],
+            description=("Global default build type for Conan builds."),
+        ),
+    ]
+    conf: Annotated[
+        ConanConf,
+        Field(
+            default_factory=dict,
+            description=(
+                "Global mapping of namespace tables to conf entries, which get "
+                "converted into '<namespace>:<name>=<value>' format in the "
+                "generated Conan profile."
+            ),
+        ),
+    ]
+    options: Annotated[
+        ConanOptions,
+        Field(
+            default_factory=dict,
+            description=(
+                "Global mapping of namespace tables to package options, which get "
+                "converted into '<package-pattern>:<option>=<value>' format in the "
+                "generated Conan profile."
+            ),
+        ),
+    ]
+    requires: Annotated[
+        list[Require],
+        AfterValidator(_check_requires),
+        Field(
+            default_factory=list,
+            description=(
+                "Global list of Conan dependencies to install for the project."
+            ),
+        ),
+    ]
+    remotes: Annotated[
+        list[Remote],
+        AfterValidator(_check_remotes),
+        Field(
+            default_factory=list,
+            description=(
+                "List of Conan remotes to use when resolving Conan dependencies "
+                "for this project.  NOTE: Conan remotes are resolved in "
+                "declaration order.  Prefer private remotes first, then optional "
+                "public fallback remotes last.  Credentials are host-local and "
+                "must never be stored here; resolve through env/secret channels "
+                "(e.g. CONAN_LOGIN_USERNAME_<REMOTE>, CONAN_PASSWORD_<REMOTE>, "
+                "with remote names normalized to SCREAMING_SNAKE_CASE)"
+            ),
+        ),
+    ]
+
+
 @resource("conan")
-class ConanConfig(Resource):
+class ConanConfig(Resource[ConanConfigModel]):
     """Validate and render Conan configuration data.
 
     This resource reads project config files and renders derived `conanfile.py`,
@@ -194,219 +394,6 @@ class ConanConfig(Resource):
         "arm64": "armv8",
     }
 
-    class Model(BaseModel):
-        """Validate the global `[tool.conan]` table."""
-
-        class Require(BaseModel):
-            """Validate entries in `[[tool.conan.requires]]`."""
-
-            model_config = ConfigDict(extra="forbid")
-            package: Annotated[
-                ConanRequirement, Field(description="A Conan package specifier.")
-            ]
-            kind: Annotated[
-                Literal["host", "tool"],
-                Field(
-                    default="host",
-                    examples=["host", "tool"],
-                    description=(
-                        "The kind of requirement, which controls how the requirement "
-                        "gets injected into the generated Conan profile.  'tool' "
-                        "requirements apply only to the build context, whereas 'host' "
-                        "requirements specify runtime dependencies."
-                    ),
-                ),
-            ]
-            options: Annotated[
-                dict[ConanOptionName, Scalar],
-                Field(
-                    default_factory=dict,
-                    description=(
-                        "Mapping of option names to their values for this requirement, "
-                        "which get converted into '<package>:<option>=<value>' format "
-                        "in the generated Conan profile.  These options merge with any "
-                        "global options specified in the `options` field, and take "
-                        "precedence over any conflicting values."
-                    ),
-                ),
-            ]
-
-        class Remote(BaseModel):
-            """Validate entries in `[[tool.conan.remotes]]`."""
-
-            @staticmethod
-            def _check_allowed_packages(
-                value: list[ConanAllowedPattern],
-            ) -> list[ConanAllowedPattern]:
-                seen: set[ConanAllowedPattern] = set()
-                for pattern in value:
-                    if pattern in seen:
-                        msg = f"duplicate conan allowed-packages pattern: '{pattern}'"
-                        raise ValueError(msg)
-                    seen.add(pattern)
-                return value
-
-            model_config = ConfigDict(extra="forbid")
-            name: Annotated[
-                ConanRemoteName,
-                Field(
-                    description="Unique name for this Conan remote.",
-                ),
-            ]
-            url: Annotated[
-                URL,
-                Field(
-                    description="Public URL for this Conan remote.",
-                ),
-            ]
-            verify_ssl: Annotated[
-                bool,
-                Field(
-                    default=True,
-                    alias="verify-ssl",
-                    description=(
-                        "Whether to verify SSL certificates when communicating with "
-                        "this remote.  Should generally be left enabled unless the "
-                        "remote is known to have an invalid certificate, or is only "
-                        "accessible over insecure HTTP."
-                    ),
-                ),
-            ]
-            enabled: Annotated[
-                bool,
-                Field(
-                    default=True,
-                    description=(
-                        "Whether to include this remote in Conan operations.  This can "
-                        "be used to temporarily disable a remote without removing it "
-                        "from config."
-                    ),
-                ),
-            ]
-            recipes_only: Annotated[
-                bool,
-                Field(
-                    default=False,
-                    alias="recipes-only",
-                    description=(
-                        "If true, only recipes will be loaded from this remote, and no "
-                        "binaries will be downloaded."
-                    ),
-                ),
-            ]
-            allowed_packages: Annotated[
-                list[ConanAllowedPattern],
-                AfterValidator(_check_allowed_packages),
-                Field(
-                    default_factory=list,
-                    alias="allowed-packages",
-                    description=(
-                        "List of recipes that are allowed to be downloaded from this "
-                        "remote. If the list is empty or not present, all packages are "
-                        "allowed. Uses fnmatch rules."
-                    ),
-                ),
-            ]
-
-        @staticmethod
-        def _check_requires(value: list[Require]) -> list[Require]:
-            seen: set[tuple[str, str]] = set()
-            for req in value:
-                identity = (req.kind, req.package)
-                if identity in seen:
-                    msg = (
-                        f"duplicate conan requirement identity for kind='{req.kind}', "
-                        f"package='{req.package}'"
-                    )
-                    raise ValueError(msg)
-                seen.add(identity)
-            return value
-
-        @staticmethod
-        def _check_remotes(value: list[Remote]) -> list[Remote]:
-            seen: set[ConanRemoteName] = set()
-            for remote in value:
-                if remote.name in seen:
-                    msg = (
-                        f"duplicate conan remote name in [tool.conan]: '{remote.name}'"
-                    )
-                    raise ValueError(msg)
-                seen.add(remote.name)
-            return value
-
-        model_config = ConfigDict(extra="forbid")
-        build_type: Annotated[
-            Literal["Release", "Debug"],
-            Field(
-                default="Release",
-                alias="build-type",
-                examples=["Release", "Debug"],
-                description=("Global default build type for Conan builds."),
-            ),
-        ]
-        conf: Annotated[
-            ConanConf,
-            Field(
-                default_factory=dict,
-                description=(
-                    "Global mapping of namespace tables to conf entries, which get "
-                    "converted into '<namespace>:<name>=<value>' format in the "
-                    "generated Conan profile."
-                ),
-            ),
-        ]
-        options: Annotated[
-            ConanOptions,
-            Field(
-                default_factory=dict,
-                description=(
-                    "Global mapping of namespace tables to package options, which get "
-                    "converted into '<package-pattern>:<option>=<value>' format in the "
-                    "generated Conan profile."
-                ),
-            ),
-        ]
-        requires: Annotated[
-            list[Require],
-            AfterValidator(_check_requires),
-            Field(
-                default_factory=list,
-                description=(
-                    "Global list of Conan dependencies to install for the project."
-                ),
-            ),
-        ]
-        remotes: Annotated[
-            list[Remote],
-            AfterValidator(_check_remotes),
-            Field(
-                default_factory=list,
-                description=(
-                    "List of Conan remotes to use when resolving Conan dependencies "
-                    "for this project.  NOTE: Conan remotes are resolved in "
-                    "declaration order.  Prefer private remotes first, then optional "
-                    "public fallback remotes last.  Credentials are host-local and "
-                    "must never be stored here; resolve through env/secret channels "
-                    "(e.g. CONAN_LOGIN_USERNAME_<REMOTE>, CONAN_PASSWORD_<REMOTE>, "
-                    "with remote names normalized to SCREAMING_SNAKE_CASE)"
-                ),
-            ),
-        ]
-
-    async def validate(
-        self,
-        config: Config,  # noqa: ARG002
-        fragment: Any,
-    ) -> Model | None:
-        """Validate Conan configuration.
-
-        Returns
-        -------
-        Model | None
-            Validated Conan configuration.
-        """
-        return self.Model.model_validate(fragment)
-
     @staticmethod
     def _merge_options(out: dict[str, Scalar], options: ConanOptions) -> None:
         for pattern, pattern_options in sorted(options.items(), key=lambda i: i[0]):
@@ -420,8 +407,8 @@ class ConanConfig(Resource):
 
         # check requirement identities and sort into host/tool requirements
         requires = list(conan.requires)
-        host_requires: list[ConanConfig.Model.Require] = []
-        tool_requires: list[ConanConfig.Model.Require] = []
+        host_requires: list[ConanConfigModel.Require] = []
+        tool_requires: list[ConanConfigModel.Require] = []
         seen: set[tuple[str, str]] = set()
         for req in requires:
             identity = (req.kind, req.package)

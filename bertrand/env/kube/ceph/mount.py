@@ -61,6 +61,11 @@ if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
     msg = "internal default repository mount options cannot contain comma separators"
     raise ValueError(msg)
 REPOSITORY_MOUNT_PRUNE_LIMIT = 8
+_ALIAS_LOCK_RELEASE_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    RuntimeError,
+    TimeoutError,
+)
 
 
 def _current_host_id() -> str:
@@ -723,7 +728,7 @@ class MountInfo:
             if self._lock is not None:
                 try:
                     await self._lock.unlock(ignore_errors=exc_value is not None)
-                except Exception as err:
+                except _ALIAS_LOCK_RELEASE_ERRORS as err:
                     if exc_value is None:
                         raise
                     print(

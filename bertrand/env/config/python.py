@@ -116,263 +116,264 @@ type EntrypointName = Annotated[
 ]
 
 
+class PyProjectModel(BaseModel):
+    """Validate the core `pyproject.toml` fields, as defined by PEP 518/621."""
+
+    class BuildSystem(BaseModel):
+        """Validate the `[build-system]` table."""
+
+        @staticmethod
+        def _check_requires(
+            value: list[PEP508Requirement],
+        ) -> list[PEP508Requirement]:
+            if value != ["bertrand"]:
+                msg = "build-system.requires must be set to ['bertrand']"
+                raise ValueError(msg)
+            return value
+
+        model_config = ConfigDict(extra="forbid")
+        requires: Annotated[
+            list[PEP508Requirement],
+            AfterValidator(_check_requires),
+            Field(default_factory=lambda: ["bertrand"]),
+        ]
+        build_backend: Annotated[
+            Literal["bertrand.env.build"],
+            Field(default="bertrand.env.build", alias="build-backend"),
+        ]
+
+    class Project(BaseModel):
+        """Validate the `[project]` table."""
+
+        class Author(BaseModel):
+            """Validate entries in the `authors` and `maintainers` lists."""
+
+            model_config = ConfigDict(extra="forbid")
+            name: Annotated[
+                EmailName | None,
+                Field(
+                    default=None,
+                    description=(
+                        "Author name, which can be an email local-part but must "
+                        "not contain commas or newlines (to avoid ambiguity when "
+                        "parsing)"
+                    ),
+                ),
+            ]
+            email: Annotated[
+                Email | None,
+                Field(default=None, description="Contact email address"),
+            ]
+
+            @model_validator(mode="after")
+            def _require_name_or_email(self) -> Self:
+                if self.name is None and self.email is None:
+                    msg = "at least one of 'name' or 'email' must be provided"
+                    raise ValueError(msg)
+                return self
+
+        model_config = ConfigDict(extra="allow")
+        name: Annotated[
+            PEP508Name,
+            Field(
+                description=(
+                    "Canonical project name, which is initially seeded from the "
+                    "worktree root directory name, but can be overridden by the "
+                    "user."
+                ),
+            ),
+        ]
+        version: Annotated[
+            str,
+            Field(
+                description=(
+                    "Project version string, which should ideally follow semantic "
+                    "versioning (MAJOR.MINOR.MICRO), but is not required to."
+                ),
+            ),
+        ]
+        requires_python: Annotated[
+            PEP440Requirement,
+            Field(
+                default=f">={VERSION.python}",
+                alias="requires-python",
+                description="Container toolchain's Python version.",
+            ),
+        ]
+        description: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description="A short, one-line summary of the project.",
+            ),
+        ]
+        readme: Annotated[
+            PosixPath | None,
+            Field(
+                default=None,
+                description=(
+                    "Relative (POSIX) path to the project's README file, starting "
+                    "from the worktree root."
+                ),
+            ),
+        ]
+        license: Annotated[
+            License | None,
+            Field(
+                default=None,
+                description="SPDX license identifier (e.g. MIT, Apache-2.0, etc.).",
+            ),
+        ]
+        license_files: Annotated[
+            list[Glob] | None,
+            Field(
+                default=None,
+                alias="license-files",
+                description=(
+                    "list of relative (POSIX) paths from worktree root to license "
+                    "files, supporting glob patterns."
+                ),
+            ),
+        ]
+        authors: Annotated[
+            list[Author],
+            Field(default_factory=list, description="List of project authors."),
+        ]
+        maintainers: Annotated[
+            list[Author],
+            Field(default_factory=list, description="List of project maintainers."),
+        ]
+        keywords: Annotated[
+            list[str],
+            Field(
+                default_factory=list,
+                description=(
+                    "Arbitrary list of keywords describing the project, for search "
+                    "optimization."
+                ),
+            ),
+        ]
+        classifiers: Annotated[
+            list[str],
+            Field(
+                default_factory=list,
+                description=(
+                    "List of PyPI classifiers (https://pypi.org/classifiers/)."
+                ),
+            ),
+        ]
+        urls: Annotated[
+            dict[URLLabel, URL],
+            Field(
+                default_factory=dict,
+                description=(
+                    "Mapping of URL labels to project URLs (e.g. documentation, "
+                    "source code repository, etc.).  PEP753 defines a standard set "
+                    "of labels that third-party tools may recognize."
+                ),
+            ),
+        ]
+        dependencies: Annotated[
+            list[PEP508Requirement],
+            Field(
+                default_factory=list,
+                description=(
+                    "Python-level dependencies as PEP508 requirement specifiers."
+                ),
+            ),
+        ]
+        optional_dependencies: Annotated[
+            dict[TOMLKey, list[PEP508Requirement]],
+            Field(
+                default_factory=dict,
+                alias="optional-dependencies",
+                description=(
+                    "Mapping of optional dependency groups to further "
+                    "Python-level dependencies.  These follow normal PEP 621 "
+                    "extras semantics (e.g. `pip install myproject[dev]`)."
+                ),
+            ),
+        ]
+        scripts: Annotated[
+            dict[EntrypointName, Entrypoint],
+            Field(
+                default_factory=dict,
+                description=(
+                    "Mapping of console script entry points, where keys are the "
+                    "exposed command names and values are the corresponding "
+                    "importable entry points in 'module:object' format.  ':object' "
+                    "typically points to a 'main' function, which may be "
+                    "implemented in C++."
+                ),
+            ),
+        ]
+        gui_scripts: Annotated[
+            dict[EntrypointName, Entrypoint],
+            Field(
+                default_factory=dict,
+                alias="gui-scripts",
+                description=(
+                    "Mapping of GUI script entry points, where keys are the "
+                    "exposed command names and values are the corresponding "
+                    "importable entry points in 'module:object' format.  These "
+                    "behave similarly to 'scripts', but additionally mount a "
+                    "Wayland socket to allow GUI access from within the container."
+                ),
+            ),
+        ]
+
+        @model_validator(mode="after")
+        def _validate_script_collisions(self) -> Self:
+            collisions = set(self.scripts).intersection(set(self.gui_scripts))
+            if collisions:
+                msg = (
+                    "duplicate script names across 'project.scripts' and "
+                    f"'project.gui-scripts': {', '.join(sorted(collisions))}"
+                )
+                raise ValueError(msg)
+            return self
+
+        def resolve_licenses(self, root: Path) -> None:
+            """Validate referenced license files are readable UTF-8.
+
+            Raises
+            ------
+            OSError
+                If a referenced license file is not UTF-8 encoded.
+            """
+            seen: set[str] = set()
+            for pattern in self.license_files or ():
+                for path in sorted(
+                    (p for p in root.glob(pattern) if p.is_file()),
+                    key=lambda p: p.as_posix(),
+                ):
+                    relative = path.relative_to(root).as_posix()
+                    if relative not in seen:
+                        try:
+                            path.read_text(encoding="utf-8")
+                        except UnicodeDecodeError as err:
+                            msg = (
+                                f"license file is not UTF-8 encoded '{relative}': "
+                                f"{err}"
+                            )
+                            raise OSError(msg) from err
+                        seen.add(relative)
+
+    model_config = ConfigDict(extra="forbid")
+    build_system: Annotated[
+        BuildSystem,
+        Field(default_factory=BuildSystem.model_construct, alias="build-system"),
+    ]
+    project: Project
+
+
 @resource("python", paths={Path("pyproject.toml")})
-class PyProject(Resource):
+class PyProject(Resource[PyProjectModel]):
     """Describe a managed `pyproject.toml` file.
 
     The file is the primary vehicle for configuring a top-level Python project, as
     well as Bertrand itself and its toolchain through the `[tool.bertrand]` table.
     """
-
-    class Model(BaseModel):
-        """Validate the core `pyproject.toml` fields, as defined by PEP 518/621."""
-
-        class BuildSystem(BaseModel):
-            """Validate the `[build-system]` table."""
-
-            @staticmethod
-            def _check_requires(
-                value: list[PEP508Requirement],
-            ) -> list[PEP508Requirement]:
-                if value != ["bertrand"]:
-                    msg = "build-system.requires must be set to ['bertrand']"
-                    raise ValueError(msg)
-                return value
-
-            model_config = ConfigDict(extra="forbid")
-            requires: Annotated[
-                list[PEP508Requirement],
-                AfterValidator(_check_requires),
-                Field(default_factory=lambda: ["bertrand"]),
-            ]
-            build_backend: Annotated[
-                Literal["bertrand.env.build"],
-                Field(default="bertrand.env.build", alias="build-backend"),
-            ]
-
-        class Project(BaseModel):
-            """Validate the `[project]` table."""
-
-            class Author(BaseModel):
-                """Validate entries in the `authors` and `maintainers` lists."""
-
-                model_config = ConfigDict(extra="forbid")
-                name: Annotated[
-                    EmailName | None,
-                    Field(
-                        default=None,
-                        description=(
-                            "Author name, which can be an email local-part but must "
-                            "not contain commas or newlines (to avoid ambiguity when "
-                            "parsing)"
-                        ),
-                    ),
-                ]
-                email: Annotated[
-                    Email | None,
-                    Field(default=None, description="Contact email address"),
-                ]
-
-                @model_validator(mode="after")
-                def _require_name_or_email(self) -> Self:
-                    if self.name is None and self.email is None:
-                        msg = "at least one of 'name' or 'email' must be provided"
-                        raise ValueError(msg)
-                    return self
-
-            model_config = ConfigDict(extra="allow")
-            name: Annotated[
-                PEP508Name,
-                Field(
-                    description=(
-                        "Canonical project name, which is initially seeded from the "
-                        "worktree root directory name, but can be overridden by the "
-                        "user."
-                    ),
-                ),
-            ]
-            version: Annotated[
-                str,
-                Field(
-                    description=(
-                        "Project version string, which should ideally follow semantic "
-                        "versioning (MAJOR.MINOR.MICRO), but is not required to."
-                    ),
-                ),
-            ]
-            requires_python: Annotated[
-                PEP440Requirement,
-                Field(
-                    default=f">={VERSION.python}",
-                    alias="requires-python",
-                    description="Container toolchain's Python version.",
-                ),
-            ]
-            description: Annotated[
-                str | None,
-                Field(
-                    default=None,
-                    description="A short, one-line summary of the project.",
-                ),
-            ]
-            readme: Annotated[
-                PosixPath | None,
-                Field(
-                    default=None,
-                    description=(
-                        "Relative (POSIX) path to the project's README file, starting "
-                        "from the worktree root."
-                    ),
-                ),
-            ]
-            license: Annotated[
-                License | None,
-                Field(
-                    default=None,
-                    description="SPDX license identifier (e.g. MIT, Apache-2.0, etc.).",
-                ),
-            ]
-            license_files: Annotated[
-                list[Glob] | None,
-                Field(
-                    default=None,
-                    alias="license-files",
-                    description=(
-                        "list of relative (POSIX) paths from worktree root to license "
-                        "files, supporting glob patterns."
-                    ),
-                ),
-            ]
-            authors: Annotated[
-                list[Author],
-                Field(default_factory=list, description="List of project authors."),
-            ]
-            maintainers: Annotated[
-                list[Author],
-                Field(default_factory=list, description="List of project maintainers."),
-            ]
-            keywords: Annotated[
-                list[str],
-                Field(
-                    default_factory=list,
-                    description=(
-                        "Arbitrary list of keywords describing the project, for search "
-                        "optimization."
-                    ),
-                ),
-            ]
-            classifiers: Annotated[
-                list[str],
-                Field(
-                    default_factory=list,
-                    description=(
-                        "List of PyPI classifiers (https://pypi.org/classifiers/)."
-                    ),
-                ),
-            ]
-            urls: Annotated[
-                dict[URLLabel, URL],
-                Field(
-                    default_factory=dict,
-                    description=(
-                        "Mapping of URL labels to project URLs (e.g. documentation, "
-                        "source code repository, etc.).  PEP753 defines a standard set "
-                        "of labels that third-party tools may recognize."
-                    ),
-                ),
-            ]
-            dependencies: Annotated[
-                list[PEP508Requirement],
-                Field(
-                    default_factory=list,
-                    description=(
-                        "Python-level dependencies as PEP508 requirement specifiers."
-                    ),
-                ),
-            ]
-            optional_dependencies: Annotated[
-                dict[TOMLKey, list[PEP508Requirement]],
-                Field(
-                    default_factory=dict,
-                    alias="optional-dependencies",
-                    description=(
-                        "Mapping of optional dependency groups to further "
-                        "Python-level dependencies.  These follow normal PEP 621 "
-                        "extras semantics (e.g. `pip install myproject[dev]`)."
-                    ),
-                ),
-            ]
-            scripts: Annotated[
-                dict[EntrypointName, Entrypoint],
-                Field(
-                    default_factory=dict,
-                    description=(
-                        "Mapping of console script entry points, where keys are the "
-                        "exposed command names and values are the corresponding "
-                        "importable entry points in 'module:object' format.  ':object' "
-                        "typically points to a 'main' function, which may be "
-                        "implemented in C++."
-                    ),
-                ),
-            ]
-            gui_scripts: Annotated[
-                dict[EntrypointName, Entrypoint],
-                Field(
-                    default_factory=dict,
-                    alias="gui-scripts",
-                    description=(
-                        "Mapping of GUI script entry points, where keys are the "
-                        "exposed command names and values are the corresponding "
-                        "importable entry points in 'module:object' format.  These "
-                        "behave similarly to 'scripts', but additionally mount a "
-                        "Wayland socket to allow GUI access from within the container."
-                    ),
-                ),
-            ]
-
-            @model_validator(mode="after")
-            def _validate_script_collisions(self) -> Self:
-                collisions = set(self.scripts).intersection(set(self.gui_scripts))
-                if collisions:
-                    msg = (
-                        "duplicate script names across 'project.scripts' and "
-                        f"'project.gui-scripts': {', '.join(sorted(collisions))}"
-                    )
-                    raise ValueError(msg)
-                return self
-
-            def resolve_licenses(self, root: Path) -> None:
-                """Validate referenced license files are readable UTF-8.
-
-                Raises
-                ------
-                OSError
-                    If a referenced license file is not UTF-8 encoded.
-                """
-                seen: set[str] = set()
-                for pattern in self.license_files or ():
-                    for path in sorted(
-                        (p for p in root.glob(pattern) if p.is_file()),
-                        key=lambda p: p.as_posix(),
-                    ):
-                        relative = path.relative_to(root).as_posix()
-                        if relative not in seen:
-                            try:
-                                path.read_text(encoding="utf-8")
-                            except UnicodeDecodeError as err:
-                                msg = (
-                                    f"license file is not UTF-8 encoded '{relative}': "
-                                    f"{err}"
-                                )
-                                raise OSError(msg) from err
-                            seen.add(relative)
-
-        model_config = ConfigDict(extra="forbid")
-        build_system: Annotated[
-            BuildSystem,
-            Field(default_factory=BuildSystem.model_construct, alias="build-system"),
-        ]
-        project: Project
 
     async def init(
         self,
@@ -386,8 +387,8 @@ class PyProject(Resource):
         dict[str, Any]
             Default pyproject configuration data.
         """
-        return self.Model.model_construct(
-            project=self.Model.Project.model_construct(
+        return PyProjectModel.model_construct(
+            project=PyProjectModel.Project.model_construct(
                 name=cli.repo.root.name,
                 version="0.1.0",
             )
@@ -460,15 +461,17 @@ class PyProject(Resource):
 
         return snapshot
 
-    async def validate(self, config: Config, fragment: Any) -> Model | None:
+    async def validate(
+        self, config: Config, fragment: Any
+    ) -> PyProjectModel | None:
         """Validate pyproject configuration.
 
         Returns
         -------
-        Model | None
+        PyProjectModel | None
             Validated pyproject configuration.
         """
-        result = self.Model.model_validate(fragment)
+        result = PyProjectModel.model_validate(fragment)
         result.project.resolve_licenses(config.root)
         return result
 

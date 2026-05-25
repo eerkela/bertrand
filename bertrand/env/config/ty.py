@@ -16,100 +16,101 @@ type TyRuleName = Annotated[str, StringConstraints(strip_whitespace=True, min_le
 type TyRuleSeverity = Literal["ignore", "warn", "error"]
 
 
-@resource("ty")
-class TyConfig(Resource):
-    """A resource describing the `[tool.ty]` table in `pyproject.toml`."""
+class TyConfigModel(BaseModel):
+    """Validate the `[tool.ty]` table."""
 
-    class Model(BaseModel):
-        """Validate the `[tool.ty]` table."""
-
-        class Src(BaseModel):
-            """Validate the `[tool.ty.src]` table."""
-
-            model_config = ConfigDict(extra="allow")
-            include: Annotated[
-                NonEmpty[list[Trimmed]],
-                Field(
-                    default_factory=lambda: [".", "tests"],
-                    description="Relative paths that ty should include in analysis.",
-                ),
-            ]
-            exclude: Annotated[
-                list[Trimmed],
-                Field(
-                    default_factory=list,
-                    description="Explicitly excluded source paths.",
-                ),
-            ]
-            respect_ignore_files: Annotated[
-                bool,
-                Field(
-                    default=True,
-                    alias="respect-ignore-files",
-                    description="Whether ignore files should affect source discovery.",
-                ),
-            ]
-
-        class Analysis(BaseModel):
-            """Validate the `[tool.ty.analysis]` table."""
-
-            model_config = ConfigDict(extra="allow")
-            replace_imports_with_any: Annotated[
-                list[Trimmed],
-                Field(
-                    default_factory=lambda: ["conan.**"],
-                    alias="replace-imports-with-any",
-                    description=(
-                        "Module globs whose imports should be treated as `typing.Any`."
-                    ),
-                ),
-            ]
-
-        class Terminal(BaseModel):
-            """Validate the `[tool.ty.terminal]` table."""
-
-            model_config = ConfigDict(extra="allow")
-            error_on_warning: Annotated[
-                bool,
-                Field(
-                    default=False,
-                    alias="error-on-warning",
-                    description=(
-                        "Whether warnings should produce a non-zero exit status."
-                    ),
-                ),
-            ]
+    class Src(BaseModel):
+        """Validate the `[tool.ty.src]` table."""
 
         model_config = ConfigDict(extra="allow")
-        src: Annotated[
-            Src,
+        include: Annotated[
+            NonEmpty[list[Trimmed]],
             Field(
-                default_factory=Src.model_construct,
-                description="Source-discovery settings for ty.",
+                default_factory=lambda: [".", "tests"],
+                description="Relative paths that ty should include in analysis.",
             ),
         ]
-        analysis: Annotated[
-            Analysis,
+        exclude: Annotated[
+            list[Trimmed],
             Field(
-                default_factory=Analysis.model_construct,
-                description="Type-analysis behavior settings for ty.",
+                default_factory=list,
+                description="Explicitly excluded source paths.",
             ),
         ]
-        rules: Annotated[
-            dict[TyRuleName, TyRuleSeverity],
+        respect_ignore_files: Annotated[
+            bool,
             Field(
-                default_factory=lambda: {
-                    "possibly-unresolved-reference": "error",
-                    "redundant-cast": "warn",
-                    "unused-ignore-comment": "warn",
-                },
-                description="Rule severities keyed by ty rule name.",
+                default=True,
+                alias="respect-ignore-files",
+                description="Whether ignore files should affect source discovery.",
             ),
         ]
-        terminal: Annotated[
-            Terminal,
+
+    class Analysis(BaseModel):
+        """Validate the `[tool.ty.analysis]` table."""
+
+        model_config = ConfigDict(extra="allow")
+        replace_imports_with_any: Annotated[
+            list[Trimmed],
             Field(
-                default_factory=Terminal.model_construct,
-                description="Terminal output and exit-policy settings for ty.",
+                default_factory=lambda: ["conan.**"],
+                alias="replace-imports-with-any",
+                description=(
+                    "Module globs whose imports should be treated as `typing.Any`."
+                ),
             ),
         ]
+
+    class Terminal(BaseModel):
+        """Validate the `[tool.ty.terminal]` table."""
+
+        model_config = ConfigDict(extra="allow")
+        error_on_warning: Annotated[
+            bool,
+            Field(
+                default=False,
+                alias="error-on-warning",
+                description=(
+                    "Whether warnings should produce a non-zero exit status."
+                ),
+            ),
+        ]
+
+    model_config = ConfigDict(extra="allow")
+    src: Annotated[
+        Src,
+        Field(
+            default_factory=Src.model_construct,
+            description="Source-discovery settings for ty.",
+        ),
+    ]
+    analysis: Annotated[
+        Analysis,
+        Field(
+            default_factory=Analysis.model_construct,
+            description="Type-analysis behavior settings for ty.",
+        ),
+    ]
+    rules: Annotated[
+        dict[TyRuleName, TyRuleSeverity],
+        Field(
+            default_factory=lambda: {
+                "possibly-unresolved-reference": "error",
+                "redundant-cast": "warn",
+                "unused-ignore-comment": "warn",
+            },
+            description="Rule severities keyed by ty rule name.",
+        ),
+    ]
+    terminal: Annotated[
+        Terminal,
+        Field(
+            default_factory=Terminal.model_construct,
+            description="Terminal output and exit-policy settings for ty.",
+        ),
+    ]
+
+
+@resource("ty")
+class TyConfig(Resource[TyConfigModel]):
+    """A resource describing the `[tool.ty]` table in `pyproject.toml`."""

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.cli.external._device import device_line, device_payload
+from bertrand.env.cli.external._device import (
+    delete_local_device_inventory,
+    device_line,
+    device_payload,
+    local_device_inventory,
+    upsert_local_device_inventory,
+)
 from bertrand.env.cli.external._runtime import emit_json
 from bertrand.env.cli.external._storage import (
     print_storage_csi_line,
@@ -14,21 +20,16 @@ from bertrand.env.cli.external._storage import (
     storage_osd_line,
 )
 from bertrand.env.cli.external.secret import (
-    add_capability,
-    list_capabilities,
-    local_node_capability_ref,
-    local_node_scope_targets,
-    remove_capability,
+    _add_capability,
+    _list_capabilities,
+    _local_node_capability_ref,
+    _local_node_scope_targets,
+    _remove_capability,
 )
 from bertrand.env.git import INFINITY
 from bertrand.env.kube.api.bootstrap import microk8s_cluster_ready
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.capability.device import (
-    delete_device_inventory,
-    list_device_inventory,
-    refresh_node_resource_slice,
-    upsert_device_inventory,
-)
+from bertrand.env.kube.capability.device import list_device_inventory
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
 from bertrand.env.kube.ceph.capacity import list_storage_node_reports
 from bertrand.env.kube.node import Node
@@ -153,32 +154,37 @@ async def bertrand_node_name_set(*, display_name: str, timeout: float) -> None:
 
 async def _bertrand_node_secret(args: argparse.Namespace) -> None:
     command = args.node_secret_command
-    if command == "add":
-        ref = await local_node_capability_ref(
-            kind=args.kind,
-            capability_id=args.id,
-            timeout=args.timeout,
-        )
-        await add_capability(ref, source=args.source, timeout=args.timeout)
-        return
-    if command == "rm":
-        ref = await local_node_capability_ref(
-            kind=args.kind,
-            capability_id=args.id,
-            timeout=args.timeout,
-        )
-        await remove_capability(ref, timeout=args.timeout)
-        return
-    if command == "list":
-        await list_capabilities(
-            await local_node_scope_targets(timeout=args.timeout),
-            kind=args.kind,
-            json_output=args.json,
-            timeout=args.timeout,
-        )
-        return
-    msg = f"unsupported node secret command: {command!r}"
-    raise ValueError(msg)
+    if command not in {"add", "rm", "list"}:
+        msg = f"unsupported node secret command: {command!r}"
+        raise ValueError(msg)
+    with await Kube.host(timeout=args.timeout) as kube:
+        if command == "add":
+            ref = await _local_node_capability_ref(
+                kube,
+                kind=args.kind,
+                capability_id=args.id,
+                timeout=args.timeout,
+            )
+            await _add_capability(kube, ref, source=args.source, timeout=args.timeout)
+            return
+        if command == "rm":
+            ref = await _local_node_capability_ref(
+                kube,
+                kind=args.kind,
+                capability_id=args.id,
+                timeout=args.timeout,
+            )
+            await _remove_capability(kube, ref, timeout=args.timeout)
+            return
+        if command == "list":
+            await _list_capabilities(
+                kube,
+                await _local_node_scope_targets(kube, timeout=args.timeout),
+                kind=args.kind,
+                json_output=args.json,
+                timeout=args.timeout,
+            )
+            return
 
 
 async def _bertrand_node_device(args: argparse.Namespace) -> None:
@@ -217,12 +223,7 @@ async def bertrand_node_device_list(*, json_output: bool, timeout: float) -> Non
         Maximum Kubernetes request budget in seconds.
     """
     with await Kube.host(timeout=timeout) as kube:
-        node = await ensure_local_bertrand_node(kube, timeout=timeout)
-        records = await list_device_inventory(
-            kube,
-            host_ids=(node.host_id,),
-            timeout=timeout,
-        )
+        records = await local_device_inventory(kube, timeout=timeout)
     payload = [device_payload(record) for record in records]
     if json_output:
         emit_json(payload)
@@ -258,20 +259,12 @@ async def bertrand_node_device_add(
         Maximum Kubernetes request budget in seconds.
     """
     with await Kube.host(timeout=timeout) as kube:
-        node = await ensure_local_bertrand_node(kube, timeout=timeout)
-        record = await upsert_device_inventory(
+        record = await upsert_local_device_inventory(
             kube,
             capability_id=capability_id,
-            host_id=node.host_id,
-            node_name=node.node_name,
             device_name=device_name,
             cdi_selector=cdi_selector,
             attributes=attributes,
-            timeout=timeout,
-        )
-        await refresh_node_resource_slice(
-            kube,
-            node_name=node.node_name,
             timeout=timeout,
         )
     print(device_line(record))
@@ -295,18 +288,10 @@ async def bertrand_node_device_rm(
         Maximum Kubernetes request budget in seconds.
     """
     with await Kube.host(timeout=timeout) as kube:
-        node = await ensure_local_bertrand_node(kube, timeout=timeout)
-        deleted = await delete_device_inventory(
+        deleted = await delete_local_device_inventory(
             kube,
             capability_id=capability_id,
-            host_id=node.host_id,
-            node_name=node.node_name,
             device_name=device_name,
-            timeout=timeout,
-        )
-        await refresh_node_resource_slice(
-            kube,
-            node_name=node.node_name,
             timeout=timeout,
         )
     state = "deleted" if deleted else "not found"

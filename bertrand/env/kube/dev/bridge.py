@@ -30,6 +30,12 @@ BRIDGE_POLL_SECONDS = 0.5
 BRIDGE_API_TIMEOUT_SECONDS = 5.0
 VSCODE_DEV_CONTAINERS_EXTENSION = "ms-vscode-remote.remote-containers"
 VSCODE_KUBERNETES_EXTENSION = "ms-kubernetes-tools.vscode-kubernetes-tools"
+_BRIDGE_STATUS_PATCH_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    ValueError,
+)
 
 
 @dataclass
@@ -146,7 +152,7 @@ class CodeOpenBridge:
             await _open_editor(record)
         except (OSError, RuntimeError, TimeoutError, ValueError) as err:
             message = str(err)
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_BRIDGE_STATUS_PATCH_ERRORS):
                 await patch_code_open_request_status(
                     self.kube,
                     record=record,
@@ -156,7 +162,7 @@ class CodeOpenBridge:
                     timeout=BRIDGE_API_TIMEOUT_SECONDS,
                 )
             return
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(*_BRIDGE_STATUS_PATCH_ERRORS):
             await patch_code_open_request_status(
                 self.kube,
                 record=record,

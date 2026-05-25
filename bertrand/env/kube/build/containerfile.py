@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-    from bertrand.env.config.bertrand import Bertrand
+    from bertrand.env.config.bertrand import BertrandModel
     from bertrand.env.kube.workload.capability import CapabilityRequest
 
 
@@ -29,8 +29,8 @@ class _DependencyCopy:
 
 def project_containerfile(
     root: Path,
-    model: Bertrand.Model,
-    image_config: Bertrand.Model.Image,
+    model: BertrandModel,
+    image_config: BertrandModel.Image,
 ) -> str:
     """Load or render the Containerfile for the configured project image.
 
@@ -38,9 +38,9 @@ def project_containerfile(
     ----------
     root : Path
         Project root directory.
-    model : Bertrand.Model
+    model : BertrandModel
         Bertrand project configuration.
-    image_config : Bertrand.Model.Image
+    image_config : BertrandModel.Image
         Image configuration.
 
     Returns
@@ -66,7 +66,7 @@ def project_containerfile(
     return _render_containerfile(model)
 
 
-def _render_containerfile(model: Bertrand.Model) -> str:
+def _render_containerfile(model: BertrandModel) -> str:
     image_config = model.image
     if image_config.containerfile is not None:
         msg = "cannot render generated Containerfile when a custom one is configured"

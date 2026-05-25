@@ -15,10 +15,10 @@ from typing import (
     Annotated,
     Any,
     ClassVar,
-    Protocol,
     Self,
-    TypeVar,
     cast,
+    get_args,
+    get_origin,
 )
 
 import yaml
@@ -276,7 +276,7 @@ def dump_yaml(payload: dict[str, Any], *, resource_name: str) -> str:
 
 
 @total_ordering
-class Resource:
+class Resource[ModelT: BaseModel]:
     """Represent one parseable or renderable configuration entity.
 
     Attributes
@@ -294,16 +294,33 @@ class Resource:
 
     name: ClassVar[ResourceName]
     paths: ClassVar[frozenset[RelativePath]]
+    _model: ClassVar[type[BaseModel]] = BaseModel
 
-    @classmethod
-    def _model_type(cls) -> type[BaseModel] | None:
-        model = getattr(cls, "Model", None)
-        if model is None:
-            return None
-        if isinstance(model, type) and issubclass(model, BaseModel):
-            return model
-        msg = f"resource {cls.__name__}.Model must be a Pydantic BaseModel subclass"
-        raise TypeError(msg)
+    def __init_subclass__(cls) -> None:
+        """Capture the concrete validation model from the resource type argument.
+
+        Raises
+        ------
+        TypeError
+            If the resource's generic argument is not a Pydantic model subclass.
+        """
+        super().__init_subclass__()
+        cls._model = BaseModel
+        for base in getattr(cls, "__orig_bases__", ()):
+            if get_origin(base) is not Resource:
+                continue
+            args = get_args(base)
+            if len(args) != 1:
+                break
+            model = args[0]
+            if isinstance(model, type) and issubclass(model, BaseModel):
+                cls._model = model
+                return
+            msg = (
+                f"resource {cls.__name__} must parameterize Resource with a "
+                "Pydantic BaseModel subclass"
+            )
+            raise TypeError(msg)
 
     def __hash__(self) -> int:
         """Hash by resource name.
@@ -376,7 +393,8 @@ class Resource:
         always expects to find valid config data from other resources via their
         `parse()` hooks.
         """
-        if (model := self._model_type()) is not None:
+        model = type(self)._model
+        if model is not BaseModel:
             return model.model_construct().model_dump(by_alias=True)
         return {}
 
@@ -417,7 +435,7 @@ class Resource:
         self,
         config: Config,  # noqa: ARG002
         fragment: Any,
-    ) -> BaseModel | None:
+    ) -> ModelT | None:
         """Validate merged `parse()` output for this resource.
 
         Parameters
@@ -445,8 +463,9 @@ class Resource:
         is what allows resources mentioned in config to always be rendered during
         `sync()`, even if their original source files are missing.
         """
-        if (model := self._model_type()) is not None:
-            return model.model_validate(fragment)
+        model = type(self)._model
+        if model is not BaseModel:
+            return cast("ModelT", model.model_validate(fragment))
         return None
 
     async def render(self, config: Config, *, image_build: bool) -> None:
@@ -474,26 +493,33 @@ class Resource:
         Returns
         -------
         dict[str, Any] | None
-            The resource's validation-mode JSON Schema generated from its nested
-            Pydantic `Model` class using alias-aware keys, or None if the resource
-            does not define a `Model`.
+            The resource's validation-mode JSON Schema generated from its captured
+            Pydantic model using alias-aware keys, or None for output-only resources.
 
         Notes
         -----
         This is internal docs infrastructure used to expose authoritative resource
         schemas without coupling to CLI/docsite export behavior.
         """
-        if (model := self._model_type()) is not None:
+        model = type(self)._model
+        if model is not BaseModel:
             return model.model_json_schema(by_alias=True, mode="validation")
         return None
 
 
-RESOURCES: set[Resource] = set()
-RESOURCE_NAMES: dict[ResourceName, Resource] = {}
-RESOURCE_PATHS: dict[RelativePath, Resource] = {}
+RESOURCES: set[Resource[Any]] = set()
+RESOURCE_NAMES: dict[ResourceName, Resource[Any]] = {}
+RESOURCE_PATHS: dict[RelativePath, Resource[Any]] = {}
+HOOK_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    ValueError,
+    RuntimeError,
+    ValidationError,
+    yaml.YAMLError,
+)
 
 
-def resource[ResourceT: Resource](
+def resource[ResourceT: Resource[Any]](
     name: ResourceName,
     *,
     paths: set[RelativePath] | frozenset[RelativePath] = frozenset(),
@@ -561,23 +587,6 @@ def resource[ResourceT: Resource](
     return _decorator
 
 
-_ResourceModel_co = TypeVar("_ResourceModel_co", bound=BaseModel, covariant=True)
-
-
-class _ResourceLike(Protocol[_ResourceModel_co]):
-    """Infer a resource's validated model type.
-
-    The protocol lets `Config.get()` inspect a resource's `validate()` method without
-    requiring a concrete `Resource` subclass.
-    """
-
-    name: ClassVar[ResourceName]
-
-    async def validate(
-        self, config: Config, fragment: Any
-    ) -> _ResourceModel_co | None: ...
-
-
 @dataclass
 class Config:
     """Represent resource placements and parsed config data.
@@ -633,38 +642,34 @@ class Config:
         """
         return self.repo.root / self.worktree
 
-    @staticmethod
-    def _discover_resources(root: Path) -> dict[ResourceName, None]:
-        return {
-            r.name: None
-            for r in RESOURCES
-            if r.paths and all((root / p).exists() for p in r.paths)
-        }
-
     @classmethod
     async def load(
         cls,
-        worktree: Path,
+        root: Path,
         *,
-        kube: Kube,
+        kube: Kube | None = None,
         repo: GitRepository | None = None,
         timeout: float = INFINITY,
     ) -> Self:
-        """Load a worktree configuration.
+        """Load a worktree or standalone configuration root.
 
         This scans the environment root for known resource placements based on their
-        managed paths, then resolves collisions and invalid placements.
+        managed paths, then resolves collisions and invalid placements.  If ``root``
+        belongs to a Git repository, then the resulting config is scoped to that
+        repository worktree.  Otherwise, ``root`` is loaded as a standalone config tree
+        for offline artifact-rendering contexts.
 
         Parameters
         ----------
-        worktree : Path
+        root : Path
             The root path of the environment directory.
-        kube : Kube
-            Active Kubernetes API context used for cluster-wide metadata locking.
+        kube : Kube | None, optional
+            Active Kubernetes API context used for cluster-wide metadata locking.  If
+            omitted, config parsing and rendering run without acquiring a cluster lock.
         repo : GitRepository | None, optional
-            An optional parent git repository containing the worktree, which determines
-            the project root for the environment.  If not provided, then it will be
-            inferred from `worktree`, which must include a repository as a parent.
+            An optional parent git repository containing ``root``, which determines the
+            project root for the environment.  If not provided, then it will be inferred
+            from ``root`` when possible.  Missing repositories select standalone mode.
         timeout : float, optional
             Maximum time to wait for acquiring the worktree lock, in seconds.  If
             infinite, then wait indefinitely for lock acquisition.  Otherwise, if the
@@ -680,97 +685,78 @@ class Config:
 
         Raises
         ------
-        ValueError
-            If the worktree does not belong to a Git repository.
-
-        """
-        worktree = worktree.expanduser().resolve()
-        if repo is None:
-            repo = await GitRepository.discover(worktree)
-            if repo is None:
-                msg = f"no git repository found for worktree: {worktree}"
-                raise ValueError(msg)
-        if not any(wt.path == worktree for wt in await repo.worktrees()):
-            msg = (
-                f"worktree {worktree} is not a valid worktree for repository at "
-                f"{repo.root}"
-            )
-            raise ValueError(msg)
-        if not worktree.is_relative_to(repo.root):
-            msg = (
-                f"worktree {worktree} is not a subdirectory of repository root at "
-                f"{repo.root}"
-            )
-            raise ValueError(msg)
-
-        async with _optional_metadata_lock(
-            kube,
-            repo=repo,
-            worktree=worktree,
-            timeout=timeout,
-        ):
-            self = cls(
-                repo=repo,
-                worktree=worktree.relative_to(repo.root),
-                kube=kube,
-                timeout=timeout,
-            )
-            self.resources.update(cls._discover_resources(worktree))
-            return self
-
-    @classmethod
-    async def load_snapshot(
-        cls,
-        root: Path,
-        *,
-        timeout: float = INFINITY,
-    ) -> Self:
-        """Load config data from a standalone worktree snapshot.
-
-        This loader is for image-build contexts where the source tree has been copied
-        into the image build without Git metadata or Kubernetes credentials. Snapshot
-        configs can parse and render container-local artifacts, but cannot address
-        cluster resources or repository-scoped identities.
-
-        Parameters
-        ----------
-        root : Path
-            Root directory of the copied worktree snapshot.
-        timeout : float, optional
-            Stored operation budget for render hooks. No cluster lock is acquired.
-
-        Returns
-        -------
-        Self
-            A config context ready to parse via ``async with``.
-
-        Raises
-        ------
         FileNotFoundError
-            If ``root`` does not exist.
+            If standalone ``root`` does not exist.
         NotADirectoryError
-            If ``root`` is not a directory.
+            If standalone ``root`` is not a directory.
+        ValueError
+            If an explicit or discovered Git repository does not contain ``root`` as a
+            valid worktree.
+
         """
         root = root.expanduser().resolve()
-        if not root.exists():
-            msg = f"config snapshot root does not exist: {root}"
-            raise FileNotFoundError(msg)
-        if not root.is_dir():
-            msg = f"config snapshot root is not a directory: {root}"
-            raise NotADirectoryError(msg)
+        resources = {
+            r.name: None
+            for r in RESOURCES
+            if r.paths and all((root / p).exists() for p in r.paths)
+        }
+        if repo is None:
+            if not root.exists():
+                msg = f"config root does not exist: {root}"
+                raise FileNotFoundError(msg)
+            if not root.is_dir():
+                msg = f"config root is not a directory: {root}"
+                raise NotADirectoryError(msg)
+            repo = await GitRepository.discover(root)
+            if repo is None:
+                self = cls(
+                    repo=GitRepository(root / ".git"),
+                    worktree=Path(),
+                    kube=kube,
+                    timeout=timeout,
+                )
+                self.resources.update(resources)
+                async with self._metadata_lock():
+                    return self
+
+        if not any(wt.path == root for wt in await repo.worktrees()):
+            msg = (
+                f"worktree {root} is not a valid worktree for repository at "
+                f"{repo.root}"
+            )
+            raise ValueError(msg)
+        if not root.is_relative_to(repo.root):
+            msg = (
+                f"worktree {root} is not a subdirectory of repository root at "
+                f"{repo.root}"
+            )
+            raise ValueError(msg)
 
         self = cls(
-            repo=GitRepository(root / ".git"),
-            worktree=Path(),
-            kube=None,
+            repo=repo,
+            worktree=root.relative_to(repo.root),
+            kube=kube,
             timeout=timeout,
         )
-        self.resources.update(cls._discover_resources(root))
-        return self
+        self.resources.update(resources)
+        async with self._metadata_lock():
+            return self
+
+    @asynccontextmanager
+    async def _metadata_lock(self) -> AsyncIterator[None]:
+        if self.kube is None:
+            yield
+            return
+        async with ClusterLock(
+            self.kube,
+            _metadata_lock_key(self.repo, self.root),
+            timeout=self.timeout,
+        ):
+            yield
 
     def _merge_fragment(
         self,
-        r: Resource,
+        r: Resource[Any],
         fragment: dict[Any, Any],
         snapshot: dict[str, Any],
         *,
@@ -824,11 +810,11 @@ class Config:
 
     async def _parse_resource(
         self,
-        r: Resource,
+        r: Resource[Any],
     ) -> dict[str, dict[str, Any]]:
         try:
             fragment = await r.parse(self)
-        except Exception as err:
+        except HOOK_ERRORS as err:
             msg = f"failed to parse resource {r.name!r}: {err}"
             raise OSError(msg) from err
         if not isinstance(fragment, dict):
@@ -841,7 +827,7 @@ class Config:
 
     def _merge_resource_snapshot(
         self,
-        r: Resource,
+        r: Resource[Any],
         fragment: dict[str, dict[str, Any]],
         snapshot: dict[str, Any],
         key_owner: dict[tuple[str, ...], ResourceName],
@@ -912,12 +898,7 @@ class Config:
 
         old_resources = self.resources.copy()
         try:
-            async with _optional_metadata_lock(
-                self.kube,
-                repo=self.repo,
-                worktree=self.root,
-                timeout=self.timeout,
-            ):
+            async with self._metadata_lock():
                 snapshot = await self._init_snapshot()
                 await self._parse_snapshot(snapshot)
                 await self._validate_snapshot(snapshot)
@@ -981,7 +962,9 @@ class Config:
             return self.root == other.root
         return NotImplemented
 
-    def __contains__(self, key: ResourceName | Resource | type[Resource]) -> bool:
+    def __contains__(
+        self, key: ResourceName | Resource[Any] | type[Resource[Any]]
+    ) -> bool:
         """Check if a resource ID is present in the environment.
 
         Parameters
@@ -1002,10 +985,10 @@ class Config:
             key = key.name
         return key in self.resources
 
-    def get(
+    def get[ResourceModel: BaseModel](
         self,
-        r: _ResourceLike[_ResourceModel_co] | type[_ResourceLike[_ResourceModel_co]],
-    ) -> _ResourceModel_co | None:
+        r: Resource[ResourceModel] | type[Resource[ResourceModel]],
+    ) -> ResourceModel | None:
         """Retrieve the parsed config model for the given resource ID.
 
         This assumes the resource is present in the environment.
@@ -1023,7 +1006,7 @@ class Config:
             matches the return type of the resource's `validate()` method, in order to
             safely propagate static type information.
         """
-        return cast("_ResourceModel_co | None", self.resources.get(r.name))
+        return cast("ResourceModel | None", self.resources.get(r.name))
 
     @staticmethod
     async def schema() -> dict[ResourceName, dict[str, Any] | None]:
@@ -1067,35 +1050,11 @@ class Config:
             raise RuntimeError(msg)
 
         # invoke render hooks for all resources in deterministic order
-        async with _optional_metadata_lock(
-            self.kube,
-            repo=self.repo,
-            worktree=self.root,
-            timeout=self.timeout,
-        ):
+        async with self._metadata_lock():
             for name in sorted(self.resources):
                 r = RESOURCE_NAMES[name]
                 try:
                     await r.render(self, image_build=image_build)
-                except Exception as err:
+                except HOOK_ERRORS as err:
                     msg = f"failed to render resource '{r.name}': {err}"
                     raise OSError(msg) from err
-
-
-@asynccontextmanager
-async def _optional_metadata_lock(
-    kube: Kube | None,
-    *,
-    repo: GitRepository,
-    worktree: Path,
-    timeout: float,
-) -> AsyncIterator[None]:
-    if kube is None:
-        yield
-        return
-    async with ClusterLock(
-        kube,
-        _metadata_lock_key(repo, worktree),
-        timeout=timeout,
-    ):
-        yield

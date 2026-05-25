@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Self
 
 import kubernetes
 from kubernetes.client.rest import ApiException
+from kubernetes.config.config_exception import ConfigException
 
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.bootstrap import (
@@ -25,6 +26,25 @@ if TYPE_CHECKING:
 
 CLUSTER_REGISTRY_READY_LABEL = "bertrand.dev/registry-ready"
 CLUSTER_REGISTRY_READY_VALUE = "true"
+_KUBE_CONFIG_ERRORS = (ConfigException, OSError, ValueError)
+
+
+def _client_from_config(config_file: Path) -> kubernetes.client.ApiClient:
+    try:
+        return kubernetes.config.new_client_from_config(config_file=str(config_file))
+    except _KUBE_CONFIG_ERRORS as err:
+        msg = f"failed to initialize kubernetes client from {config_file}: {err}"
+        raise OSError(msg) from err
+
+
+def _incluster_configuration() -> kubernetes.client.Configuration:
+    configuration = kubernetes.client.Configuration()
+    try:
+        kubernetes.config.load_incluster_config(client_configuration=configuration)
+    except _KUBE_CONFIG_ERRORS as err:
+        msg = f"failed to load in-cluster kubernetes configuration: {err}"
+        raise OSError(msg) from err
+    return configuration
 
 
 class KubeApiError(OSError):
@@ -100,7 +120,17 @@ class Kube:
     coordination: kubernetes.client.CoordinationV1Api = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Initialize typed Kubernetes API handles from the shared transport."""
+        """Initialize typed Kubernetes API handles from the shared transport.
+
+        Raises
+        ------
+        AttributeError
+            If the API client is missing attributes required by Kubernetes wrappers.
+        TypeError
+            If the API client cannot be used to construct Kubernetes wrappers.
+        ValueError
+            If the API client is rejected while constructing Kubernetes wrappers.
+        """
         try:
             self.core = kubernetes.client.CoreV1Api(self.client)
             self.apps = kubernetes.client.AppsV1Api(self.client)
@@ -112,8 +142,8 @@ class Kube:
             self.storage = kubernetes.client.StorageV1Api(self.client)
             self.events = kubernetes.client.EventsV1Api(self.client)
             self.coordination = kubernetes.client.CoordinationV1Api(self.client)
-        except Exception:
-            with suppress(Exception):
+        except (AttributeError, TypeError, ValueError):
+            with suppress(OSError, RuntimeError, ValueError):
                 self.client.close()
             raise
 
@@ -153,16 +183,7 @@ class Kube:
                 "to converge MicroK8s API access first."
             )
             raise OSError(msg)
-        try:
-            return cls(
-                namespace=namespace,
-                client=kubernetes.config.new_client_from_config(
-                    config_file=str(config_file)
-                ),
-            )
-        except Exception as err:
-            msg = f"failed to initialize kubernetes client from {config_file}: {err}"
-            raise OSError(msg) from err
+        return cls(namespace=namespace, client=_client_from_config(config_file))
 
     @classmethod
     async def host(
@@ -226,16 +247,7 @@ class Kube:
             )
             raise OSError(msg)
 
-        try:
-            return cls(
-                namespace=namespace,
-                client=kubernetes.config.new_client_from_config(
-                    config_file=str(config_file)
-                ),
-            )
-        except Exception as err:
-            msg = f"failed to initialize kubernetes client from {config_file}: {err}"
-            raise OSError(msg) from err
+        return cls(namespace=namespace, client=_client_from_config(config_file))
 
     @classmethod
     def inside_cluster(
@@ -256,18 +268,8 @@ class Kube:
         Kube
             Configured in-cluster Kubernetes API wrapper.
 
-        Raises
-        ------
-        OSError
-            If in-cluster configuration cannot be loaded.
         """
-        configuration = kubernetes.client.Configuration()
-        try:
-            kubernetes.config.load_incluster_config(client_configuration=configuration)
-        except Exception as err:
-            msg = f"failed to load in-cluster kubernetes configuration: {err}"
-            raise OSError(msg) from err
-
+        configuration = _incluster_configuration()
         resolved_namespace = namespace
         if resolved_namespace is None:
             namespace_path = Path(

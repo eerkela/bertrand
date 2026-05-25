@@ -89,6 +89,9 @@ def _warn(message: str) -> None:
     print(f"bertrand: warning: {message}", file=sys.stderr)
 
 
+_CLEAN_ERROR_TYPES = (OSError, RuntimeError, ValueError)
+
+
 async def _clean_repo_mounts_aliases(state: CleanState) -> None:
     if state.kube is not None and state.host_id is not None:
         # This is the only durable cluster mutation in `bertrand clean`: retire
@@ -265,7 +268,7 @@ async def _run_clean_stages(state: CleanState) -> None:
             await stage(state)
         except asyncio.CancelledError:
             raise
-        except Exception as err:
+        except _CLEAN_ERROR_TYPES as err:
             if not state.force or i == len(CLEAN_STAGES) - 1:
                 msg = f"bertrand clean stage {name!r} failed: {err}"
                 raise OSError(msg) from err
@@ -325,7 +328,7 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
     kube: Kube | None = None
     try:
         kube = await Kube.host(timeout=deadline.remaining())
-    except Exception as err:
+    except _CLEAN_ERROR_TYPES as err:
         if not force:
             msg = (
                 "failed to connect to the shared Bertrand Kubernetes runtime for "

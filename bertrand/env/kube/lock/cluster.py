@@ -30,6 +30,12 @@ CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS = 5.0
 CLUSTER_LOCK_NAME_HEX_LENGTH = 48
 CLUSTER_LOCK_GUARD = threading.RLock()
 CLUSTER_LOCKS: dict[tuple[int, str, str], ClusterLock] = {}
+_CLUSTER_LOCK_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    ValueError,
+)
 
 
 class ClusterLock:
@@ -324,13 +330,13 @@ class ClusterLock:
                 )
                 if lease is None:
                     msg = f"cluster lock Lease {self.namespace}/{self.name} disappeared"
-                    raise OSError(msg)  # noqa: TRY301
+                    raise OSError(msg)
                 if lease.holder != self._holder:
                     msg = (
                         f"cluster lock Lease {self.namespace}/{self.name} ownership "
                         f"was lost to {lease.holder!r}"
                     )
-                    raise OSError(msg)  # noqa: TRY301
+                    raise OSError(msg)
                 renewed = await self._replace_lease(
                     lease,
                     datetime.now(UTC),
@@ -342,10 +348,10 @@ class ClusterLock:
                         f"cluster lock Lease {self.namespace}/{self.name} renewal "
                         "encountered a conflict"
                     )
-                    raise OSError(msg)  # noqa: TRY301
+                    raise OSError(msg)
             except asyncio.CancelledError:
                 raise
-            except Exception as err:  # noqa: BLE001
+            except _CLUSTER_LOCK_ERRORS as err:
                 self._renew_error = err
                 return
 
@@ -411,7 +417,7 @@ class ClusterLock:
                 raise TimeoutError(msg)
             return self  # noqa: TRY300
         except OSError:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_CLUSTER_LOCK_ERRORS):
                 await self._stop_renew_loop()
             self._clear_owner(owner=owner)
             raise
@@ -443,7 +449,7 @@ class ClusterLock:
         try:
             acquired = await self._try_acquire_lease(CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS)
         except OSError:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(*_CLUSTER_LOCK_ERRORS):
                 await self._stop_renew_loop()
             self._clear_owner(owner=owner)
             raise

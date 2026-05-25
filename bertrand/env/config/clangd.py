@@ -18,50 +18,252 @@ from bertrand.env.git import CONTAINER_ARTIFACT_MOUNT, atomic_write_text
 from .core import Config, NoCRLF, NonEmpty, RegexPattern, Resource, dump_yaml, resource
 
 
-@resource("clangd")
-class Clangd(Resource):
-    """Describe a `.clangd` configuration file.
+class ClangdModel(BaseModel):
+    """Validate the `[clangd]` table."""
 
-    This expects native clangd keys in `[tool.clangd]`; legacy `arguments` aliasing
-    is intentionally unsupported.
-    """
+    class _Diagnostics(BaseModel):
+        """Validate the `[tool.clangd.diagnostics]` table."""
 
-    class Model(BaseModel):
-        """Validate the `[clangd]` table."""
+        model_config = ConfigDict(extra="forbid")
+        UnusedIncludes: Annotated[
+            Literal["None", "Strict"],
+            Field(
+                default="Strict",
+                examples=["None", "Strict"],
+                description="Warn on unused #include directives.",
+            ),
+        ]
+        MissingIncludes: Annotated[
+            Literal["None", "Strict"],
+            Field(
+                default="Strict",
+                examples=["None", "Strict"],
+                description=(
+                    "Warn on missing #include directives, including transitive "
+                    "ones that are inherited from earlier includes, but are not "
+                    "explicitly listed."
+                ),
+            ),
+        ]
+        Suppress: Annotated[
+            list[NoCRLF],
+            Field(
+                default_factory=list,
+                description=(
+                    "List of diagnostics to suppress by code/category.  Note that "
+                    "this also includes clang-tidy rules that will be excluded "
+                    "from syntax highlighting.  '*' can be used to turn off all "
+                    "diagnostics."
+                ),
+            ),
+        ]
+
+    class _Completion(BaseModel):
+        """Validate the `[tool.clangd.completion]` table."""
+
+        model_config = ConfigDict(extra="forbid")
+        AllScopes: Annotated[
+            bool,
+            Field(
+                default=True,
+                description=(
+                    "Whether code completion should include suggestions from "
+                    "scopes that are not directly visible.  The required scope "
+                    "prefix will be automatically inserted."
+                ),
+            ),
+        ]
+        ArgumentLists: Annotated[
+            Literal["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"],
+            Field(
+                default="Delimiters",
+                examples=[
+                    "None",
+                    "OpenDelimiter",
+                    "Delimiters",
+                    "FullPlaceholders",
+                ],
+                description=(
+                    "Determines what is inserted in argument list position when "
+                    "completing a call to a function.  Some examples:\n   - `None`:"
+                    " `fo^` -> `foo^`\n   - `OpenDelimiter`: `fo^` -> `foo(^`\n   -"
+                    " `Delimiters`: `fo^` -> `foo(^)`\n   - `FullPlaceholders`: "
+                    "`fo^` -> `foo(int arg)`, with `int arg` selected\n"
+                ),
+            ),
+        ]
+        HeaderInsertion: Annotated[
+            Literal["Never", "IWYU"],
+            Field(
+                default="IWYU",
+                examples=["Never", "IWYU"],
+                description=(
+                    "Control whether clangd should automatically insert missing "
+                    "#include directives when completing symbols.  If set to "
+                    "`IWYU` (Include What You Use), clangd will insert headers for "
+                    "symbols that are referenced in the current file, but are not "
+                    "already included."
+                ),
+            ),
+        ]
+        CodePatterns: Annotated[
+            Literal["None", "All"],
+            Field(
+                default="All",
+                examples=["None", "All"],
+                description=(
+                    "Control whether code completion should include snippets that "
+                    "insert multiple tokens or lines of code.  Setting this to "
+                    "`None` restricts completions to single identifiers or member "
+                    "accesses, while `All` allows clangd to suggest more complex "
+                    "code patterns."
+                ),
+            ),
+        ]
+
+    class _InlayHints(BaseModel):
+        """Validate the `[tool.clangd.inlay-hints]` table."""
+
+        model_config = ConfigDict(extra="forbid")
+        Enabled: Annotated[
+            bool,
+            Field(
+                default=True,
+                description=(
+                    "Enable inlay hints, which are inline annotations shown in the "
+                    "editor for various code elements, such as parameter names."
+                ),
+            ),
+        ]
+        ParameterNames: Annotated[
+            bool,
+            Field(
+                default=True,
+                description=(
+                    "Show parameter name hints for arguments in function calls."
+                ),
+            ),
+        ]
+        DeducedTypes: Annotated[
+            bool,
+            Field(
+                default=True,
+                description=(
+                    "Show deduced type hints for variables declared with `auto`."
+                ),
+            ),
+        ]
+        Designators: Annotated[
+            bool,
+            Field(
+                default=True,
+                description=(
+                    "Show name/index hints for elements of braced initializers."
+                ),
+            ),
+        ]
+        BlockEnd: Annotated[
+            bool,
+            Field(
+                default=False,
+                description=(
+                    "Show block end hints that indicate which code block a closing "
+                    "brace corresponds to."
+                ),
+            ),
+        ]
+        DefaultArguments: Annotated[
+            bool,
+            Field(
+                default=False,
+                description=(
+                    "Show default value hints for implicit function parameters."
+                ),
+            ),
+        ]
+        TypeNameLimit: Annotated[
+            NonNegativeInt,
+            Field(
+                default=24,
+                description="Limit the maximum length of type inlay hints.",
+            ),
+        ]
+
+    class _Hover(BaseModel):
+        """Validate the `[tool.clangd.hover]` table."""
+
+        model_config = ConfigDict(extra="forbid")
+        ShowAKA: Annotated[
+            bool,
+            Field(
+                default=True,
+                description=(
+                    "Resolve type aliases and show their desugared names in hover "
+                    "tooltips."
+                ),
+            ),
+        ]
+        MacroContentsLimit: Annotated[
+            NonNegativeInt,
+            Field(
+                default=2048,
+                description=(
+                    "Limit the maximum length of macro contents in hover tooltips."
+                ),
+            ),
+        ]
+
+    class _Documentation(BaseModel):
+        """Validate the `[tool.clangd.documentation]` table."""
+
+        model_config = ConfigDict(extra="forbid")
+        CommentFormat: Annotated[
+            Literal["PlainText", "Markdown", "Doxygen"],
+            Field(
+                default="Doxygen",
+                examples=["PlainText", "Markdown", "Doxygen"],
+                description=(
+                    "Control the format of documentation comments in hover "
+                    "tooltips.  Doxygen format is a superset of the previous two, "
+                    "and supports rich formatting, but PlainText or Markdown can "
+                    "be used to disable formatting if it causes issues in some "
+                    "editors."
+                ),
+            ),
+        ]
+
+    class _If(BaseModel):
+        """Validate the `[[tool.clangd.if]]` AoT."""
 
         class _Diagnostics(BaseModel):
             """Validate the `[tool.clangd.diagnostics]` table."""
 
             model_config = ConfigDict(extra="forbid")
             UnusedIncludes: Annotated[
-                Literal["None", "Strict"],
+                Literal["None", "Strict"] | None,
                 Field(
-                    default="Strict",
+                    default=None,
                     examples=["None", "Strict"],
-                    description="Warn on unused #include directives.",
+                    description="See global 'Diagnostics.UnusedIncludes' option.",
                 ),
             ]
             MissingIncludes: Annotated[
-                Literal["None", "Strict"],
+                Literal["None", "Strict"] | None,
                 Field(
-                    default="Strict",
+                    default=None,
                     examples=["None", "Strict"],
-                    description=(
-                        "Warn on missing #include directives, including transitive "
-                        "ones that are inherited from earlier includes, but are not "
-                        "explicitly listed."
-                    ),
+                    description="See global 'Diagnostics.MissingIncludes' option.",
                 ),
             ]
             Suppress: Annotated[
-                list[NoCRLF],
+                NonEmpty[list[NoCRLF]] | None,
                 Field(
-                    default_factory=list,
+                    default=None,
                     description=(
-                        "List of diagnostics to suppress by code/category.  Note that "
-                        "this also includes clang-tidy rules that will be excluded "
-                        "from syntax highlighting.  '*' can be used to turn off all "
-                        "diagnostics."
+                        "See global 'Diagnostics.Suppress' option.  Note that this "
+                        "is additive to the global list, so it can only be used to "
+                        "suppress additional diagnostics, not to re-enable "
+                        "diagnostics that are turned off globally."
                     ),
                 ),
             ]
@@ -71,61 +273,40 @@ class Clangd(Resource):
 
             model_config = ConfigDict(extra="forbid")
             AllScopes: Annotated[
-                bool,
+                bool | None,
                 Field(
-                    default=True,
-                    description=(
-                        "Whether code completion should include suggestions from "
-                        "scopes that are not directly visible.  The required scope "
-                        "prefix will be automatically inserted."
-                    ),
+                    default=None,
+                    description="See global 'Completion.AllScopes' option.",
                 ),
             ]
             ArgumentLists: Annotated[
-                Literal["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"],
+                Literal["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"]
+                | None,
                 Field(
-                    default="Delimiters",
+                    default=None,
                     examples=[
                         "None",
                         "OpenDelimiter",
                         "Delimiters",
                         "FullPlaceholders",
                     ],
-                    description=(
-                        "Determines what is inserted in argument list position when "
-                        "completing a call to a function.  Some examples:\n   - `None`:"
-                        " `fo^` -> `foo^`\n   - `OpenDelimiter`: `fo^` -> `foo(^`\n   -"
-                        " `Delimiters`: `fo^` -> `foo(^)`\n   - `FullPlaceholders`: "
-                        "`fo^` -> `foo(int arg)`, with `int arg` selected\n"
-                    ),
+                    description="See global 'Completion.ArgumentLists' option.",
                 ),
             ]
             HeaderInsertion: Annotated[
-                Literal["Never", "IWYU"],
+                Literal["Never", "IWYU"] | None,
                 Field(
-                    default="IWYU",
+                    default=None,
                     examples=["Never", "IWYU"],
-                    description=(
-                        "Control whether clangd should automatically insert missing "
-                        "#include directives when completing symbols.  If set to "
-                        "`IWYU` (Include What You Use), clangd will insert headers for "
-                        "symbols that are referenced in the current file, but are not "
-                        "already included."
-                    ),
+                    description="See global 'Completion.HeaderInsertion' option.",
                 ),
             ]
             CodePatterns: Annotated[
-                Literal["None", "All"],
+                Literal["None", "All"] | None,
                 Field(
-                    default="All",
+                    default=None,
                     examples=["None", "All"],
-                    description=(
-                        "Control whether code completion should include snippets that "
-                        "insert multiple tokens or lines of code.  Setting this to "
-                        "`None` restricts completions to single identifiers or member "
-                        "accesses, while `All` allows clangd to suggest more complex "
-                        "code patterns."
-                    ),
+                    description="See global 'Completion.CodePatterns' option.",
                 ),
             ]
 
@@ -134,66 +315,52 @@ class Clangd(Resource):
 
             model_config = ConfigDict(extra="forbid")
             Enabled: Annotated[
-                bool,
+                bool | None,
                 Field(
-                    default=True,
-                    description=(
-                        "Enable inlay hints, which are inline annotations shown in the "
-                        "editor for various code elements, such as parameter names."
-                    ),
+                    default=None,
+                    description="See global 'InlayHints.Enabled' option.",
                 ),
             ]
             ParameterNames: Annotated[
-                bool,
+                bool | None,
                 Field(
-                    default=True,
-                    description=(
-                        "Show parameter name hints for arguments in function calls."
-                    ),
+                    default=None,
+                    description="See global 'InlayHints.ParameterNames' option.",
                 ),
             ]
             DeducedTypes: Annotated[
-                bool,
+                bool | None,
                 Field(
-                    default=True,
-                    description=(
-                        "Show deduced type hints for variables declared with `auto`."
-                    ),
+                    default=None,
+                    description="See global 'InlayHints.DeducedTypes' option.",
                 ),
             ]
             Designators: Annotated[
-                bool,
+                bool | None,
                 Field(
-                    default=True,
-                    description=(
-                        "Show name/index hints for elements of braced initializers."
-                    ),
+                    default=None,
+                    description="See global 'InlayHints.Designators' option.",
                 ),
             ]
             BlockEnd: Annotated[
-                bool,
+                bool | None,
                 Field(
-                    default=False,
-                    description=(
-                        "Show block end hints that indicate which code block a closing "
-                        "brace corresponds to."
-                    ),
+                    default=None,
+                    description="See global 'InlayHints.BlockEnd' option.",
                 ),
             ]
             DefaultArguments: Annotated[
-                bool,
+                bool | None,
                 Field(
-                    default=False,
-                    description=(
-                        "Show default value hints for implicit function parameters."
-                    ),
+                    default=None,
+                    description="See global 'InlayHints.DefaultArguments' option.",
                 ),
             ]
             TypeNameLimit: Annotated[
-                NonNegativeInt,
+                NonNegativeInt | None,
                 Field(
-                    default=24,
-                    description="Limit the maximum length of type inlay hints.",
+                    default=None,
+                    description="See global 'InlayHints.TypeNameLimit' option.",
                 ),
             ]
 
@@ -202,22 +369,17 @@ class Clangd(Resource):
 
             model_config = ConfigDict(extra="forbid")
             ShowAKA: Annotated[
-                bool,
+                bool | None,
                 Field(
-                    default=True,
-                    description=(
-                        "Resolve type aliases and show their desugared names in hover "
-                        "tooltips."
-                    ),
+                    default=None,
+                    description="See global 'Hover.ShowAKA' option.",
                 ),
             ]
             MacroContentsLimit: Annotated[
-                NonNegativeInt,
+                NonNegativeInt | None,
                 Field(
-                    default=2048,
-                    description=(
-                        "Limit the maximum length of macro contents in hover tooltips."
-                    ),
+                    default=None,
+                    description="See global 'Hover.MacroContentsLimit' option.",
                 ),
             ]
 
@@ -226,330 +388,155 @@ class Clangd(Resource):
 
             model_config = ConfigDict(extra="forbid")
             CommentFormat: Annotated[
-                Literal["PlainText", "Markdown", "Doxygen"],
+                Literal["PlainText", "Markdown", "Doxygen"] | None,
                 Field(
-                    default="Doxygen",
+                    default=None,
                     examples=["PlainText", "Markdown", "Doxygen"],
-                    description=(
-                        "Control the format of documentation comments in hover "
-                        "tooltips.  Doxygen format is a superset of the previous two, "
-                        "and supports rich formatting, but PlainText or Markdown can "
-                        "be used to disable formatting if it causes issues in some "
-                        "editors."
-                    ),
+                    description="See global 'Documentation.CommentFormat' option.",
                 ),
             ]
-
-        class _If(BaseModel):
-            """Validate the `[[tool.clangd.if]]` AoT."""
-
-            class _Diagnostics(BaseModel):
-                """Validate the `[tool.clangd.diagnostics]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                UnusedIncludes: Annotated[
-                    Literal["None", "Strict"] | None,
-                    Field(
-                        default=None,
-                        examples=["None", "Strict"],
-                        description="See global 'Diagnostics.UnusedIncludes' option.",
-                    ),
-                ]
-                MissingIncludes: Annotated[
-                    Literal["None", "Strict"] | None,
-                    Field(
-                        default=None,
-                        examples=["None", "Strict"],
-                        description="See global 'Diagnostics.MissingIncludes' option.",
-                    ),
-                ]
-                Suppress: Annotated[
-                    NonEmpty[list[NoCRLF]] | None,
-                    Field(
-                        default=None,
-                        description=(
-                            "See global 'Diagnostics.Suppress' option.  Note that this "
-                            "is additive to the global list, so it can only be used to "
-                            "suppress additional diagnostics, not to re-enable "
-                            "diagnostics that are turned off globally."
-                        ),
-                    ),
-                ]
-
-            class _Completion(BaseModel):
-                """Validate the `[tool.clangd.completion]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                AllScopes: Annotated[
-                    bool | None,
-                    Field(
-                        default=None,
-                        description="See global 'Completion.AllScopes' option.",
-                    ),
-                ]
-                ArgumentLists: Annotated[
-                    Literal["None", "OpenDelimiter", "Delimiters", "FullPlaceholders"]
-                    | None,
-                    Field(
-                        default=None,
-                        examples=[
-                            "None",
-                            "OpenDelimiter",
-                            "Delimiters",
-                            "FullPlaceholders",
-                        ],
-                        description="See global 'Completion.ArgumentLists' option.",
-                    ),
-                ]
-                HeaderInsertion: Annotated[
-                    Literal["Never", "IWYU"] | None,
-                    Field(
-                        default=None,
-                        examples=["Never", "IWYU"],
-                        description="See global 'Completion.HeaderInsertion' option.",
-                    ),
-                ]
-                CodePatterns: Annotated[
-                    Literal["None", "All"] | None,
-                    Field(
-                        default=None,
-                        examples=["None", "All"],
-                        description="See global 'Completion.CodePatterns' option.",
-                    ),
-                ]
-
-            class _InlayHints(BaseModel):
-                """Validate the `[tool.clangd.inlay-hints]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                Enabled: Annotated[
-                    bool | None,
-                    Field(
-                        default=None,
-                        description="See global 'InlayHints.Enabled' option.",
-                    ),
-                ]
-                ParameterNames: Annotated[
-                    bool | None,
-                    Field(
-                        default=None,
-                        description="See global 'InlayHints.ParameterNames' option.",
-                    ),
-                ]
-                DeducedTypes: Annotated[
-                    bool | None,
-                    Field(
-                        default=None,
-                        description="See global 'InlayHints.DeducedTypes' option.",
-                    ),
-                ]
-                Designators: Annotated[
-                    bool | None,
-                    Field(
-                        default=None,
-                        description="See global 'InlayHints.Designators' option.",
-                    ),
-                ]
-                BlockEnd: Annotated[
-                    bool | None,
-                    Field(
-                        default=None,
-                        description="See global 'InlayHints.BlockEnd' option.",
-                    ),
-                ]
-                DefaultArguments: Annotated[
-                    bool | None,
-                    Field(
-                        default=None,
-                        description="See global 'InlayHints.DefaultArguments' option.",
-                    ),
-                ]
-                TypeNameLimit: Annotated[
-                    NonNegativeInt | None,
-                    Field(
-                        default=None,
-                        description="See global 'InlayHints.TypeNameLimit' option.",
-                    ),
-                ]
-
-            class _Hover(BaseModel):
-                """Validate the `[tool.clangd.hover]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                ShowAKA: Annotated[
-                    bool | None,
-                    Field(
-                        default=None,
-                        description="See global 'Hover.ShowAKA' option.",
-                    ),
-                ]
-                MacroContentsLimit: Annotated[
-                    NonNegativeInt | None,
-                    Field(
-                        default=None,
-                        description="See global 'Hover.MacroContentsLimit' option.",
-                    ),
-                ]
-
-            class _Documentation(BaseModel):
-                """Validate the `[tool.clangd.documentation]` table."""
-
-                model_config = ConfigDict(extra="forbid")
-                CommentFormat: Annotated[
-                    Literal["PlainText", "Markdown", "Doxygen"] | None,
-                    Field(
-                        default=None,
-                        examples=["PlainText", "Markdown", "Doxygen"],
-                        description="See global 'Documentation.CommentFormat' option.",
-                    ),
-                ]
-
-            model_config = ConfigDict(extra="forbid")
-            PathMatch: Annotated[
-                NonEmpty[list[RegexPattern]],
-                Field(
-                    description=(
-                        "List of regex patterns to enable this configuration block.  "
-                        "If any pattern matches, the configuration will be applied.  "
-                        "If multiple `[[tool.clangd.if]]` entries match, their "
-                        "configurations will be merged, with later entries taking "
-                        "precedence."
-                    ),
-                ),
-            ]
-            PathExclude: Annotated[
-                list[RegexPattern],
-                Field(
-                    default_factory=list,
-                    description=(
-                        "List of regex patterns to exclude from this configuration "
-                        "block.  If any pattern matches, the configuration will not be "
-                        "applied, even if `PathMatch` matches.  This allows for "
-                        "fine-grained control to apply configurations to specific "
-                        "subdirectories or files within a larger codebase."
-                    ),
-                ),
-            ]
-            Diagnostics: Annotated[
-                _Diagnostics | None,
-                Field(
-                    default=None,
-                    description=(
-                        "clangd diagnostics options for this conditional block."
-                    ),
-                ),
-            ]
-            Completion: Annotated[
-                _Completion | None,
-                Field(
-                    default=None,
-                    description=(
-                        "clangd code completion options for this conditional block."
-                    ),
-                ),
-            ]
-            InlayHints: Annotated[
-                _InlayHints | None,
-                Field(
-                    default=None,
-                    description=(
-                        "clangd inlay hints options for this conditional block."
-                    ),
-                ),
-            ]
-            Hover: Annotated[
-                _Hover | None,
-                Field(
-                    default=None,
-                    description="clangd hover options for this conditional block.",
-                ),
-            ]
-            Documentation: Annotated[
-                _Documentation | None,
-                Field(
-                    default=None,
-                    description=(
-                        "clangd documentation options for this conditional block."
-                    ),
-                ),
-            ]
-
-            @model_validator(mode="after")
-            def _validate_nonempty(self) -> Self:
-                if (
-                    self.Diagnostics is None
-                    and self.Completion is None
-                    and self.InlayHints is None
-                    and self.Hover is None
-                    and self.Documentation is None
-                ):
-                    msg = (
-                        "each [[tool.clangd.if]] entry must define at least one "
-                        "of 'Diagnostics', 'Completion', 'InlayHints', 'Hover', or "
-                        "'Documentation'"
-                    )
-                    raise ValueError(msg)
-                return self
 
         model_config = ConfigDict(extra="forbid")
-        Diagnostics: Annotated[
-            _Diagnostics,
+        PathMatch: Annotated[
+            NonEmpty[list[RegexPattern]],
             Field(
-                default_factory=_Diagnostics.model_construct,
-                description="clangd diagnostics options.",
+                description=(
+                    "List of regex patterns to enable this configuration block.  "
+                    "If any pattern matches, the configuration will be applied.  "
+                    "If multiple `[[tool.clangd.if]]` entries match, their "
+                    "configurations will be merged, with later entries taking "
+                    "precedence."
+                ),
             ),
         ]
-        Completion: Annotated[
-            _Completion,
-            Field(
-                default_factory=_Completion.model_construct,
-                description="clangd code completion options.",
-            ),
-        ]
-        InlayHints: Annotated[
-            _InlayHints,
-            Field(
-                default_factory=_InlayHints.model_construct,
-                description="clangd inlay hints options.",
-            ),
-        ]
-        Hover: Annotated[
-            _Hover,
-            Field(
-                default_factory=_Hover.model_construct,
-                description="clangd hover options.",
-            ),
-        ]
-        Documentation: Annotated[
-            _Documentation,
-            Field(
-                default_factory=_Documentation.model_construct,
-                description="clangd documentation options.",
-            ),
-        ]
-        If: Annotated[
-            list[_If],
+        PathExclude: Annotated[
+            list[RegexPattern],
             Field(
                 default_factory=list,
                 description=(
-                    "List of conditional blocks for file-specific clangd configuration."
+                    "List of regex patterns to exclude from this configuration "
+                    "block.  If any pattern matches, the configuration will not be "
+                    "applied, even if `PathMatch` matches.  This allows for "
+                    "fine-grained control to apply configurations to specific "
+                    "subdirectories or files within a larger codebase."
+                ),
+            ),
+        ]
+        Diagnostics: Annotated[
+            _Diagnostics | None,
+            Field(
+                default=None,
+                description=(
+                    "clangd diagnostics options for this conditional block."
+                ),
+            ),
+        ]
+        Completion: Annotated[
+            _Completion | None,
+            Field(
+                default=None,
+                description=(
+                    "clangd code completion options for this conditional block."
+                ),
+            ),
+        ]
+        InlayHints: Annotated[
+            _InlayHints | None,
+            Field(
+                default=None,
+                description=(
+                    "clangd inlay hints options for this conditional block."
+                ),
+            ),
+        ]
+        Hover: Annotated[
+            _Hover | None,
+            Field(
+                default=None,
+                description="clangd hover options for this conditional block.",
+            ),
+        ]
+        Documentation: Annotated[
+            _Documentation | None,
+            Field(
+                default=None,
+                description=(
+                    "clangd documentation options for this conditional block."
                 ),
             ),
         ]
 
-    async def validate(
-        self,
-        config: Config,  # noqa: ARG002
-        fragment: Any,
-    ) -> Model | None:
-        """Validate clangd configuration.
+        @model_validator(mode="after")
+        def _validate_nonempty(self) -> Self:
+            if (
+                self.Diagnostics is None
+                and self.Completion is None
+                and self.InlayHints is None
+                and self.Hover is None
+                and self.Documentation is None
+            ):
+                msg = (
+                    "each [[tool.clangd.if]] entry must define at least one "
+                    "of 'Diagnostics', 'Completion', 'InlayHints', 'Hover', or "
+                    "'Documentation'"
+                )
+                raise ValueError(msg)
+            return self
 
-        Returns
-        -------
-        Model | None
-            Validated clangd configuration.
-        """
-        return self.Model.model_validate(fragment)
+    model_config = ConfigDict(extra="forbid")
+    Diagnostics: Annotated[
+        _Diagnostics,
+        Field(
+            default_factory=_Diagnostics.model_construct,
+            description="clangd diagnostics options.",
+        ),
+    ]
+    Completion: Annotated[
+        _Completion,
+        Field(
+            default_factory=_Completion.model_construct,
+            description="clangd code completion options.",
+        ),
+    ]
+    InlayHints: Annotated[
+        _InlayHints,
+        Field(
+            default_factory=_InlayHints.model_construct,
+            description="clangd inlay hints options.",
+        ),
+    ]
+    Hover: Annotated[
+        _Hover,
+        Field(
+            default_factory=_Hover.model_construct,
+            description="clangd hover options.",
+        ),
+    ]
+    Documentation: Annotated[
+        _Documentation,
+        Field(
+            default_factory=_Documentation.model_construct,
+            description="clangd documentation options.",
+        ),
+    ]
+    If: Annotated[
+        list[_If],
+        Field(
+            default_factory=list,
+            description=(
+                "List of conditional blocks for file-specific clangd configuration."
+            ),
+        ),
+    ]
+
+
+@resource("clangd")
+class Clangd(Resource[ClangdModel]):
+    """Describe a `.clangd` configuration file.
+
+    This expects native clangd keys in `[tool.clangd]`; legacy `arguments` aliasing
+    is intentionally unsupported.
+    """
 
     async def render(self, config: Config, *, image_build: bool) -> None:
         """Render the `.clangd` artifact."""
