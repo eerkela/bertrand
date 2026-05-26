@@ -9,7 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bertrand.env.config.core import _check_uuid
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
@@ -19,8 +19,10 @@ from bertrand.env.kube.build.refs import (
     digest_ref,
 )
 from bertrand.env.kube.build.repository import IMAGES, ImageRepository
-from bertrand.env.kube.custom_object import CustomObjectMetadata  # noqa: TC001
-from bertrand.env.kube.custom_resource import CustomResource
+from bertrand.env.kube.custom_object import (
+    CustomObjectMetadata,
+    CustomObjectResource,
+)
 from bertrand.env.kube.pod import Pod
 
 if TYPE_CHECKING:
@@ -112,62 +114,7 @@ class _ProjectImageSpec(BaseModel):
             PROJECT_IMAGE_PHASE_LABEL: self.phase.lower(),
         }
 
-    def payload(self) -> dict[str, object]:
-        return {
-            "repo_id": self.repo_id,
-            "worktree": self.worktree,
-            "worktree_id": self.worktree_id,
-            "image": self.image,
-            "digest_ref": self.digest_ref,
-            "platform_images": dict(sorted(self.platform_images.items())),
-            "config_id": self.config_id,
-            "phase": self.phase,
-            "published_at": _datetime_payload(self.published_at),
-            "retired_at": _datetime_payload(self.retired_at),
-            "last_gc_at": _datetime_payload(self.last_gc_at),
-            "last_error": self.last_error,
-        }
 
-
-_PROJECT_IMAGE_SPEC_SCHEMA = {
-    "type": "object",
-    "required": [
-        "repo_id",
-        "worktree",
-        "worktree_id",
-        "image",
-        "digest_ref",
-        "platform_images",
-        "config_id",
-        "phase",
-        "published_at",
-    ],
-    "properties": {
-        "repo_id": {"type": "string", "minLength": 1},
-        "worktree": {"type": "string", "minLength": 1},
-        "worktree_id": {"type": "string", "minLength": 1},
-        "image": {"type": "string", "minLength": 1},
-        "digest_ref": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": DIGEST_REF_RE.pattern,
-        },
-        "platform_images": {
-            "type": "object",
-            "minProperties": 1,
-            "additionalProperties": {
-                "type": "string",
-                "pattern": DIGEST_REF_RE.pattern,
-            },
-        },
-        "config_id": {"type": "string", "minLength": 1},
-        "phase": {"type": "string", "enum": ["Active", "Retired"]},
-        "published_at": {"type": "string", "format": "date-time", "nullable": True},
-        "retired_at": {"type": "string", "format": "date-time", "nullable": True},
-        "last_gc_at": {"type": "string", "format": "date-time", "nullable": True},
-        "last_error": {"type": "string"},
-    },
-}
 _PROJECT_IMAGE_LABELS = {
     BERTRAND_ENV: "1",
     PROJECT_IMAGE_LABEL: PROJECT_IMAGE_LABEL_VALUE,
@@ -195,53 +142,43 @@ class ProjectImageRecord(BaseModel):
     metadata: CustomObjectMetadata
     spec: _ProjectImageSpec
 
-    @classmethod
-    def from_payload(cls, payload: object) -> ProjectImageRecord:
-        """Validate a Kubernetes custom object payload.
-
-        Parameters
-        ----------
-        payload : object
-            Raw Kubernetes custom object payload.
+    @model_validator(mode="after")
+    def _validate_lifecycle(self) -> ProjectImageRecord:
+        """Validate lifecycle labels and digest references.
 
         Returns
         -------
         ProjectImageRecord
-            Validated project image lifecycle record.
+            This validated record.
 
         Raises
         ------
-        OSError
-            If the payload is malformed.
+        ValueError
+            If labels or digest references are malformed.
         """
-        try:
-            record = cls.model_validate(payload)
-        except ValidationError as err:
-            msg = f"malformed {PROJECT_IMAGE_KIND} custom object: {err}"
-            raise OSError(msg) from err
-        label_phase = record.metadata.labels.get(PROJECT_IMAGE_PHASE_LABEL, "").strip()
-        if label_phase != record.spec.phase.lower():
+        label_phase = self.metadata.labels.get(PROJECT_IMAGE_PHASE_LABEL, "").strip()
+        if label_phase != self.spec.phase.lower():
             msg = (
-                f"malformed {PROJECT_IMAGE_KIND} {record.name!r}: phase label "
-                f"{label_phase!r} does not match spec phase {record.spec.phase!r}"
+                f"{PROJECT_IMAGE_KIND} {self.name!r}: phase label {label_phase!r} "
+                f"does not match spec phase {self.spec.phase!r}"
             )
-            raise OSError(msg)
-        if not DIGEST_REF_RE.fullmatch(record.spec.digest_ref):
+            raise ValueError(msg)
+        if not DIGEST_REF_RE.fullmatch(self.spec.digest_ref):
             msg = (
-                f"malformed {PROJECT_IMAGE_KIND} {record.name!r}: unsupported "
-                f"digest ref {record.spec.digest_ref!r}"
+                f"{PROJECT_IMAGE_KIND} {self.name!r}: unsupported digest ref "
+                f"{self.spec.digest_ref!r}"
             )
-            raise OSError(msg)
+            raise ValueError(msg)
         try:
-            digest_from_ref(record.spec.digest_ref)
+            digest_from_ref(self.spec.digest_ref)
         except ValueError as err:
-            msg = f"malformed {PROJECT_IMAGE_KIND} {record.name!r}: {err}"
-            raise OSError(msg) from err
+            msg = f"{PROJECT_IMAGE_KIND} {self.name!r}: {err}"
+            raise ValueError(msg) from err
         _validate_platform_images(
-            platform_images=record.platform_images,
-            context=f"{PROJECT_IMAGE_KIND} {record.name!r}",
+            platform_images=self.platform_images,
+            context=f"{PROJECT_IMAGE_KIND} {self.name!r}",
         )
-        return record
+        return self
 
     @property
     def name(self) -> str:
@@ -459,39 +396,48 @@ class ProjectImagePublication:
     external_digest_ref: str | None = None
 
 
-_PROJECT_IMAGE_RESOURCE = CustomResource[ProjectImageRecord](
+PROJECT_IMAGE_RESOURCE = CustomObjectResource[ProjectImageRecord](
     group=PROJECT_IMAGE_GROUP,
     version=PROJECT_IMAGE_VERSION,
     kind=PROJECT_IMAGE_KIND,
     plural=PROJECT_IMAGE_PLURAL,
+    labels=_PROJECT_IMAGE_LABELS,
     singular="bertrandimage",
     short_names=("bimg",),
-    parser=ProjectImageRecord.from_payload,
-    spec_schema=_PROJECT_IMAGE_SPEC_SCHEMA,
-    labels=_PROJECT_IMAGE_LABELS,
+    payload_parser=ProjectImageRecord.model_validate,
+    payload_error_context=f"{PROJECT_IMAGE_KIND} custom object",
+    spec_model=_ProjectImageSpec,
+    spec_schema_overrides={
+        "required": [
+            "repo_id",
+            "worktree",
+            "worktree_id",
+            "image",
+            "digest_ref",
+            "platform_images",
+            "config_id",
+            "phase",
+            "published_at",
+        ],
+        "properties": {
+            "digest_ref": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": DIGEST_REF_RE.pattern,
+            },
+            "platform_images": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": {
+                    "type": "string",
+                    "pattern": DIGEST_REF_RE.pattern,
+                },
+            },
+        },
+    },
+    crd_timeout_message="project image CRD timeout must be non-negative",
     default_namespace=BERTRAND_NAMESPACE,
 )
-
-
-async def ensure_project_image_crd(kube: Kube, *, timeout: float) -> None:
-    """Converge the project image lifecycle CRD.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum convergence budget in seconds.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or CRD establishment exceeds the budget.
-    """
-    if timeout <= 0:
-        msg = "project image CRD timeout must be non-negative"
-        raise TimeoutError(msg)
-    await _PROJECT_IMAGE_RESOURCE.ensure_crd(kube, timeout=timeout)
 
 
 async def list_project_images(
@@ -516,7 +462,7 @@ async def list_project_images(
     list[ProjectImageRecord]
         Validated project image lifecycle records.
     """
-    return await _PROJECT_IMAGE_RESOURCE.list(
+    return await PROJECT_IMAGE_RESOURCE.list(
         kube,
         labels=labels,
         timeout=timeout,
@@ -545,7 +491,7 @@ async def get_project_image(
     ProjectImageRecord | None
         Project image record, or `None` if it does not exist.
     """
-    return await _PROJECT_IMAGE_RESOURCE.get(
+    return await PROJECT_IMAGE_RESOURCE.get(
         kube,
         name=name,
         timeout=timeout,
@@ -592,7 +538,7 @@ async def require_active_project_image(
         timeout, message="timeout must be non-negative"
 
     )
-    await ensure_project_image_crd(kube, timeout=deadline.remaining())
+    await PROJECT_IMAGE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await list_project_images(
         kube,
         labels=_ProjectImageSpec.identity_labels(
@@ -696,7 +642,7 @@ async def retire_project_images(
         timeout, message="timeout must be non-negative"
 
     )
-    await ensure_project_image_crd(kube, timeout=deadline.remaining())
+    await PROJECT_IMAGE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await list_project_images(
         kube,
         labels=_ProjectImageSpec.identity_labels(
@@ -775,7 +721,7 @@ async def gc_project_images(
         timeout, message="timeout must be non-negative"
 
     )
-    await ensure_project_image_crd(kube, timeout=deadline.remaining())
+    await PROJECT_IMAGE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await list_project_images(
         kube,
         labels={PROJECT_IMAGE_PHASE_LABEL: "retired"},
@@ -807,7 +753,7 @@ async def gc_project_images(
                     digest_ref,
                     timeout=deadline.remaining(),
                 )
-            await _PROJECT_IMAGE_RESOURCE.delete_by_name(
+            await PROJECT_IMAGE_RESOURCE.delete_by_name(
                 kube,
                 name=record.name,
                 timeout=deadline.remaining(),
@@ -874,7 +820,7 @@ async def next_project_image_gc_time(
         timeout, message="timeout must be non-negative"
 
     )
-    await ensure_project_image_crd(kube, timeout=deadline.remaining())
+    await PROJECT_IMAGE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await list_project_images(
         kube,
         labels={PROJECT_IMAGE_PHASE_LABEL: "retired"},
@@ -1033,10 +979,10 @@ async def _upsert_project_image_record(
     deadline = Deadline.from_timeout(
         timeout, message="timeout must be non-negative"
     )
-    return await _PROJECT_IMAGE_RESOURCE.upsert(
+    return await PROJECT_IMAGE_RESOURCE.upsert(
         kube,
         name=name,
-        spec=spec.payload(),
+        spec=spec,
         labels=spec.labels,
         timeout=deadline.remaining(),
     )
@@ -1064,10 +1010,10 @@ async def _transition_project_image(
         last_gc_at=record.last_gc_at if last_gc_at is None else last_gc_at,
         last_error=last_error,
     )
-    return await _PROJECT_IMAGE_RESOURCE.upsert(
+    return await PROJECT_IMAGE_RESOURCE.upsert(
         kube,
         name=record.name,
-        spec=spec.payload(),
+        spec=spec,
         labels=spec.labels,
         timeout=deadline.remaining(),
     )
@@ -1154,13 +1100,6 @@ def _validate_platform_images(
                 f"{context} platform {platform!r} has invalid digest ref: {image_ref!r}"
             )
             raise OSError(msg)
-
-
-def _datetime_payload(value: datetime | None) -> str | None:
-    value = _utc_datetime(value)
-    if value is None:
-        return None
-    return value.isoformat().replace("+00:00", "Z")
 
 
 def _utc_datetime(value: datetime | None) -> datetime | None:

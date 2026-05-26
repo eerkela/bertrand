@@ -117,6 +117,10 @@ def _is_not_found(err: OSError) -> bool:
     return isinstance(err, KubeApiError) and err.status == 404
 
 
+def _is_too_many_requests(err: OSError) -> bool:
+    return isinstance(err, KubeApiError) and err.status == 429
+
+
 def _is_missing_api_resource(err: OSError) -> bool:
     if not _is_not_found(err):
         return False

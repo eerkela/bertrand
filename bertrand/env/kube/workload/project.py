@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from bertrand.env.config.bertrand import Bertrand
+from bertrand.env.config.bertrand import Bertrand, BertrandModel
 from bertrand.env.config.core import Config, _check_uuid
 from bertrand.env.git import Deadline
 from bertrand.env.kube.build.lifecycle import (
@@ -17,7 +17,7 @@ from bertrand.env.kube.build.project import project_image_build, project_worktre
 from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
 from bertrand.env.kube.node_identity import resolve_host_id_for_node
 from bertrand.env.kube.workload.base import WorkloadIdentity
-from bertrand.env.kube.workload.config import WorkloadConfig, workload_pod_from_config
+from bertrand.env.kube.workload.config import workload_pod_from_config
 from bertrand.env.kube.workload.controller import (
     StableWorkloadController,
     WorkloadRemoveResult,
@@ -329,15 +329,15 @@ def _project_workload_identity(config: Config, *, repo_id: str) -> WorkloadIdent
     )
 
 
-def _project_workload_config(config: Config) -> WorkloadConfig | None:
-    return cast("WorkloadConfig | None", config.get(Bertrand))
+def _project_workload_config(config: Config) -> BertrandModel | None:
+    return config.get(Bertrand)
 
 
 async def _materialize_project_workload_pod(
     kube: Kube,
     *,
     config: Config,
-    workload_config: WorkloadConfig,
+    workload_config: BertrandModel,
     repo_id: str,
     node: str | None,
     image_ref: str | None,
@@ -363,7 +363,7 @@ async def _materialize_project_workload_pod(
 async def _render_project_workload_pod(
     kube: Kube,
     *,
-    workload_config: WorkloadConfig,
+    workload_config: BertrandModel,
     image_identity: ProjectImageIdentity,
     image: str,
     node: str | None,
@@ -390,7 +390,7 @@ async def _render_project_workload_pod(
 async def _project_workload_host_id(
     kube: Kube,
     *,
-    config: WorkloadConfig,
+    config: BertrandModel,
     node: str | None,
     timeout: float,
 ) -> str | None:

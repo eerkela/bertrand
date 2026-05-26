@@ -12,16 +12,19 @@ from bertrand.env.cli.external._helper import (
     prune_repository_mounts_quietly,
     resolve_project_scope,
 )
+from bertrand.env.git import BERTRAND_NAMESPACE
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.lifecycle import worktree_identity
 from bertrand.env.kube.build.project import project_worktree_id
 from bertrand.env.kube.capability.base import (
-    Capability,
     CapabilityKind,
     CapabilityRef,
     CapabilityScope,
+    capability_ref_from_secret,
+    list_capability_secrets,
 )
 from bertrand.env.kube.node_identity import ensure_local_bertrand_node
+from bertrand.env.kube.secret import Secret
 
 if TYPE_CHECKING:
     import argparse
@@ -107,21 +110,31 @@ async def _add_capability(
     timeout: float,
 ) -> None:
     payload = _read_payload(source)
-    capability = await Capability.upsert(
+    secret = await Secret.upsert(
         kube,
-        ref=ref,
+        namespace=BERTRAND_NAMESPACE,
+        name=ref.name,
+        labels=ref.labels,
+        annotations=ref.annotations,
         payload=payload,
         timeout=timeout,
     )
-    print(_format_capability_line(capability))
+    capability_ref_from_secret(secret, expected=ref)
+    print(_format_capability_line(ref, secret))
 
 
 async def _remove_capability(kube: Kube, ref: CapabilityRef, *, timeout: float) -> None:
-    capability = await Capability.get(kube, ref=ref, timeout=timeout)
-    if capability is None:
+    secret = await Secret.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=ref.name,
+        timeout=timeout,
+    )
+    if secret is None:
         print(f"{ref.kind} {ref.capability_id}: not found")
         return
-    await capability.delete(kube, timeout=timeout)
+    capability_ref_from_secret(secret, expected=ref)
+    await secret.delete(kube, timeout=timeout)
     print(f"{ref.kind} {ref.capability_id}: deleted")
 
 
@@ -133,10 +146,10 @@ async def _list_capabilities(
     json_output: bool,
     timeout: float,
 ) -> None:
-    capabilities: list[Capability] = []
+    capabilities: list[tuple[CapabilityRef, Secret]] = []
     for target in targets:
         capabilities.extend(
-            await Capability.list(
+            await list_capability_secrets(
                 kube,
                 kind=kind,
                 scope=target.scope,
@@ -147,10 +160,10 @@ async def _list_capabilities(
     scope_order = {target.scope: index for index, target in enumerate(targets)}
     capabilities.sort(
         key=lambda item: (
-            scope_order.get(item.ref.scope, len(scope_order)),
-            item.ref.capability_id,
-            item.ref.kind,
-            item.ref.value or "",
+            scope_order.get(item[0].scope, len(scope_order)),
+            item[0].capability_id,
+            item[0].kind,
+            item[0].value or "",
         )
     )
     if json_output:
@@ -165,8 +178,8 @@ async def _list_capabilities(
     if not capabilities:
         print("no capabilities")
         return
-    for capability in capabilities:
-        print(_format_capability_line(capability))
+    for ref, secret in capabilities:
+        print(_format_capability_line(ref, secret))
 
 
 async def _path_capability_ref(
@@ -275,18 +288,17 @@ def _read_payload(source: str | None) -> bytes:
     return Path(source).expanduser().read_bytes()
 
 
-def _capability_payload(capability: Capability) -> dict[str, str | None]:
-    ref = capability.ref
+def _capability_payload(item: tuple[CapabilityRef, Secret]) -> dict[str, str | None]:
+    ref, secret = item
     return {
         "kind": ref.kind,
         "id": ref.capability_id,
         "scope": ref.scope,
         "scope_value": ref.value,
-        "secret": capability.secret.name,
+        "secret": secret.name,
     }
 
 
-def _format_capability_line(capability: Capability) -> str:
-    ref = capability.ref
+def _format_capability_line(ref: CapabilityRef, secret: Secret) -> str:
     scope = ref.scope if ref.value is None else f"{ref.scope}:{ref.value}"
-    return f"{ref.kind} {ref.capability_id} [{scope}] -> {capability.secret.name}"
+    return f"{ref.kind} {ref.capability_id} [{scope}] -> {secret.name}"

@@ -100,8 +100,6 @@ class Kube:
         RBAC authorization v1 API surface.
     storage : kubernetes.client.StorageV1Api
         Storage v1 API surface for StorageClass resources.
-    events : kubernetes.client.EventsV1Api
-        Events v1 API surface for diagnostic Event resources.
     coordination : kubernetes.client.CoordinationV1Api
         Coordination v1 API surface for Lease resources.
     """
@@ -116,7 +114,6 @@ class Kube:
     apiextensions: kubernetes.client.ApiextensionsV1Api = field(init=False, repr=False)
     rbac: kubernetes.client.RbacAuthorizationV1Api = field(init=False, repr=False)
     storage: kubernetes.client.StorageV1Api = field(init=False, repr=False)
-    events: kubernetes.client.EventsV1Api = field(init=False, repr=False)
     coordination: kubernetes.client.CoordinationV1Api = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -140,7 +137,6 @@ class Kube:
             self.apiextensions = kubernetes.client.ApiextensionsV1Api(self.client)
             self.rbac = kubernetes.client.RbacAuthorizationV1Api(self.client)
             self.storage = kubernetes.client.StorageV1Api(self.client)
-            self.events = kubernetes.client.EventsV1Api(self.client)
             self.coordination = kubernetes.client.CoordinationV1Api(self.client)
         except (AttributeError, TypeError, ValueError):
             with suppress(OSError, RuntimeError, ValueError):

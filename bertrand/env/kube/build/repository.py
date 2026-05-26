@@ -29,16 +29,8 @@ from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_VALUE,
     Kube,
 )
-from bertrand.env.kube.api.spec import (
-    ContainerPortSpec,
-    ContainerSpec,
-    DeploymentStrategySpec,
-    PodTemplateSpec,
-    ProbeSpec,
-    ServicePortSpec,
-    VolumeMountSpec,
-    VolumeSpec,
-)
+from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
+from bertrand.env.kube.api.view import ServicePortView
 from bertrand.env.kube.build.daemon import (
     BUILDKIT_CONFIG_KEY,
     BUILDKIT_CONFIG_NAME,
@@ -425,6 +417,31 @@ class _ImageRepositoryStatusResources:
     registry_config: ConfigMap | None
     maintenance: ImageRepositoryMaintenanceStatus
     nodes: tuple[Node, ...]
+
+
+@dataclass(frozen=True)
+class _RepositoryRolloutStatus:
+    summary: str
+    ready: bool
+
+
+@dataclass(frozen=True)
+class _RepositoryStorageStatus:
+    summary: str
+    ready: bool
+
+
+@dataclass(frozen=True)
+class _RepositoryConfigStatus:
+    registry_current: bool
+    buildkit_current: bool
+
+
+@dataclass(frozen=True)
+class _RepositoryNodeTrustStatus:
+    trusted: tuple[str, ...]
+    untrusted: tuple[str, ...]
+    ready: bool
 
 
 @dataclass(frozen=True)
@@ -1091,16 +1108,42 @@ class ImageRepository:
         resources: _ImageRepositoryStatusResources,
         deadline: Deadline,
     ) -> ImageRepositoryStatus:
-        service = resources.service
-        deployment = resources.deployment
-        pvc = resources.pvc
-        expected_port = ServicePortSpec(
+        service_ready = self._service_status_ready(resources.service)
+        rollout = self._rollout_status(resources.deployment)
+        storage = self._storage_status(resources.pvc)
+        config = await self._config_status(
+            kube,
+            resources=resources,
+            deadline=deadline,
+        )
+        node_trust = self._node_trust_status(resources.nodes)
+        failures = self._status_failures(
+            service_ready=service_ready,
+            rollout=rollout,
+            storage=storage,
+            config=config,
+            node_trust=node_trust,
+        )
+        return ImageRepositoryStatus(
+            namespace=self.namespace,
+            name=self.service,
+            storage=storage.summary,
+            rollout=rollout.summary,
+            trusted_nodes=node_trust.trusted,
+            untrusted_nodes=node_trust.untrusted,
+            ready=not failures,
+            failures=failures,
+        )
+
+    def _service_status_ready(self, service: Service | None) -> bool:
+        expected_port = ServicePortView(
             name="registry",
             port=self.port,
             target_port=self.port,
+            protocol="TCP",
             node_port=self.node_port,
         )
-        service_ready = (
+        return (
             service.matches(
                 service_type="NodePort",
                 selector=self.selector,
@@ -1109,6 +1152,9 @@ class ImageRepository:
             if service is not None
             else False
         )
+
+    @staticmethod
+    def _rollout_status(deployment: Deployment | None) -> _RepositoryRolloutStatus:
         available_replicas = (
             deployment.available_replicas if deployment is not None else 0
         )
@@ -1117,10 +1163,22 @@ class ImageRepository:
             deployment.observed_generation if deployment is not None else 0
         )
         generation = deployment.generation if deployment is not None else 0
-        rollout_ready = (
-            deployment.rollout_ready(minimum=1) if deployment is not None else False
+        summary = (
+            f"available={available_replicas}; updated={updated_replicas}; "
+            f"observed={observed_generation}; generation={generation}"
         )
-        pvc_managed = (
+        return _RepositoryRolloutStatus(
+            summary=summary,
+            ready=(
+                deployment.rollout_ready(minimum=1)
+                if deployment is not None
+                else False
+            ),
+        )
+
+    @staticmethod
+    def _storage_status(pvc: PersistentVolumeClaim | None) -> _RepositoryStorageStatus:
+        managed = (
             all(
                 pvc.labels.get(key) == value
                 for key, value in {
@@ -1131,84 +1189,103 @@ class ImageRepository:
             if pvc is not None
             else False
         )
-        pvc_bound = pvc.is_bound if pvc is not None else False
-        pvc_phase = pvc.phase if pvc is not None else "missing"
+        bound = pvc.is_bound if pvc is not None else False
         storage_class = pvc.storage_class_name if pvc is not None else "missing"
         access_modes = pvc.access_modes if pvc is not None else ()
         storage_request = pvc.requested_storage if pvc is not None else "missing"
-        storage_summary = (
-            f"{pvc_phase}; class={storage_class}; "
+        phase = pvc.phase if pvc is not None else "missing"
+        summary = (
+            f"{phase}; class={storage_class}; "
             f"request={storage_request}; modes={','.join(access_modes) or 'none'}"
         )
-        rollout_summary = (
-            f"available={available_replicas}; updated={updated_replicas}; "
-            f"observed={observed_generation}; generation={generation}"
+        return _RepositoryStorageStatus(
+            summary=summary,
+            ready=(
+                pvc is not None
+                and managed
+                and bound
+                and bool(storage_class)
+                and pvc.has_access_mode("ReadWriteMany")
+            ),
         )
-        storage_ready = (
-            pvc is not None
-            and pvc_managed
-            and pvc_bound
-            and bool(storage_class)
-            and pvc.has_access_mode("ReadWriteMany")
-        )
-        desired_config_data = await self.current_buildkit_config_data(
+
+    async def _config_status(
+        self,
+        kube: Kube,
+        *,
+        resources: _ImageRepositoryStatusResources,
+        deadline: Deadline,
+    ) -> _RepositoryConfigStatus:
+        desired_buildkit_config = await self.current_buildkit_config_data(
             kube,
             timeout=deadline.remaining(),
         )
-        desired_config_hash = _config_hash(desired_config_data)
-        installed_config_hash = (
+        desired_buildkit_hash = _config_hash(desired_buildkit_config)
+        installed_buildkit_hash = (
             _config_hash(resources.buildkit_config.data)
             if resources.buildkit_config is not None
             else ""
         )
-        config_current = installed_config_hash == desired_config_hash
         desired_registry_config = self.registry_config_data(read_only=False)
         desired_read_only_registry_config = self.registry_config_data(read_only=True)
         registry_config = resources.registry_config
-        registry_config_current = registry_config is not None and (
-            registry_config.data == desired_registry_config
-            or (
-                resources.maintenance.active
-                and registry_config.data == desired_read_only_registry_config
-            )
+        return _RepositoryConfigStatus(
+            registry_current=registry_config is not None
+            and (
+                registry_config.data == desired_registry_config
+                or (
+                    resources.maintenance.active
+                    and registry_config.data == desired_read_only_registry_config
+                )
+            ),
+            buildkit_current=installed_buildkit_hash == desired_buildkit_hash,
         )
 
-        named_nodes = sorted(node.name for node in resources.nodes if node.name)
-        trusted = sorted(
-            node.name
-            for node in resources.nodes
-            if node.name
-            and node.labels.get(CLUSTER_REGISTRY_READY_LABEL)
-            == CLUSTER_REGISTRY_READY_VALUE
+    @staticmethod
+    def _node_trust_status(nodes: tuple[Node, ...]) -> _RepositoryNodeTrustStatus:
+        named_nodes = sorted(node.name for node in nodes if node.name)
+        trusted = tuple(
+            sorted(
+                node.name
+                for node in nodes
+                if node.name
+                and node.labels.get(CLUSTER_REGISTRY_READY_LABEL)
+                == CLUSTER_REGISTRY_READY_VALUE
+            )
         )
         trusted_set = frozenset(trusted)
-        untrusted = [name for name in named_nodes if name not in trusted_set]
-        node_trust_ready = bool(named_nodes) and not untrusted
+        untrusted = tuple(name for name in named_nodes if name not in trusted_set)
+        return _RepositoryNodeTrustStatus(
+            trusted=trusted,
+            untrusted=untrusted,
+            ready=bool(named_nodes) and not untrusted,
+        )
+
+    @staticmethod
+    def _status_failures(
+        *,
+        service_ready: bool,
+        rollout: _RepositoryRolloutStatus,
+        storage: _RepositoryStorageStatus,
+        config: _RepositoryConfigStatus,
+        node_trust: _RepositoryNodeTrustStatus,
+    ) -> tuple[str, ...]:
         failures: list[str] = []
         if not service_ready:
             failures.append("image registry Service is missing or has the wrong shape")
-        if not rollout_ready:
+        if not rollout.ready:
             failures.append("image registry Deployment rollout is not ready")
-        if not storage_ready:
+        if not storage.ready:
             failures.append("image registry storage is not bound and ready")
-        if not registry_config_current:
+        if not config.registry_current:
             failures.append("image registry config is missing or stale")
-        if not config_current:
+        if not config.buildkit_current:
             failures.append("BuildKit daemon config is stale")
-        if not node_trust_ready:
+        if not node_trust.ready:
             failures.append(
                 "one or more Kubernetes nodes do not trust the image registry"
             )
-        return ImageRepositoryStatus(
-            namespace=self.namespace,
-            name=self.service,
-            storage=storage_summary,
-            rollout=rollout_summary,
-            trusted_nodes=tuple(trusted),
-            untrusted_nodes=tuple(untrusted),
-            ready=not failures,
-            failures=tuple(failures),
-        )
+        return tuple(failures)
 
     async def ensure(self, kube: Kube, *, timeout: float = INFINITY) -> None:
         """Converge Bertrand's OCI image repository resources.
@@ -1277,10 +1354,11 @@ class ImageRepository:
             selector=self.selector,
             service_type="NodePort",
             ports=[
-                ServicePortSpec(
+                ServicePortView(
                     name="registry",
                     port=self.port,
                     target_port=self.port,
+                    protocol="TCP",
                     node_port=self.node_port,
                 )
             ],
@@ -1509,45 +1587,41 @@ class ImageRepository:
                         command=["registry"],
                         args=["serve", IMAGE_REPOSITORY_CONFIG_FILE],
                         ports=[
-                            ContainerPortSpec(
-                                name="registry",
-                                container_port=self.port,
-                            )
+                            {
+                                "name": "registry",
+                                "containerPort": self.port,
+                                "protocol": "TCP",
+                            }
                         ],
-                        readiness_probe=ProbeSpec.http(
-                            path="/v2/",
-                            port=self.port,
-                            period_seconds=2,
-                            failure_threshold=30,
-                        ),
-                        liveness_probe=ProbeSpec.http(
-                            path="/v2/",
-                            port=self.port,
-                            initial_delay_seconds=10,
-                            period_seconds=10,
-                            failure_threshold=3,
-                        ),
+                        readiness_probe={
+                            "httpGet": {"path": "/v2/", "port": self.port},
+                            "periodSeconds": 2,
+                            "failureThreshold": 30,
+                        },
+                        liveness_probe={
+                            "httpGet": {"path": "/v2/", "port": self.port},
+                            "initialDelaySeconds": 10,
+                            "periodSeconds": 10,
+                            "failureThreshold": 3,
+                        },
                         volume_mounts=self._volume_mounts(),
                     )
                 ],
                 volumes=self._volumes(),
                 annotations={IMAGE_REPOSITORY_CONFIG_HASH_ANNOTATION: config_hash},
             ),
-            strategy=DeploymentStrategySpec.recreate(),
+            strategy={"type": "Recreate", "rollingUpdate": None},
             timeout=timeout,
         )
 
-    def _volume_mounts(self) -> tuple[VolumeMountSpec, ...]:
+    def _volume_mounts(self) -> tuple[Mapping[str, object], ...]:
         return (
-            VolumeMountSpec(
-                name=IMAGE_REPOSITORY_VOLUME,
-                mount_path=IMAGE_REPOSITORY_MOUNT,
-            ),
-            VolumeMountSpec(
-                name=IMAGE_REPOSITORY_CONFIG_VOLUME,
-                mount_path=IMAGE_REPOSITORY_CONFIG_DIR,
-                read_only=True,
-            ),
+            {"name": IMAGE_REPOSITORY_VOLUME, "mountPath": IMAGE_REPOSITORY_MOUNT},
+            {
+                "name": IMAGE_REPOSITORY_CONFIG_VOLUME,
+                "mountPath": IMAGE_REPOSITORY_CONFIG_DIR,
+                "readOnly": True,
+            },
         )
 
     def _volumes(self) -> tuple[VolumeSpec, ...]:

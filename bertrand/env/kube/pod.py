@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 import kubernetes
 from kubernetes.stream import stream as kubernetes_stream
@@ -13,17 +13,15 @@ from kubernetes.stream import stream as kubernetes_stream
 from bertrand.env.git import Deadline
 
 from .api._helpers import _delete_options, _validate_delete_status
-from .api._render import _pod_template_manifest
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import AsyncIterator, Collection, Mapping
+    from collections.abc import Collection, Mapping
 
     from .api.client import Kube
     from .api.spec import PodTemplateSpec
-    from .api.watch import WatchEvent
 
 POD_MIRROR_ANNOTATION = "kubernetes.io/config.mirror"
 POD_SUPPORTED_CONTROLLER_KINDS = frozenset(
@@ -94,7 +92,10 @@ def _container_status_diagnostics(
 
 
 @dataclass(frozen=True)
-class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
+class Pod(
+    BuiltinResourceObject[kubernetes.client.V1Pod],
+    NamespacedKubeMetadata[kubernetes.client.V1Pod],
+):
     """General-purpose wrapper around one Kubernetes Pod object.
 
     Parameters
@@ -105,47 +106,18 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
 
     _obj: kubernetes.client.V1Pod
 
-    @classmethod
-    def _client(cls) -> ResourceClient[kubernetes.client.V1Pod, Self]:
-        return ResourceClient(
-            scope="namespaced",
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1Pod]] = (
+        BuiltinResource.namespaced(
+            api="core",
             kind="Pod",
+            slug="pod",
             expected=kubernetes.client.V1Pod,
             list_type=kubernetes.client.V1PodList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, namespace, name, request_timeout: (
-                kube.core.read_namespaced_pod(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.core.list_pod_for_all_namespaces(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_namespace=lambda kube, namespace, labels, fields, timeout: (
-                kube.core.list_namespaced_pod(
-                    namespace=namespace,
-                    label_selector=labels,
-                    field_selector=fields,
-                    _request_timeout=timeout,
-                )
-            ),
-            delete=lambda kube, namespace, name, request_timeout: (
-                kube.core.delete_namespaced_pod(
-                    name=name,
-                    namespace=namespace,
-                    body=kubernetes.client.V1DeleteOptions(),
-                    _request_timeout=request_timeout,
-                )
-            ),
-            watch_all=lambda kube: kube.core.list_pod_for_all_namespaces,
-            watch_namespace=lambda kube: kube.core.list_namespaced_pod,
+            create=True,
+            delete=True,
+            watch=True,
         )
+    )
 
     @staticmethod
     def _manifest(
@@ -156,7 +128,7 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
         pod_template: PodTemplateSpec,
         annotations: Mapping[str, str] | None,
     ) -> dict[str, object]:
-        template = _pod_template_manifest(pod_template)
+        template = pod_template._manifest()
         pod_labels = dict(labels)
         pod_annotations = dict(annotations or {})
         metadata: dict[str, object] = {
@@ -241,137 +213,17 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             pod_template=pod_template,
             annotations=annotations,
         )
-        created = await kube.run(
-            lambda request_timeout: kube.core.create_namespaced_pod(
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to create Pod {namespace}/{name}",
-        )
-        if not isinstance(created, kubernetes.client.V1Pod):
-            msg = f"malformed Kubernetes Pod payload while creating {name!r}"
-            raise OSError(msg)
-        return cls(_obj=created)
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        name: str,
-    ) -> Self | None:
-        """Read one Kubernetes Pod by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            The namespace to search within.
-        timeout : float
-            The maximum time to wait for Kubernetes pod query in seconds.  If
-            infinite, wait indefinitely.
-        name : str
-            Pod name to read.
-
-        Returns
-        -------
-        Pod | None
-            Validated Kubernetes pod wrapper, or `None` if the pod does not exist.
-        """
-        return await cls._client().get(
+        return await cls.resource.create_manifest(
             kube,
+            owner=cls,
             namespace=namespace,
             name=name,
+            manifest=manifest,
             timeout=timeout,
+            malformed_message=(
+                f"malformed Kubernetes Pod payload while creating {name!r}"
+            ),
         )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes Pods with optional namespace and label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            The maximum time to wait for Kubernetes pod list queries in seconds.  If
-            infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters.  `None` queries all namespaces.  Otherwise,
-            names are normalized (trimmed), deduplicated, and queried individually.
-        labels : Mapping[str, str] | None, optional
-            Optional label filters.
-        field_selector : str | None, optional
-            Raw Kubernetes field selector.
-
-        Returns
-        -------
-        builtins.list[Pod]
-            Validated Kubernetes pod wrappers.
-        """
-        return await cls._client().list(
-            kube,
-            timeout=timeout,
-            namespaces=namespaces,
-            labels=labels,
-            field_selector=field_selector,
-        )
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
-        resource_version: str | None = None,
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Kubernetes Pods.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum watch budget in seconds. If infinite, wait indefinitely.
-        namespace : str | None, optional
-            Namespace to watch. If omitted, watches Pods across all namespaces.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-        field_selector : str | None, optional
-            Raw Kubernetes field selector.
-        resource_version : str | None, optional
-            Resource version to watch from.
-
-        Yields
-        ------
-        WatchEvent[Pod]
-            Typed watch events containing wrapped Pods.
-        """
-        async for event in cls._client().watch(
-            kube,
-            timeout=timeout,
-            namespace=namespace,
-            labels=labels,
-            field_selector=field_selector,
-            resource_version=resource_version,
-        ):
-            yield event
 
     @property
     def phase(self) -> str:
@@ -775,50 +627,6 @@ class Pod(NamespacedKubeMetadata[kubernetes.client.V1Pod]):
             ),
             timeout=timeout,
             context=f"failed to attach to pod {namespace}/{name} container {container}",
-        )
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this pod by its metadata namespace and name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Pod | None
-            Fresh pod wrapper, or `None` if the pod no longer exists.
-        """
-        namespace, name = self._require_namespace_name("refresh pod")
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            timeout=timeout,
-            name=name,
-        )
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this pod is deleted from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum runtime budget in seconds. If infinite, wait indefinitely.
-        """
-        namespace, name = self._require_namespace_name("wait for pod deletion")
-        await (
-            type(self)
-            ._client()
-            .wait_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
         )
 
     async def wait_terminal(self, kube: Kube, *, timeout: float) -> Self:

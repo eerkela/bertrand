@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import NamespacedMutableResourceMixin, ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ServiceAccount(
-    NamespacedMutableResourceMixin[kube_client.V1ServiceAccount],
+    BuiltinResourceObject[kube_client.V1ServiceAccount],
     NamespacedKubeMetadata[kube_client.V1ServiceAccount],
 ):
     """General-purpose wrapper around one Kubernetes ServiceAccount object.
@@ -31,59 +31,18 @@ class ServiceAccount(
 
     _obj: kube_client.V1ServiceAccount
 
-    @classmethod
-    def _client(cls) -> ResourceClient[kube_client.V1ServiceAccount, Self]:
-        return ResourceClient(
-            scope="namespaced",
+    resource: ClassVar[BuiltinResource[kube_client.V1ServiceAccount]] = (
+        BuiltinResource.namespaced(
+            api="core",
             kind="ServiceAccount",
+            slug="service_account",
             expected=kube_client.V1ServiceAccount,
             list_type=kube_client.V1ServiceAccountList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, namespace, name, request_timeout: (
-                kube.core.read_namespaced_service_account(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.core.list_service_account_for_all_namespaces(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_namespace=lambda kube, namespace, labels, fields, timeout: (
-                kube.core.list_namespaced_service_account(
-                    namespace=namespace,
-                    label_selector=labels,
-                    field_selector=fields,
-                    _request_timeout=timeout,
-                )
-            ),
-            create=lambda kube, namespace, _name, manifest, request_timeout: (
-                kube.core.create_namespaced_service_account(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            patch=lambda kube, namespace, name, manifest, request_timeout: (
-                kube.core.patch_namespaced_service_account(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            delete=lambda kube, namespace, name, request_timeout: (
-                kube.core.delete_namespaced_service_account(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
+            create=True,
+            patch=True,
+            delete=True,
         )
+    )
 
     @staticmethod
     def _manifest(
@@ -153,8 +112,9 @@ class ServiceAccount(
             labels=labels,
             annotations=annotations,
         )
-        return await cls._client().upsert(
+        return await cls.resource.upsert(
             kube,
+            owner=cls,
             namespace=namespace,
             name=name,
             manifest=manifest,

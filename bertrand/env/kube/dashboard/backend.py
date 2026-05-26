@@ -2,27 +2,34 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
-from bertrand.env.kube.api.spec import (
-    ContainerPortSpec,
-    ContainerSpec,
-    PodTemplateSpec,
-    PolicyRuleSpec,
-    ProbeSpec,
-    ServicePortSpec,
-)
+from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
+from bertrand.env.kube.api.view import ServicePortView
 from bertrand.env.kube.deployment import Deployment
-from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding, Role, RoleBinding
+from bertrand.env.kube.rbac import (
+    delete_cluster_role,
+    delete_cluster_role_binding,
+    delete_role,
+    delete_role_binding,
+    get_cluster_role,
+    get_cluster_role_binding,
+    get_role,
+    get_role_binding,
+    upsert_cluster_role,
+    upsert_cluster_role_binding,
+    upsert_role,
+    upsert_role_binding,
+)
 from bertrand.env.kube.service import Service
 from bertrand.env.kube.service_account import ServiceAccount
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from bertrand.env.kube.api.client import Kube
+    from bertrand.env.kube.api.spec import PolicyRuleManifest
 
 DASHBOARD_NAME = "bertrand-headlamp"
 HEADLAMP_IMAGE = "ghcr.io/headlamp-k8s/headlamp:v0.42.0"
@@ -47,14 +54,6 @@ DASHBOARD_SELECTOR = MappingProxyType(
 )
 _DASHBOARD_PORT_NAME = "http"
 _WAIT_MINIMUM_REPLICAS = 1
-
-
-class _ManagedResource(Protocol):
-    @property
-    def name(self) -> str: ...
-
-    @property
-    def labels(self) -> Mapping[str, str]: ...
 
 
 async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
@@ -91,7 +90,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
         labels=DASHBOARD_LABELS,
         timeout=deadline.remaining(),
     )
-    await Role.upsert(
+    await upsert_role(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
@@ -99,7 +98,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
         labels=DASHBOARD_LABELS,
         timeout=deadline.remaining(),
     )
-    await RoleBinding.upsert(
+    await upsert_role_binding(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
@@ -109,14 +108,14 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
         labels=DASHBOARD_LABELS,
         timeout=deadline.remaining(),
     )
-    await ClusterRole.upsert(
+    await upsert_cluster_role(
         kube,
         name=DASHBOARD_NAME,
         rules=_cluster_read_rules(),
         labels=DASHBOARD_LABELS,
         timeout=deadline.remaining(),
     )
-    await ClusterRoleBinding.upsert(
+    await upsert_cluster_role_binding(
         kube,
         name=DASHBOARD_NAME,
         role_name=DASHBOARD_NAME,
@@ -142,10 +141,11 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
         name=DASHBOARD_NAME,
         selector=DASHBOARD_SELECTOR,
         ports=(
-            ServicePortSpec(
+            ServicePortView(
                 name=_DASHBOARD_PORT_NAME,
                 port=HEADLAMP_SERVICE_PORT,
                 target_port=_DASHBOARD_PORT_NAME,
+                protocol="TCP",
             ),
         ),
         labels=DASHBOARD_LABELS,
@@ -198,7 +198,7 @@ async def delete_dashboard_backend(kube: Kube, *, timeout: float) -> None:
         _assert_managed(service, kind="Service")
         await service.delete(kube, timeout=deadline.remaining())
 
-    role_binding = await RoleBinding.get(
+    role_binding = await get_role_binding(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
@@ -206,9 +206,14 @@ async def delete_dashboard_backend(kube: Kube, *, timeout: float) -> None:
     )
     if role_binding is not None:
         _assert_managed(role_binding, kind="RoleBinding")
-        await role_binding.delete(kube, timeout=deadline.remaining())
+        await delete_role_binding(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        )
 
-    role = await Role.get(
+    role = await get_role(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DASHBOARD_NAME,
@@ -216,7 +221,12 @@ async def delete_dashboard_backend(kube: Kube, *, timeout: float) -> None:
     )
     if role is not None:
         _assert_managed(role, kind="Role")
-        await role.delete(kube, timeout=deadline.remaining())
+        await delete_role(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        )
 
     service_account = await ServiceAccount.get(
         kube,
@@ -228,27 +238,35 @@ async def delete_dashboard_backend(kube: Kube, *, timeout: float) -> None:
         _assert_managed(service_account, kind="ServiceAccount")
         await service_account.delete(kube, timeout=deadline.remaining())
 
-    cluster_role_binding = await ClusterRoleBinding.get(
+    cluster_role_binding = await get_cluster_role_binding(
         kube,
         name=DASHBOARD_NAME,
         timeout=deadline.remaining(),
     )
     if cluster_role_binding is not None:
         _assert_managed(cluster_role_binding, kind="ClusterRoleBinding")
-        await cluster_role_binding.delete(kube, timeout=deadline.remaining())
+        await delete_cluster_role_binding(
+            kube,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        )
 
-    cluster_role = await ClusterRole.get(
+    cluster_role = await get_cluster_role(
         kube,
         name=DASHBOARD_NAME,
         timeout=deadline.remaining(),
     )
     if cluster_role is not None:
         _assert_managed(cluster_role, kind="ClusterRole")
-        await cluster_role.delete(kube, timeout=deadline.remaining())
+        await delete_cluster_role(
+            kube,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        )
 
 
 async def _assert_existing_resources(kube: Kube, *, timeout: float) -> None:
-    checks: tuple[tuple[str, _ManagedResource | None], ...] = (
+    checks: tuple[tuple[str, object | None], ...] = (
         (
             "ServiceAccount",
             await ServiceAccount.get(
@@ -260,7 +278,7 @@ async def _assert_existing_resources(kube: Kube, *, timeout: float) -> None:
         ),
         (
             "Role",
-            await Role.get(
+            await get_role(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=DASHBOARD_NAME,
@@ -269,7 +287,7 @@ async def _assert_existing_resources(kube: Kube, *, timeout: float) -> None:
         ),
         (
             "RoleBinding",
-            await RoleBinding.get(
+            await get_role_binding(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=DASHBOARD_NAME,
@@ -278,11 +296,15 @@ async def _assert_existing_resources(kube: Kube, *, timeout: float) -> None:
         ),
         (
             "ClusterRole",
-            await ClusterRole.get(kube, name=DASHBOARD_NAME, timeout=timeout),
+            await get_cluster_role(kube, name=DASHBOARD_NAME, timeout=timeout),
         ),
         (
             "ClusterRoleBinding",
-            await ClusterRoleBinding.get(kube, name=DASHBOARD_NAME, timeout=timeout),
+            await get_cluster_role_binding(
+                kube,
+                name=DASHBOARD_NAME,
+                timeout=timeout,
+            ),
         ),
         (
             "Deployment",
@@ -320,25 +342,24 @@ def _pod_template() -> PodTemplateSpec:
                     "-watch-plugins-changes=false",
                 ),
                 ports=(
-                    ContainerPortSpec(
-                        name=_DASHBOARD_PORT_NAME,
-                        container_port=HEADLAMP_CONTAINER_PORT,
-                    ),
+                    {
+                        "name": _DASHBOARD_PORT_NAME,
+                        "containerPort": HEADLAMP_CONTAINER_PORT,
+                        "protocol": "TCP",
+                    },
                 ),
-                readiness_probe=ProbeSpec.http(
-                    path="/",
-                    port=_DASHBOARD_PORT_NAME,
-                    initial_delay_seconds=10,
-                    timeout_seconds=10,
-                    failure_threshold=6,
-                ),
-                liveness_probe=ProbeSpec.http(
-                    path="/",
-                    port=_DASHBOARD_PORT_NAME,
-                    initial_delay_seconds=30,
-                    timeout_seconds=10,
-                    failure_threshold=6,
-                ),
+                readiness_probe={
+                    "httpGet": {"path": "/", "port": _DASHBOARD_PORT_NAME},
+                    "initialDelaySeconds": 10,
+                    "timeoutSeconds": 10,
+                    "failureThreshold": 6,
+                },
+                liveness_probe={
+                    "httpGet": {"path": "/", "port": _DASHBOARD_PORT_NAME},
+                    "initialDelaySeconds": 30,
+                    "timeoutSeconds": 10,
+                    "failureThreshold": 6,
+                },
             ),
         ),
         labels=DASHBOARD_LABELS,
@@ -348,12 +369,12 @@ def _pod_template() -> PodTemplateSpec:
     )
 
 
-def _namespace_rules() -> tuple[PolicyRuleSpec, ...]:
+def _namespace_rules() -> tuple[PolicyRuleManifest, ...]:
     return (
-        PolicyRuleSpec(
-            api_groups=("*",),
-            resources=("*",),
-            verbs=(
+        {
+            "apiGroups": ["*"],
+            "resources": ["*"],
+            "verbs": [
                 "get",
                 "list",
                 "watch",
@@ -362,52 +383,71 @@ def _namespace_rules() -> tuple[PolicyRuleSpec, ...]:
                 "patch",
                 "delete",
                 "deletecollection",
-            ),
-        ),
+            ],
+        },
     )
 
 
-def _cluster_read_rules() -> tuple[PolicyRuleSpec, ...]:
-    read = ("get", "list", "watch")
+def _cluster_read_rules() -> tuple[PolicyRuleManifest, ...]:
+    read = ["get", "list", "watch"]
     return (
-        PolicyRuleSpec(
-            api_groups=("",),
-            resources=("namespaces", "nodes", "persistentvolumes"),
-            verbs=read,
-        ),
-        PolicyRuleSpec(
-            api_groups=("apiextensions.k8s.io",),
-            resources=("customresourcedefinitions",),
-            verbs=read,
-        ),
-        PolicyRuleSpec(
-            api_groups=("storage.k8s.io",),
-            resources=(
+        {
+            "apiGroups": [""],
+            "resources": ["namespaces", "nodes", "persistentvolumes"],
+            "verbs": read,
+        },
+        {
+            "apiGroups": ["apiextensions.k8s.io"],
+            "resources": ["customresourcedefinitions"],
+            "verbs": read,
+        },
+        {
+            "apiGroups": ["storage.k8s.io"],
+            "resources": [
                 "csidrivers",
                 "csinodes",
                 "storageclasses",
                 "volumeattachments",
-            ),
-            verbs=read,
-        ),
-        PolicyRuleSpec(
-            api_groups=("gateway.networking.k8s.io",),
-            resources=("gatewayclasses",),
-            verbs=read,
-        ),
-        PolicyRuleSpec(
-            api_groups=("metrics.k8s.io",),
-            resources=("nodes", "pods"),
-            verbs=read,
-        ),
+            ],
+            "verbs": read,
+        },
+        {
+            "apiGroups": ["gateway.networking.k8s.io"],
+            "resources": ["gatewayclasses"],
+            "verbs": read,
+        },
+        {
+            "apiGroups": ["metrics.k8s.io"],
+            "resources": ["nodes", "pods"],
+            "verbs": read,
+        },
     )
 
 
-def _assert_managed(resource: _ManagedResource, *, kind: str) -> None:
-    if resource.labels.get(DASHBOARD_LABEL) == DASHBOARD_LABEL_VALUE:
+def _object_name(resource: object) -> str:
+    raw_name = getattr(resource, "name", "")
+    name = str(raw_name or "").strip()
+    if name:
+        return name
+    metadata = getattr(resource, "metadata", None)
+    return str(getattr(metadata, "name", "") or "").strip()
+
+
+def _object_labels(resource: object) -> Mapping[str, str]:
+    labels = getattr(resource, "labels", None)
+    if labels is None:
+        metadata = getattr(resource, "metadata", None)
+        labels = getattr(metadata, "labels", None)
+    if isinstance(labels, Mapping):
+        return MappingProxyType({str(key): str(value) for key, value in labels.items()})
+    return MappingProxyType({})
+
+
+def _assert_managed(resource: object, *, kind: str) -> None:
+    if _object_labels(resource).get(DASHBOARD_LABEL) == DASHBOARD_LABEL_VALUE:
         return
     msg = (
-        f"{kind} {resource.name!r} exists but is not managed by Bertrand's "
+        f"{kind} {_object_name(resource)!r} exists but is not managed by Bertrand's "
         "dashboard backend"
     )
     raise OSError(msg)

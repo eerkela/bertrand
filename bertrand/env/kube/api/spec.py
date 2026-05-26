@@ -1,573 +1,80 @@
-"""Intent-level Kubernetes specs."""
+"""Private Kubernetes pod-template intents and manifest boundary types."""
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal, NotRequired, Self, TypedDict, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping, Sequence
     from pathlib import Path
 
 type PortProtocol = Literal["TCP", "UDP", "SCTP"]
 
 
-@dataclass(frozen=True)
-class ServicePortSpec:
-    """Intent-level Kubernetes Service port specification.
+class PolicyRuleManifest(TypedDict):
+    """Kubernetes RBAC policy rule manifest fragment."""
 
-    Parameters
-    ----------
-    name : str
-        Stable port name exposed by the Service.
-    port : int
-        Service port number.
-    target_port : int | str
-        Container port number or named port selected by the Service.
-    protocol : {"TCP", "UDP", "SCTP"}, optional
-        Network protocol for the Service port.
-    node_port : int | None, optional
-        Fixed NodePort value for `NodePort` Services.
-    """
-
-    name: str
-    port: int
-    target_port: int | str
-    protocol: PortProtocol = "TCP"
-    node_port: int | None = None
+    apiGroups: list[str]
+    resources: list[str]
+    verbs: list[str]
 
 
-@dataclass(frozen=True)
-class PolicyRuleSpec:
-    """Intent-level Kubernetes RBAC policy rule specification.
+class DeploymentRollingUpdateManifest(TypedDict, total=False):
+    """Kubernetes Deployment rolling-update strategy fragment."""
 
-    Parameters
-    ----------
-    api_groups : Collection[str]
-        API groups covered by the rule. Use `""` for the core API group.
-    resources : Collection[str]
-        Resource names covered by the rule.
-    verbs : Collection[str]
-        Verbs granted by the rule.
-    """
-
-    api_groups: Collection[str]
-    resources: Collection[str]
-    verbs: Collection[str]
+    maxSurge: int | str
+    maxUnavailable: int | str
 
 
-@dataclass(frozen=True)
-class ContainerPortSpec:
-    """Intent-level Kubernetes container port specification.
+class DeploymentStrategyManifest(TypedDict):
+    """Kubernetes Deployment strategy manifest fragment."""
 
-    Parameters
-    ----------
-    name : str
-        Stable name for the container port.
-    container_port : int
-        Port number exposed by the container.
-    protocol : {"TCP", "UDP", "SCTP"}, optional
-        Network protocol for the container port.
-    """
+    type: str
+    rollingUpdate: NotRequired[DeploymentRollingUpdateManifest | None]
+
+
+class ContainerPortManifest(TypedDict):
+    """Kubernetes container port manifest fragment."""
 
     name: str
-    container_port: int
-    protocol: PortProtocol = "TCP"
+    containerPort: int
+    protocol: PortProtocol
 
 
-@dataclass(frozen=True)
-class EnvVarSpec:
-    """Intent-level Kubernetes container environment variable.
-
-    Parameters
-    ----------
-    name : str
-        Environment variable name.
-    value : str | None, optional
-        Literal environment variable value.
-    field_path : str | None, optional
-        Kubernetes field path to project with `valueFrom.fieldRef`.
-    secret_name : str | None, optional
-        Secret name to project with `valueFrom.secretKeyRef`.
-    secret_key : str | None, optional
-        Secret key to project with `valueFrom.secretKeyRef`.
-    secret_optional : bool | None, optional
-        Whether the Secret key reference is optional.
-    config_map_name : str | None, optional
-        ConfigMap name to project with `valueFrom.configMapKeyRef`.
-    config_map_key : str | None, optional
-        ConfigMap key to project with `valueFrom.configMapKeyRef`.
-    config_map_optional : bool | None, optional
-        Whether the ConfigMap key reference is optional.
-    """
+class EnvVarManifest(TypedDict, total=False):
+    """Kubernetes environment variable manifest fragment."""
 
     name: str
-    value: str | None = None
-    field_path: str | None = None
-    secret_name: str | None = None
-    secret_key: str | None = None
-    secret_optional: bool | None = None
-    config_map_name: str | None = None
-    config_map_key: str | None = None
-    config_map_optional: bool | None = None
-
-    @classmethod
-    def field_ref(cls, name: str, *, field_path: str) -> Self:
-        """Create an environment variable from a Kubernetes field reference.
-
-        Parameters
-        ----------
-        name : str
-            Environment variable name.
-        field_path : str
-            Kubernetes field path to project into the environment variable.
-
-        Returns
-        -------
-        Self
-            Environment variable specification.
-        """
-        return cls(name=name, field_path=field_path)
-
-    @classmethod
-    def secret_key_ref(
-        cls,
-        name: str,
-        *,
-        secret_name: str,
-        key: str,
-        optional: bool | None = None,
-    ) -> Self:
-        """Create an environment variable from a Secret key reference.
-
-        Parameters
-        ----------
-        name : str
-            Environment variable name.
-        secret_name : str
-            Secret name containing the key.
-        key : str
-            Secret key to project into the environment variable.
-        optional : bool | None, optional
-            Whether the Secret key reference is optional.
-
-        Returns
-        -------
-        Self
-            Environment variable specification.
-        """
-        return cls(
-            name=name,
-            secret_name=secret_name,
-            secret_key=key,
-            secret_optional=optional,
-        )
-
-    @classmethod
-    def config_map_key_ref(
-        cls,
-        name: str,
-        *,
-        config_map_name: str,
-        key: str,
-        optional: bool | None = None,
-    ) -> Self:
-        """Create an environment variable from a ConfigMap key reference.
-
-        Parameters
-        ----------
-        name : str
-            Environment variable name.
-        config_map_name : str
-            ConfigMap name containing the key.
-        key : str
-            ConfigMap key to project into the environment variable.
-        optional : bool | None, optional
-            Whether the ConfigMap key reference is optional.
-
-        Returns
-        -------
-        Self
-            Environment variable specification.
-        """
-        return cls(
-            name=name,
-            config_map_name=config_map_name,
-            config_map_key=key,
-            config_map_optional=optional,
-        )
+    value: str
+    valueFrom: Mapping[str, object]
 
 
-@dataclass(frozen=True)
-class VolumeMountSpec:
-    """Intent-level Kubernetes container volume mount.
-
-    Parameters
-    ----------
-    name : str
-        Name of the pod volume to mount.
-    mount_path : str
-        Container path where the volume is mounted.
-    read_only : bool | None, optional
-        Whether the mount is read-only. `None` leaves the Kubernetes default.
-    sub_path : str | None, optional
-        Optional single file or directory within the volume to mount.
-    mount_propagation : str | None, optional
-        Optional Kubernetes mount propagation mode.
-    """
+class VolumeMountManifest(TypedDict, total=False):
+    """Kubernetes volume mount manifest fragment."""
 
     name: str
-    mount_path: str
-    read_only: bool | None = None
-    sub_path: str | None = None
-    mount_propagation: str | None = None
+    mountPath: str
+    readOnly: bool | None
+    subPath: str | None
+    mountPropagation: str | None
 
 
-@dataclass(frozen=True)
-class SecretVolumeItemSpec:
-    """Intent-level Kubernetes Secret volume item projection.
-
-    Parameters
-    ----------
-    key : str
-        Secret data key to project into the volume.
-    path : str
-        Relative file path to create inside the mounted volume.
-    mode : int | None, optional
-        Optional POSIX mode for this projected file.
-    """
+class SecretVolumeItemManifest(TypedDict, total=False):
+    """Kubernetes Secret volume item manifest fragment."""
 
     key: str
     path: str
-    mode: int | None = None
+    mode: int | None
 
 
-@dataclass(frozen=True)
-class ProbeSpec:
-    """Intent-level Kubernetes container health probe.
-
-    Parameters
-    ----------
-    exec_command : Sequence[str] | None, optional
-        Command to execute inside the container.
-    tcp_port : int | str | None, optional
-        TCP socket port to probe.
-    http_path : str | None, optional
-        HTTP path to request.
-    http_port : int | str | None, optional
-        HTTP port to request.
-    initial_delay_seconds : int | None, optional
-        Delay before the first probe.
-    period_seconds : int | None, optional
-        Interval between probes.
-    timeout_seconds : int | None, optional
-        Probe timeout in seconds.
-    success_threshold : int | None, optional
-        Number of consecutive successes required after failure.
-    failure_threshold : int | None, optional
-        Number of failed probes before Kubernetes marks the container unhealthy.
-    """
-
-    exec_command: Sequence[str] | None = None
-    tcp_port: int | str | None = None
-    http_path: str | None = None
-    http_port: int | str | None = None
-    initial_delay_seconds: int | None = None
-    period_seconds: int | None = None
-    timeout_seconds: int | None = None
-    success_threshold: int | None = None
-    failure_threshold: int | None = None
-
-    @classmethod
-    def exec(
-        cls,
-        *,
-        command: Sequence[str],
-        initial_delay_seconds: int | None = None,
-        period_seconds: int | None = None,
-        timeout_seconds: int | None = None,
-        success_threshold: int | None = None,
-        failure_threshold: int | None = None,
-    ) -> Self:
-        """Create an exec probe.
-
-        Parameters
-        ----------
-        command : Sequence[str]
-            Command to execute inside the container.
-        initial_delay_seconds : int | None, optional
-            Delay before the first probe.
-        period_seconds : int | None, optional
-            Interval between probes.
-        timeout_seconds : int | None, optional
-            Probe timeout in seconds.
-        success_threshold : int | None, optional
-            Number of consecutive successes required after failure.
-        failure_threshold : int | None, optional
-            Number of failed probes before Kubernetes marks the container unhealthy.
-
-        Returns
-        -------
-        Self
-            Probe specification.
-        """
-        return cls(
-            exec_command=command,
-            initial_delay_seconds=initial_delay_seconds,
-            period_seconds=period_seconds,
-            timeout_seconds=timeout_seconds,
-            success_threshold=success_threshold,
-            failure_threshold=failure_threshold,
-        )
-
-    @classmethod
-    def tcp(
-        cls,
-        *,
-        port: int | str,
-        initial_delay_seconds: int | None = None,
-        period_seconds: int | None = None,
-        timeout_seconds: int | None = None,
-        success_threshold: int | None = None,
-        failure_threshold: int | None = None,
-    ) -> Self:
-        """Create a TCP socket probe.
-
-        Parameters
-        ----------
-        port : int | str
-            Container port number or named port to probe.
-        initial_delay_seconds : int | None, optional
-            Delay before the first probe.
-        period_seconds : int | None, optional
-            Interval between probes.
-        timeout_seconds : int | None, optional
-            Probe timeout in seconds.
-        success_threshold : int | None, optional
-            Number of consecutive successes required after failure.
-        failure_threshold : int | None, optional
-            Number of failed probes before Kubernetes marks the container unhealthy.
-
-        Returns
-        -------
-        Self
-            Probe specification.
-        """
-        return cls(
-            tcp_port=port,
-            initial_delay_seconds=initial_delay_seconds,
-            period_seconds=period_seconds,
-            timeout_seconds=timeout_seconds,
-            success_threshold=success_threshold,
-            failure_threshold=failure_threshold,
-        )
-
-    @classmethod
-    def http(
-        cls,
-        *,
-        path: str,
-        port: int | str,
-        initial_delay_seconds: int | None = None,
-        period_seconds: int | None = None,
-        timeout_seconds: int | None = None,
-        success_threshold: int | None = None,
-        failure_threshold: int | None = None,
-    ) -> Self:
-        """Create an HTTP GET probe.
-
-        Parameters
-        ----------
-        path : str
-            HTTP path to request.
-        port : int | str
-            Container port number or named port to probe.
-        initial_delay_seconds : int | None, optional
-            Delay before the first probe.
-        period_seconds : int | None, optional
-            Interval between probes.
-        timeout_seconds : int | None, optional
-            Probe timeout in seconds.
-        success_threshold : int | None, optional
-            Number of consecutive successes required after failure.
-        failure_threshold : int | None, optional
-            Number of failed probes before Kubernetes marks the container unhealthy.
-
-        Returns
-        -------
-        Self
-            Probe specification.
-        """
-        return cls(
-            http_path=path,
-            http_port=port,
-            initial_delay_seconds=initial_delay_seconds,
-            period_seconds=period_seconds,
-            timeout_seconds=timeout_seconds,
-            success_threshold=success_threshold,
-            failure_threshold=failure_threshold,
-        )
-
-
-@dataclass(frozen=True)
-class SecurityContextSpec:
-    """Intent-level Kubernetes container security context.
-
-    Parameters
-    ----------
-    privileged : bool | None, optional
-        Whether the container should run privileged.
-    run_as_user : int | None, optional
-        Container user ID.
-    run_as_group : int | None, optional
-        Container group ID.
-    run_as_non_root : bool | None, optional
-        Whether Kubernetes should require a non-root user.
-    read_only_root_filesystem : bool | None, optional
-        Whether the root filesystem should be mounted read-only.
-    allow_privilege_escalation : bool | None, optional
-        Whether privilege escalation is allowed.
-    capabilities_add : Collection[str]
-        Linux capabilities to add.
-    capabilities_drop : Collection[str]
-        Linux capabilities to drop.
-    seccomp_profile_type : str | None, optional
-        Seccomp profile type.
-    seccomp_profile_localhost_profile : str | None, optional
-        Localhost seccomp profile name.
-    """
-
-    privileged: bool | None = None
-    run_as_user: int | None = None
-    run_as_group: int | None = None
-    run_as_non_root: bool | None = None
-    read_only_root_filesystem: bool | None = None
-    allow_privilege_escalation: bool | None = None
-    capabilities_add: Collection[str] = ()
-    capabilities_drop: Collection[str] = ()
-    seccomp_profile_type: str | None = None
-    seccomp_profile_localhost_profile: str | None = None
-
-
-@dataclass(frozen=True)
-class ContainerResourcesSpec:
-    """Intent-level Kubernetes container resource requirements.
-
-    Parameters
-    ----------
-    requests : Mapping[str, str], optional
-        Kubernetes resource requests keyed by resource name, such as ``"cpu"``.
-    limits : Mapping[str, str], optional
-        Kubernetes resource limits keyed by resource name, such as ``"memory"``.
-    claims : Collection[str], optional
-        Pod-level resource claim names referenced by this container.
-    """
-
-    requests: Mapping[str, str] = MappingProxyType({})
-    limits: Mapping[str, str] = MappingProxyType({})
-    claims: Collection[str] = ()
-
-
-@dataclass(frozen=True)
-class PodResourceClaimSpec:
-    """Intent-level Kubernetes pod resource claim reference.
-
-    Parameters
-    ----------
-    name : str
-        Pod-local resource claim name.
-    resource_claim_name : str | None, optional
-        Existing `ResourceClaim` name.
-    resource_claim_template_name : str | None, optional
-        `ResourceClaimTemplate` used to instantiate a claim for the pod.
-    """
+class PodResourceClaimManifest(TypedDict, total=False):
+    """Kubernetes pod resource claim manifest fragment."""
 
     name: str
-    resource_claim_name: str | None = None
-    resource_claim_template_name: str | None = None
-
-
-@dataclass(frozen=True)
-class TolerationSpec:
-    """Intent-level Kubernetes pod toleration.
-
-    Parameters
-    ----------
-    key : str | None, optional
-        Taint key matched by the toleration.
-    operator : str | None, optional
-        Toleration operator, such as `"Equal"` or `"Exists"`.
-    value : str | None, optional
-        Taint value matched by the toleration.
-    effect : str | None, optional
-        Taint effect matched by the toleration.
-    toleration_seconds : int | None, optional
-        Duration for `NoExecute` tolerations.
-    """
-
-    key: str | None = None
-    operator: str | None = None
-    value: str | None = None
-    effect: str | None = None
-    toleration_seconds: int | None = None
-
-
-@dataclass(frozen=True)
-class DeploymentStrategySpec:
-    """Intent-level Kubernetes Deployment rollout strategy.
-
-    Parameters
-    ----------
-    kind : str
-        Kubernetes strategy type, such as `"Recreate"` or `"RollingUpdate"`.
-    max_surge : int | str | None, optional
-        Maximum surge replicas during rolling updates.
-    max_unavailable : int | str | None, optional
-        Maximum unavailable replicas during rolling updates.
-    """
-
-    kind: str
-    max_surge: int | str | None = None
-    max_unavailable: int | str | None = None
-
-    @classmethod
-    def recreate(cls) -> Self:
-        """Create a Recreate strategy.
-
-        Returns
-        -------
-        Self
-            Deployment rollout strategy.
-        """
-        return cls(kind="Recreate")
-
-    @classmethod
-    def rolling_update(
-        cls,
-        *,
-        max_surge: int | str | None = None,
-        max_unavailable: int | str | None = None,
-    ) -> Self:
-        """Create a RollingUpdate strategy.
-
-        Parameters
-        ----------
-        max_surge : int | str | None, optional
-            Maximum surge replicas during rollout.
-        max_unavailable : int | str | None, optional
-            Maximum unavailable replicas during rollout.
-
-        Returns
-        -------
-        Self
-            Deployment rollout strategy.
-        """
-        return cls(
-            kind="RollingUpdate",
-            max_surge=max_surge,
-            max_unavailable=max_unavailable,
-        )
+    resourceClaimName: str
+    resourceClaimTemplateName: str
 
 
 @dataclass(frozen=True)
@@ -586,22 +93,22 @@ class ContainerSpec:
         Container entrypoint command.
     args : Sequence[str] | None, optional
         Container command arguments.
-    ports : Collection[ContainerPortSpec], optional
-        Container ports to expose.
-    env : Collection[EnvVarSpec], optional
-        Container environment variables.
-    startup_probe : ProbeSpec | None, optional
-        Startup probe intent.
-    readiness_probe : ProbeSpec | None, optional
-        Readiness probe intent.
-    liveness_probe : ProbeSpec | None, optional
-        Liveness probe intent.
-    volume_mounts : Collection[VolumeMountSpec], optional
-        Pod volume mounts for the container.
-    security_context : SecurityContextSpec | None, optional
-        Container security context intent.
-    resources : ContainerResourcesSpec | None, optional
-        Container resource requirements.
+    ports : Collection[Mapping[str, object]], optional
+        Container port manifest fragments.
+    env : Collection[Mapping[str, object]], optional
+        Container environment variable manifest fragments.
+    startup_probe : Mapping[str, object] | None, optional
+        Startup probe manifest fragment.
+    readiness_probe : Mapping[str, object] | None, optional
+        Readiness probe manifest fragment.
+    liveness_probe : Mapping[str, object] | None, optional
+        Liveness probe manifest fragment.
+    volume_mounts : Collection[Mapping[str, object]], optional
+        Container volume mount manifest fragments.
+    security_context : Mapping[str, object] | None, optional
+        Container security context manifest fragment.
+    resources : Mapping[str, object] | None, optional
+        Container resource requirements manifest fragment.
     stdin : bool | None, optional
         Whether Kubernetes should allocate an open stdin stream for this container.
     stdin_once : bool | None, optional
@@ -616,17 +123,61 @@ class ContainerSpec:
     image_pull_policy: str | None = None
     command: Sequence[str] | None = None
     args: Sequence[str] | None = None
-    ports: Collection[ContainerPortSpec] = ()
-    env: Collection[EnvVarSpec] = ()
-    startup_probe: ProbeSpec | None = None
-    readiness_probe: ProbeSpec | None = None
-    liveness_probe: ProbeSpec | None = None
-    volume_mounts: Collection[VolumeMountSpec] = ()
-    security_context: SecurityContextSpec | None = None
-    resources: ContainerResourcesSpec | None = None
+    ports: Collection[Mapping[str, object]] = ()
+    env: Collection[Mapping[str, object]] = ()
+    startup_probe: Mapping[str, object] | None = None
+    readiness_probe: Mapping[str, object] | None = None
+    liveness_probe: Mapping[str, object] | None = None
+    volume_mounts: Collection[Mapping[str, object]] = ()
+    security_context: Mapping[str, object] | None = None
+    resources: Mapping[str, object] | None = None
     stdin: bool | None = None
     stdin_once: bool | None = None
     tty: bool | None = None
+
+    def _manifest(self) -> dict[str, object]:
+        """Render this container as a Kubernetes manifest fragment.
+
+        Returns
+        -------
+        dict[str, object]
+            Kubernetes container fragment.
+        """
+        payload: dict[str, object] = {
+            "name": self.name,
+            "image": self.image,
+        }
+        if self.image_pull_policy is not None:
+            payload["imagePullPolicy"] = self.image_pull_policy
+        if self.command is not None:
+            payload["command"] = list(self.command)
+        if self.args is not None:
+            payload["args"] = list(self.args)
+        if self.stdin is not None:
+            payload["stdin"] = self.stdin
+        if self.stdin_once is not None:
+            payload["stdinOnce"] = self.stdin_once
+        if self.tty is not None:
+            payload["tty"] = self.tty
+        if self.ports:
+            payload["ports"] = [_copy_manifest(port) for port in self.ports]
+        if self.env:
+            payload["env"] = [_env_manifest(var) for var in self.env]
+        if self.startup_probe is not None:
+            payload["startupProbe"] = _probe_manifest(self.startup_probe)
+        if self.readiness_probe is not None:
+            payload["readinessProbe"] = _probe_manifest(self.readiness_probe)
+        if self.liveness_probe is not None:
+            payload["livenessProbe"] = _probe_manifest(self.liveness_probe)
+        if self.volume_mounts:
+            payload["volumeMounts"] = [
+                _copy_manifest(mount) for mount in self.volume_mounts
+            ]
+        if self.security_context:
+            payload["securityContext"] = _copy_manifest(self.security_context)
+        if self.resources:
+            payload["resources"] = _copy_manifest(self.resources)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -639,8 +190,8 @@ class PodTemplateSpec:
         Containers to render into the Pod template.
     volumes : Collection[VolumeSpec], optional
         Volumes to render into the Pod template.
-    resource_claims : Collection[PodResourceClaimSpec], optional
-        Pod-level DRA resource claims.
+    resource_claims : Collection[Mapping[str, object]], optional
+        Pod-level DRA resource claim manifest fragments.
     labels : Mapping[str, str], optional
         Labels to apply to the Pod template metadata.
     annotations : Mapping[str, str] | None, optional
@@ -657,8 +208,8 @@ class PodTemplateSpec:
         Optional exact node name.
     host_pid : bool | None, optional
         Optional ``hostPID`` value.
-    tolerations : Collection[TolerationSpec], optional
-        Optional pod tolerations.
+    tolerations : Collection[Mapping[str, object]], optional
+        Optional pod toleration manifest fragments.
     image_pull_secrets : Collection[str], optional
         Optional image pull Secret names.
     priority_class_name : str | None, optional
@@ -673,7 +224,7 @@ class PodTemplateSpec:
 
     containers: Collection[ContainerSpec]
     volumes: Collection[VolumeSpec] = ()
-    resource_claims: Collection[PodResourceClaimSpec] = ()
+    resource_claims: Collection[Mapping[str, object]] = ()
     labels: Mapping[str, str] = MappingProxyType({})
     annotations: Mapping[str, str] | None = None
     restart_policy: str | None = None
@@ -682,12 +233,80 @@ class PodTemplateSpec:
     node_selector: Mapping[str, str] | None = None
     node_name: str | None = None
     host_pid: bool | None = None
-    tolerations: Collection[TolerationSpec] = ()
+    tolerations: Collection[Mapping[str, object]] = ()
     image_pull_secrets: Collection[str] = ()
     priority_class_name: str | None = None
     dns_policy: str | None = None
     host_network: bool | None = None
     termination_grace_period_seconds: int | None = None
+
+    def _manifest(self) -> dict[str, object]:
+        """Render this Pod template as a Kubernetes manifest fragment.
+
+        Returns
+        -------
+        dict[str, object]
+            Kubernetes Pod template fragment.
+
+        Raises
+        ------
+        ValueError
+            If the template contains invalid child intents.
+        """
+        spec: dict[str, object] = {
+            "automountServiceAccountToken": self.automount_service_account_token,
+            "containers": [container._manifest() for container in self.containers],
+            "volumes": [volume._manifest() for volume in self.volumes],
+        }
+        if self.resource_claims:
+            spec["resourceClaims"] = [
+                _resource_claim_manifest(claim) for claim in self.resource_claims
+            ]
+        if self.restart_policy is not None:
+            spec["restartPolicy"] = self.restart_policy
+        if self.service_account_name is not None:
+            service_account_name = self.service_account_name.strip()
+            if service_account_name:
+                spec["serviceAccountName"] = service_account_name
+        if self.node_selector:
+            spec["nodeSelector"] = dict(self.node_selector)
+        if self.node_name is not None:
+            node_name = self.node_name.strip()
+            if node_name:
+                spec["nodeName"] = node_name
+        if self.tolerations:
+            spec["tolerations"] = [
+                _toleration_manifest(toleration) for toleration in self.tolerations
+            ]
+        if self.image_pull_secrets:
+            spec["imagePullSecrets"] = [
+                {"name": name}
+                for secret in self.image_pull_secrets
+                if (name := secret.strip())
+            ]
+        if self.priority_class_name is not None:
+            priority_class_name = self.priority_class_name.strip()
+            if priority_class_name:
+                spec["priorityClassName"] = priority_class_name
+        if self.dns_policy is not None:
+            dns_policy = self.dns_policy.strip()
+            if dns_policy:
+                spec["dnsPolicy"] = dns_policy
+        if self.host_network is not None:
+            spec["hostNetwork"] = self.host_network
+        if self.host_pid is not None:
+            spec["hostPID"] = self.host_pid
+        if self.termination_grace_period_seconds is not None:
+            if self.termination_grace_period_seconds < 0:
+                msg = "termination grace period cannot be negative"
+                raise ValueError(msg)
+            spec["terminationGracePeriodSeconds"] = (
+                self.termination_grace_period_seconds
+            )
+        metadata: dict[str, object] = {"labels": dict(self.labels)}
+        if self.annotations:
+            metadata["annotations"] = dict(self.annotations)
+        return {"metadata": metadata, "spec": spec}
 
 
 @dataclass(frozen=True)
@@ -714,7 +333,7 @@ class VolumeSpec:
         Whether the Secret reference is optional.
     secret_default_mode : int | None, optional
         Default POSIX mode for Secret-backed volume files.
-    secret_items : Collection[SecretVolumeItemSpec], optional
+    secret_items : Collection[Mapping[str, object]], optional
         Optional Secret key-to-path projections.
     persistent_volume_claim : str | None, optional
         PersistentVolumeClaim name for PVC-backed volumes.
@@ -733,7 +352,7 @@ class VolumeSpec:
     secret_name: str | None = None
     secret_optional: bool | None = None
     secret_default_mode: int | None = None
-    secret_items: Collection[SecretVolumeItemSpec] = ()
+    secret_items: Collection[Mapping[str, object]] = ()
     persistent_volume_claim: str | None = None
     host_path_path: str | None = None
     host_path_type: str | None = None
@@ -807,7 +426,7 @@ class VolumeSpec:
         secret_name: str,
         optional: bool | None = None,
         default_mode: int | None = None,
-        items: Collection[SecretVolumeItemSpec] = (),
+        items: Collection[Mapping[str, object]] = (),
     ) -> Self:
         """Create a Secret-backed volume specification.
 
@@ -821,7 +440,7 @@ class VolumeSpec:
             Whether the Secret reference is optional.
         default_mode : int | None, optional
             Default POSIX mode for Secret-backed volume files.
-        items : Collection[SecretVolumeItemSpec], optional
+        items : Collection[Mapping[str, object]], optional
             Optional Secret key-to-path projections. If omitted, Kubernetes projects
             every Secret data key.
 
@@ -881,3 +500,212 @@ class VolumeSpec:
             Volume specification.
         """
         return cls(name=name, host_path_path=str(path), host_path_type=host_path_type)
+
+    def _manifest(self) -> dict[str, object]:
+        """Render this volume as a Kubernetes manifest fragment.
+
+        Returns
+        -------
+        dict[str, object]
+            Kubernetes volume fragment.
+
+        Raises
+        ------
+        ValueError
+            If the volume source or Secret item projection is invalid.
+        """
+        empty_dir_source = (
+            self.empty_dir_source
+            or self.empty_dir_medium is not None
+            or self.empty_dir_size_limit is not None
+        )
+        kinds = sum(
+            (
+                empty_dir_source,
+                self.config_map_name is not None,
+                self.secret_name is not None,
+                self.persistent_volume_claim is not None,
+                self.host_path_path is not None,
+            )
+        )
+        if kinds != 1:
+            msg = "Kubernetes volume must define exactly one source"
+            raise ValueError(msg)
+
+        payload: dict[str, object] = {"name": self.name}
+        if empty_dir_source:
+            empty_dir: dict[str, object] = {}
+            if self.empty_dir_medium is not None:
+                empty_dir["medium"] = self.empty_dir_medium
+            if self.empty_dir_size_limit is not None:
+                empty_dir["sizeLimit"] = self.empty_dir_size_limit
+            payload["emptyDir"] = empty_dir
+        elif self.config_map_name is not None:
+            config_map: dict[str, object] = {"name": self.config_map_name}
+            if self.config_map_optional is not None:
+                config_map["optional"] = self.config_map_optional
+            payload["configMap"] = config_map
+        elif self.secret_name is not None:
+            secret: dict[str, object] = {"secretName": self.secret_name}
+            if self.secret_optional is not None:
+                secret["optional"] = self.secret_optional
+            if self.secret_default_mode is not None:
+                secret["defaultMode"] = self.secret_default_mode
+            if self.secret_items:
+                secret["items"] = [
+                    _secret_volume_item_manifest(item) for item in self.secret_items
+                ]
+            payload["secret"] = secret
+        elif self.persistent_volume_claim is not None:
+            payload["persistentVolumeClaim"] = {
+                "claimName": self.persistent_volume_claim
+            }
+        elif self.host_path_path is not None:
+            host_path: dict[str, object] = {"path": self.host_path_path}
+            if self.host_path_type is not None:
+                host_path["type"] = self.host_path_type
+            payload["hostPath"] = host_path
+        return payload
+
+
+def _copy_manifest(fragment: Mapping[str, object]) -> dict[str, object]:
+    return {key: value for key, value in fragment.items() if value is not None}
+
+
+def _env_manifest(fragment: Mapping[str, object]) -> dict[str, object]:
+    payload = _copy_manifest(fragment)
+    has_value = "value" in payload
+    value_from = payload.get("valueFrom")
+    has_value_from = value_from is not None
+    if has_value == has_value_from:
+        msg = "environment variable must define exactly one source"
+        raise ValueError(msg)
+    if not has_value_from:
+        return payload
+
+    value_from = _mapping_or_none(value_from)
+    if value_from is None:
+        msg = "environment variable must define exactly one source"
+        raise ValueError(msg)
+    sources = sum(
+        (
+            value_from.get("fieldRef") is not None,
+            value_from.get("secretKeyRef") is not None,
+            value_from.get("configMapKeyRef") is not None,
+        )
+    )
+    if sources != 1:
+        msg = "environment variable must define exactly one source"
+        raise ValueError(msg)
+
+    raw_secret = value_from.get("secretKeyRef")
+    secret = _mapping_or_none(raw_secret)
+    if raw_secret is not None and (
+        secret is None or not secret.get("name") or not secret.get("key")
+    ):
+        msg = "Secret environment variable source requires name and key"
+        raise ValueError(msg)
+
+    raw_config_map = value_from.get("configMapKeyRef")
+    config_map = _mapping_or_none(raw_config_map)
+    if raw_config_map is not None and (
+        config_map is None
+        or not config_map.get("name")
+        or not config_map.get("key")
+    ):
+        msg = "ConfigMap environment variable source requires name and key"
+        raise ValueError(msg)
+    return payload
+
+
+def _probe_manifest(fragment: Mapping[str, object]) -> dict[str, object]:
+    payload = _copy_manifest(fragment)
+    sources = sum(
+        (
+            payload.get("exec") is not None,
+            payload.get("tcpSocket") is not None,
+            payload.get("httpGet") is not None,
+        )
+    )
+    if sources != 1:
+        msg = "probe must define exactly one source"
+        raise ValueError(msg)
+
+    exec_probe = payload.get("exec")
+    if exec_probe is not None:
+        exec_probe = _mapping_or_none(exec_probe)
+        if exec_probe is None:
+            msg = "exec probe command cannot be empty"
+            raise ValueError(msg)
+        command = exec_probe.get("command")
+        if not isinstance(command, Sequence) or isinstance(command, str):
+            msg = "exec probe command cannot be empty"
+            raise ValueError(msg)
+        rendered = [str(part) for part in command if str(part).strip()]
+        if not rendered:
+            msg = "exec probe command cannot be empty"
+            raise ValueError(msg)
+        payload["exec"] = {"command": rendered}
+
+    raw_http_probe = payload.get("httpGet")
+    http_probe = _mapping_or_none(raw_http_probe)
+    if raw_http_probe is not None and (
+        http_probe is None
+        or http_probe.get("path") is None
+        or http_probe.get("port") is None
+    ):
+        msg = "HTTP probe requires path and port"
+        raise ValueError(msg)
+    return payload
+
+
+def _resource_claim_manifest(fragment: Mapping[str, object]) -> dict[str, object]:
+    name = str(fragment.get("name", "")).strip()
+    if not name:
+        msg = "pod resource claim name cannot be empty"
+        raise ValueError(msg)
+    resource_claim_name = str(fragment.get("resourceClaimName", "")).strip()
+    template_name = str(fragment.get("resourceClaimTemplateName", "")).strip()
+    if bool(resource_claim_name) == bool(template_name):
+        msg = (
+            "pod resource claim must reference exactly one existing claim or "
+            "claim template"
+        )
+        raise ValueError(msg)
+    payload: dict[str, object] = {"name": name}
+    if resource_claim_name:
+        payload["resourceClaimName"] = resource_claim_name
+    else:
+        payload["resourceClaimTemplateName"] = template_name
+    return payload
+
+
+def _toleration_manifest(fragment: Mapping[str, object]) -> dict[str, object]:
+    payload = _copy_manifest(fragment)
+    seconds = payload.get("tolerationSeconds")
+    if seconds is not None and int(cast("int", seconds)) < 0:
+        msg = "toleration seconds cannot be negative"
+        raise ValueError(msg)
+    return payload
+
+
+def _secret_volume_item_manifest(fragment: Mapping[str, object]) -> dict[str, object]:
+    key = str(fragment.get("key", "")).strip()
+    path = str(fragment.get("path", "")).strip()
+    if not key or not path:
+        msg = "Secret volume item key and path cannot be empty"
+        raise ValueError(msg)
+    payload: dict[str, object] = {"key": key, "path": path}
+    if "mode" in fragment and fragment["mode"] is not None:
+        mode = int(cast("int", fragment["mode"]))
+        if mode < 0:
+            msg = "Secret volume item mode cannot be negative"
+            raise ValueError(msg)
+        payload["mode"] = mode
+    return payload
+
+
+def _mapping_or_none(value: object) -> Mapping[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return cast("Mapping[str, object]", value)

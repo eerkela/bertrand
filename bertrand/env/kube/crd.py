@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
 from bertrand.env.git import until
 
 from .api.metadata import KubeMetadata
-from .api.resource import ClusterMutableResourceMixin, ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 
 CRD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
@@ -22,56 +22,25 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class CustomResourceDefinition(
-    ClusterMutableResourceMixin[kube_client.V1CustomResourceDefinition],
+    BuiltinResourceObject[kube_client.V1CustomResourceDefinition],
     KubeMetadata[kube_client.V1CustomResourceDefinition],
 ):
     """General-purpose wrapper around one Kubernetes CRD object."""
 
     _obj: kube_client.V1CustomResourceDefinition
 
-    @classmethod
-    def _client(
-        cls,
-    ) -> ResourceClient[kube_client.V1CustomResourceDefinition, Self]:
-        return ResourceClient(
-            scope="cluster",
+    resource: ClassVar[BuiltinResource[kube_client.V1CustomResourceDefinition]] = (
+        BuiltinResource.cluster(
+            api="apiextensions",
             kind="CustomResourceDefinition",
+            slug="custom_resource_definition",
             expected=kube_client.V1CustomResourceDefinition,
             list_type=kube_client.V1CustomResourceDefinitionList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, _namespace, name, request_timeout: (
-                kube.apiextensions.read_custom_resource_definition(
-                    name=name,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.apiextensions.list_custom_resource_definition(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            create=lambda kube, _namespace, _name, manifest, request_timeout: (
-                kube.apiextensions.create_custom_resource_definition(
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            patch=lambda kube, _namespace, name, manifest, request_timeout: (
-                kube.apiextensions.patch_custom_resource_definition(
-                    name=name,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            delete=lambda kube, _namespace, name, request_timeout: (
-                kube.apiextensions.delete_custom_resource_definition(
-                    name=name,
-                    _request_timeout=request_timeout,
-                )
-            ),
+            create=True,
+            patch=True,
+            delete=True,
         )
+    )
 
     @staticmethod
     def _manifest(
@@ -207,8 +176,9 @@ class CustomResourceDefinition(
             scope=scope,
             short_names=short_names,
         )
-        return await cls._client().upsert(
+        return await cls.resource.upsert(
             kube,
+            owner=cls,
             name=name,
             manifest=body,
             timeout=timeout,

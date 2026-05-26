@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from bertrand.env.git import (
+    BERTRAND_NAMESPACE,
     Deadline,
     confirm,
     symlink_points_to,
@@ -36,8 +37,7 @@ from bertrand.env.kube.ceph.mount import MountInfo
 from bertrand.env.kube.ceph.volume import (
     REPOSITORY_MOUNT_HOST_HASH_LABEL,
     REPOSITORY_MOUNT_PHASE_LABEL,
-    ensure_repository_mount_crd,
-    list_repository_mount_records,
+    REPOSITORY_STATE_RESOURCE,
     repository_mount_host_hash,
     retire_repository_mount_record,
 )
@@ -97,20 +97,23 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         # This is the only durable cluster mutation in `bertrand clean`: retire
         # this host's mount aliases while preserving repository volumes for
         # recovery or future explicit destructive cleanup.
-        await ensure_repository_mount_crd(
+        await REPOSITORY_STATE_RESOURCE.ensure_crd(
             state.kube,
             timeout=state.deadline.remaining(),
         )
-        records = await list_repository_mount_records(
+        states = await REPOSITORY_STATE_RESOURCE.list(
             state.kube,
-            labels={
-                REPOSITORY_MOUNT_HOST_HASH_LABEL: repository_mount_host_hash(
-                    state.host_id
-                ),
-                REPOSITORY_MOUNT_PHASE_LABEL: "active",
-            },
+            namespace=BERTRAND_NAMESPACE,
             timeout=state.deadline.remaining(),
         )
+        records = [
+            record
+            for repository in states
+            for record in repository.status.mounts.values()
+            if record.labels.get(REPOSITORY_MOUNT_HOST_HASH_LABEL)
+            == repository_mount_host_hash(state.host_id)
+            and record.labels.get(REPOSITORY_MOUNT_PHASE_LABEL) == "active"
+        ]
         for record in records:
             if record.host_id != state.host_id or record.phase != "Active":
                 continue

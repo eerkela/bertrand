@@ -5,12 +5,12 @@ from __future__ import annotations
 import base64
 import binascii
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import NamespacedMutableResourceMixin, ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Secret(
-    NamespacedMutableResourceMixin[kube_client.V1Secret],
+    BuiltinResourceObject[kube_client.V1Secret],
     NamespacedKubeMetadata[kube_client.V1Secret],
 ):
     """General-purpose wrapper around one Kubernetes Secret object.
@@ -33,59 +33,18 @@ class Secret(
 
     _obj: kube_client.V1Secret
 
-    @classmethod
-    def _client(cls) -> ResourceClient[kube_client.V1Secret, Self]:
-        return ResourceClient(
-            scope="namespaced",
+    resource: ClassVar[BuiltinResource[kube_client.V1Secret]] = (
+        BuiltinResource.namespaced(
+            api="core",
             kind="Secret",
+            slug="secret",
             expected=kube_client.V1Secret,
             list_type=kube_client.V1SecretList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, namespace, name, request_timeout: (
-                kube.core.read_namespaced_secret(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.core.list_secret_for_all_namespaces(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_namespace=lambda kube, namespace, labels, fields, timeout: (
-                kube.core.list_namespaced_secret(
-                    namespace=namespace,
-                    label_selector=labels,
-                    field_selector=fields,
-                    _request_timeout=timeout,
-                )
-            ),
-            create=lambda kube, namespace, _name, manifest, request_timeout: (
-                kube.core.create_namespaced_secret(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            patch=lambda kube, namespace, name, manifest, request_timeout: (
-                kube.core.patch_namespaced_secret(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            delete=lambda kube, namespace, name, request_timeout: (
-                kube.core.delete_namespaced_secret(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
+            create=True,
+            patch=True,
+            delete=True,
         )
+    )
 
     @classmethod
     async def upsert(
@@ -136,8 +95,9 @@ class Secret(
             "data": {"value": base64.b64encode(payload).decode("ascii")},
         }
 
-        return await cls._client().upsert(
+        return await cls.resource.upsert(
             kube,
+            owner=cls,
             namespace=namespace,
             name=name,
             manifest=manifest,

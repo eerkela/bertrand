@@ -15,17 +15,17 @@ from bertrand.env.config.python import PyProject
 from bertrand.env.git import INFINITY, Deadline, ensure_worktree_id
 from bertrand.env.kube.build.containerfile import project_containerfile
 from bertrand.env.kube.build.lifecycle import (
+    PROJECT_IMAGE_RESOURCE,
     ProjectImagePublication,
-    ensure_project_image_crd,
     get_project_image,
     worktree_identity,
 )
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.build.request import (
+    BUILDKIT_BUILD_RESOURCE,
     BuildKitBuildRecord,
     BuildKitBuildSpec,
     ProjectImageIdentity,
-    ensure_buildkit_build_crd,
     submit_buildkit_build,
     wait_buildkit_build,
 )
@@ -192,8 +192,14 @@ class ProjectImageBuild:
             timeout, message="timeout must be non-negative"
         )
         if ensure_crds:
-            await ensure_buildkit_build_crd(kube, timeout=deadline.remaining())
-            await ensure_project_image_crd(kube, timeout=deadline.remaining())
+            await BUILDKIT_BUILD_RESOURCE.ensure_crd(
+                kube,
+                timeout=deadline.remaining(),
+            )
+            await PROJECT_IMAGE_RESOURCE.ensure_crd(
+                kube,
+                timeout=deadline.remaining(),
+            )
         spec = self.spec.with_external_publication(
             external_image=external_image,
             auth_id=auth_id,

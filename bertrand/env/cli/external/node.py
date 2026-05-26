@@ -13,11 +13,9 @@ from bertrand.env.cli.external._device import (
 )
 from bertrand.env.cli.external._runtime import emit_json
 from bertrand.env.cli.external._storage import (
-    print_storage_csi_line,
-    print_storage_status_fields,
+    print_node_storage_doctor,
+    print_node_storage_status,
     storage_cli_snapshot,
-    storage_csi_ready,
-    storage_osd_line,
 )
 from bertrand.env.cli.external.secret import (
     _add_capability,
@@ -31,7 +29,7 @@ from bertrand.env.kube.api.bootstrap import microk8s_cluster_ready
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.capability.device import list_device_inventory
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
-from bertrand.env.kube.ceph.capacity import list_storage_node_reports
+from bertrand.env.kube.ceph.capacity import read_storage_state
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.node_identity import (
     BertrandNodeRecord,
@@ -313,19 +311,7 @@ async def bertrand_node_storage_status(*, json_output: bool) -> None:
     if json_output:
         emit_json(payload)
         return
-    print("storage:")
-    print_storage_status_fields(payload["status"], local=True)
-    print("  actions:")
-    action_counts = cast("dict[str, object]", payload["action_counts"])
-    for phase, count in action_counts.items():
-        print(f"    {phase}: {count}")
-    print(f"  active reservations: {len(snapshot.active_reservations())}")
-    print(f"  node reports for this host: {len(snapshot.reports)}")
-    print(f"  managed OSD records: {len(snapshot.osds)}")
-    print_storage_csi_line(payload["csi"])
-    for osd in snapshot.osds:
-        if osd.spec.node_name:
-            print(storage_osd_line(osd, include_ceph_id=False))
+    print_node_storage_status(snapshot)
 
 
 async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
@@ -342,86 +328,7 @@ async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
     if json_output:
         emit_json(snapshot.doctor_payload())
         return
-    actions = snapshot.actions
-    reports = snapshot.reports
-    osds = snapshot.osds
-    csi_ready = storage_csi_ready(snapshot.csi)
-    print("storage doctor:")
-    if not actions:
-        print("  no tracked storage actions for this host")
-    if not csi_ready:
-        print("  Bertrand OSD CSI is not fully ready")
-    local_reports = [report for report in reports if report.status is not None]
-    if not any(report.status and report.status.lvm_pvs for report in local_reports):
-        print("  no reported local 'bertrand' LVM PVs; loop fallback may be used")
-    for osd in osds:
-        if osd.status.phase in {"HostPrepared", "Binding", "Expanding", "Shrinking"}:
-            changed_at = (
-                osd.status.phase_changed_at.isoformat()
-                if osd.status.phase_changed_at is not None
-                else "unknown"
-            )
-            print(
-                f"  OSD {osd.metadata.name} is {osd.status.phase}; "
-                f"waiting for Rook/CSI reconciliation since {changed_at}"
-            )
-        if osd.status.last_error:
-            print(f"  OSD {osd.metadata.name} error: {osd.status.last_error}")
-    active_loop = any(
-        osd.spec.origin == "loop-fallback"
-        and osd.status.phase not in {"Retired", "Failed"}
-        for osd in osds
-    )
-    lvm_available = any(
-        report.status is not None and report.status.lvm_free_bytes > 0
-        for report in reports
-    )
-    if active_loop and lvm_available:
-        print(
-            "  loop fallback is active and LVM space is available; migration will "
-            "proceed once Ceph is healthy"
-        )
-    policy = snapshot.policy
-    if policy.status is not None:
-        if policy.status.missing_lvm_osd_pvs > 0:
-            print(
-                "  usable LVM PVs are missing managed OSD coverage; Bertrand "
-                "will create minimum-size PV-pinned OSDs before shrinking"
-            )
-        if policy.status.lvm_shrink_candidate:
-            print(
-                "  LVM shrink candidate selected: "
-                f"{policy.status.lvm_shrink_candidate} -> "
-                f"{policy.status.lvm_shrink_target_bytes} bytes"
-            )
-    for reservation in snapshot.reservations:
-        if reservation.status.phase == "Pending":
-            print(
-                f"  reservation {reservation.metadata.name} is pending: "
-                f"{reservation.status.last_error or 'waiting for headroom'}"
-            )
-    for action in actions:
-        print(f"{action.metadata.name}: {action.spec.operation} {action.status.phase}")
-        if action.status.osd_origin or action.status.osd_quality:
-            print(
-                "  storage: "
-                f"{action.status.osd_origin or 'unknown'} / "
-                f"{action.status.osd_quality or 'unknown'}"
-            )
-        if action.status.created_osd_ids:
-            print(f"  created OSDs: {list(action.status.created_osd_ids)}")
-        if action.status.source_pv:
-            print(f"  source PV: {action.status.source_pv}")
-        if action.status.source_lv:
-            print(f"  source LV: {action.status.source_lv}")
-        if action.status.provisioned_bytes is not None:
-            print(f"  provisioned bytes: {action.status.provisioned_bytes}")
-        if action.status.message:
-            print(f"  {action.status.message}")
-    print(
-        "  tip: create a host LVM volume group named 'bertrand' and add PVs "
-        "to give Bertrand preferred storage capacity."
-    )
+    print_node_storage_doctor(snapshot)
 
 
 def _parse_attrs(values: list[str]) -> dict[str, str]:
@@ -486,12 +393,17 @@ async def _node_status_payload() -> dict[str, object]:
                 "internal_ips": list(node.internal_ips),
                 "external_ips": list(node.external_ips),
             }
-            reports = await list_storage_node_reports(kube, timeout=INFINITY)
+            storage = await read_storage_state(kube, timeout=INFINITY)
             report = next(
-                (item for item in reports if item.spec.host_id == host_id), None
+                (
+                    item
+                    for item in storage.status.nodes.values()
+                    if item.host_id == host_id
+                ),
+                None,
             )
-            if report is not None and report.status is not None:
-                payload["storage_report"] = report.status.model_dump(mode="json")
+            if report is not None:
+                payload["storage_report"] = report.status_payload()
             devices = await list_device_inventory(
                 kube,
                 host_ids=(host_id,) if host_id else None,

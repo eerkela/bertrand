@@ -14,13 +14,7 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
 )
-from bertrand.env.kube.api.spec import (
-    ContainerResourcesSpec,
-    ContainerSpec,
-    PodTemplateSpec,
-    VolumeMountSpec,
-    VolumeSpec,
-)
+from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.build.daemon import (
     BUILDKIT_IMAGE,
     BUILDKIT_POOL,
@@ -35,7 +29,10 @@ from bertrand.env.kube.build.refs import (
     platform_output_ref,
 )
 from bertrand.env.kube.build.repository import IMAGES
-from bertrand.env.kube.capability.base import Capability, CapabilityKind
+from bertrand.env.kube.capability.base import (
+    CapabilityKind,
+    resolve_capability_secret,
+)
 from bertrand.env.kube.capability.device import (
     DRADeviceRequest,
     allocated_selector_script,
@@ -82,7 +79,7 @@ class _PreparedBuildContext:
     path: str
     dockerfile_path: str
     volumes: tuple[VolumeSpec, ...]
-    mounts: tuple[VolumeMountSpec, ...]
+    mounts: tuple[Mapping[str, object], ...]
 
 
 @dataclass(frozen=True)
@@ -321,7 +318,7 @@ class _ProjectBuildExecutor:
         image: str,
         source: _PreparedBuildContext,
         capability_volumes: tuple[VolumeSpec, ...],
-        capability_mounts: tuple[VolumeMountSpec, ...],
+        capability_mounts: tuple[Mapping[str, object], ...],
         secret_paths: Mapping[str, str],
         ssh_paths: Mapping[str, str],
         timeout: float,
@@ -373,22 +370,23 @@ class _ProjectBuildExecutor:
                             ],
                             volume_mounts=[
                                 *source.mounts,
-                                VolumeMountSpec(
-                                    name=BUILD_JOB_METADATA_VOLUME,
-                                    mount_path=BUILD_JOB_METADATA_MOUNT,
-                                ),
+                                {
+                                    "name": BUILD_JOB_METADATA_VOLUME,
+                                    "mountPath": BUILD_JOB_METADATA_MOUNT,
+                                },
                                 *capability_mounts,
-                                VolumeMountSpec(
-                                    name=BUILDKIT_SOCKET_VOLUME,
-                                    mount_path=BUILDKIT_SOCKET_DIR,
-                                ),
+                                {
+                                    "name": BUILDKIT_SOCKET_VOLUME,
+                                    "mountPath": BUILDKIT_SOCKET_DIR,
+                                },
                             ],
                             resources=(
-                                ContainerResourcesSpec(
-                                    claims=tuple(
-                                        claim.claim_name for claim in dra_claims
-                                    )
-                                )
+                                {
+                                    "claims": [
+                                        {"name": claim.claim_name}
+                                        for claim in dra_claims
+                                    ]
+                                }
                                 if dra_claims
                                 else None
                             ),
@@ -479,17 +477,17 @@ class _ProjectBuildExecutor:
                         ),
                     ),
                     mounts=(
-                        VolumeMountSpec(
-                            name=BUILD_JOB_CONTEXT_VOLUME,
-                            mount_path=BUILD_JOB_CONTEXT_MOUNT,
-                            read_only=True,
-                            sub_path=_worktree_sub_path(self.spec.worktree),
-                        ),
-                        VolumeMountSpec(
-                            name=BUILD_JOB_DOCKERFILE_VOLUME,
-                            mount_path=BUILD_JOB_DOCKERFILE_MOUNT,
-                            read_only=True,
-                        ),
+                        {
+                            "name": BUILD_JOB_CONTEXT_VOLUME,
+                            "mountPath": BUILD_JOB_CONTEXT_MOUNT,
+                            "readOnly": True,
+                            "subPath": _worktree_sub_path(self.spec.worktree),
+                        },
+                        {
+                            "name": BUILD_JOB_DOCKERFILE_VOLUME,
+                            "mountPath": BUILD_JOB_DOCKERFILE_MOUNT,
+                            "readOnly": True,
+                        },
                     ),
                 )
             finally:
@@ -507,7 +505,7 @@ class _ProjectBuildExecutor:
         timeout: float,
     ) -> tuple[
         list[VolumeSpec],
-        list[VolumeMountSpec],
+        list[Mapping[str, object]],
         dict[str, str],
         dict[str, str],
     ]:
@@ -515,7 +513,7 @@ class _ProjectBuildExecutor:
             timeout, message="timeout must be non-negative"
         )
         volumes: list[VolumeSpec] = []
-        mounts: list[VolumeMountSpec] = []
+        mounts: list[Mapping[str, object]] = []
         secret_paths: dict[str, str] = {}
         ssh_paths: dict[str, str] = {}
         groups: tuple[
@@ -528,7 +526,7 @@ class _ProjectBuildExecutor:
 
         for kind, requests, mount_root, paths in groups:
             for capability_id, required in sorted(requests.items()):
-                capability = await Capability.resolve(
+                secret = await resolve_capability_secret(
                     kube,
                     kind=kind,
                     capability_id=capability_id,
@@ -537,23 +535,19 @@ class _ProjectBuildExecutor:
                     required=required,
                     timeout=deadline.remaining(),
                 )
-                if capability is None:
+                if secret is None:
                     continue
                 volume_name = _capability_volume_name(kind, capability_id)
                 mount_path = f"{mount_root}/{capability_id}"
                 volumes.append(
                     VolumeSpec.secret(
                         volume_name,
-                        secret_name=capability.ref.name,
+                        secret_name=secret.name,
                         default_mode=0o400,
                     )
                 )
                 mounts.append(
-                    VolumeMountSpec(
-                        name=volume_name,
-                        mount_path=mount_path,
-                        read_only=True,
-                    )
+                    {"name": volume_name, "mountPath": mount_path, "readOnly": True}
                 )
                 paths[capability_id] = f"{mount_path}/{CAPABILITY_VALUE_KEY}"
 

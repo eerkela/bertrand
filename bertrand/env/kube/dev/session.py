@@ -14,7 +14,6 @@ from bertrand.env.git import (
     IMAGE_ID_ENV,
     Deadline,
 )
-from bertrand.env.kube.api.spec import EnvVarSpec, PolicyRuleSpec
 from bertrand.env.kube.build.project import project_image_build
 from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
 from bertrand.env.kube.dev.mailbox import (
@@ -25,7 +24,12 @@ from bertrand.env.kube.dev.mailbox import (
     list_code_open_requests,
 )
 from bertrand.env.kube.pod import Pod
-from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding, Role, RoleBinding
+from bertrand.env.kube.rbac import (
+    upsert_cluster_role,
+    upsert_cluster_role_binding,
+    upsert_role,
+    upsert_role_binding,
+)
 from bertrand.env.kube.service_account import ServiceAccount
 from bertrand.env.kube.workload.controller import ensure_workload_claim_templates
 from bertrand.env.kube.workload.project import (
@@ -38,7 +42,11 @@ if TYPE_CHECKING:
 
     from bertrand.env.config.core import Config
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
+    from bertrand.env.kube.api.spec import (
+        ContainerSpec,
+        PodTemplateSpec,
+        PolicyRuleManifest,
+    )
     from bertrand.env.kube.workload.base import WorkloadPod
 
 DEV_SERVICE_ACCOUNT = "bertrand-dev"
@@ -187,7 +195,7 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
         labels=_DEV_LABELS,
         timeout=deadline.remaining(),
     )
-    await Role.upsert(
+    await upsert_role(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DEV_SERVICE_ACCOUNT,
@@ -195,7 +203,7 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
         rules=_dev_namespace_rules(),
         timeout=deadline.remaining(),
     )
-    await RoleBinding.upsert(
+    await upsert_role_binding(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=DEV_SERVICE_ACCOUNT,
@@ -205,14 +213,14 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
         labels=_DEV_LABELS,
         timeout=deadline.remaining(),
     )
-    await ClusterRole.upsert(
+    await upsert_cluster_role(
         kube,
         name=DEV_SERVICE_ACCOUNT,
         labels=_DEV_LABELS,
         rules=_dev_cluster_rules(),
         timeout=deadline.remaining(),
     )
-    await ClusterRoleBinding.upsert(
+    await upsert_cluster_role_binding(
         kube,
         name=DEV_SERVICE_ACCOUNT,
         role_name=DEV_SERVICE_ACCOUNT,
@@ -475,14 +483,20 @@ def _dev_container(
 ) -> ContainerSpec:
     env = list(container.env)
     for entry in (
-        EnvVarSpec(name=DEV_SESSION_ENV, value=session_id),
-        EnvVarSpec(name=DEV_HOST_ID_ENV, value=host_id),
-        EnvVarSpec(name=DEV_PRIMARY_CONTAINER_ENV, value=primary_container),
-        EnvVarSpec(name=CONTAINER_ID_ENV, field_path="metadata.name"),
-        EnvVarSpec(name=DEV_POD_NAME_ENV, field_path="metadata.name"),
-        EnvVarSpec(name=IMAGE_ID_ENV, value=image_ref),
+        {"name": DEV_SESSION_ENV, "value": session_id},
+        {"name": DEV_HOST_ID_ENV, "value": host_id},
+        {"name": DEV_PRIMARY_CONTAINER_ENV, "value": primary_container},
+        {
+            "name": CONTAINER_ID_ENV,
+            "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}},
+        },
+        {
+            "name": DEV_POD_NAME_ENV,
+            "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}},
+        },
+        {"name": IMAGE_ID_ENV, "value": image_ref},
     ):
-        env = [current for current in env if current.name != entry.name]
+        env = [current for current in env if current.get("name") != entry["name"]]
         env.append(entry)
     return replace(container, env=tuple(env))
 
@@ -496,111 +510,99 @@ def _dev_session_labels(*, session_id: str, host_id: str) -> dict[str, str]:
     }
 
 
-def _dev_namespace_rules() -> tuple[PolicyRuleSpec, ...]:
-    read = ("get", "list", "watch")
-    mutate = ("get", "list", "watch", "create", "update", "patch", "delete")
+def _dev_namespace_rules() -> tuple[PolicyRuleManifest, ...]:
+    read = ["get", "list", "watch"]
+    mutate = ["get", "list", "watch", "create", "update", "patch", "delete"]
     return (
-        PolicyRuleSpec(
-            api_groups=(DEV_GROUP,),
-            resources=("codeopenrequests",),
-            verbs=("create", "get", "list", "watch"),
-        ),
-        PolicyRuleSpec(
-            api_groups=("",),
-            resources=("pods", "services", "configmaps"),
-            verbs=mutate,
-        ),
-        PolicyRuleSpec(
-            api_groups=("",),
-            resources=("pods/log",),
-            verbs=("get", "list", "watch"),
-        ),
-        PolicyRuleSpec(
-            api_groups=("",),
-            resources=("pods/attach",),
-            verbs=("get", "create"),
-        ),
-        PolicyRuleSpec(
-            api_groups=("",),
-            resources=("secrets", "persistentvolumeclaims"),
-            verbs=read,
-        ),
-        PolicyRuleSpec(
-            api_groups=("apps",),
-            resources=("deployments", "daemonsets"),
-            verbs=mutate,
-        ),
-        PolicyRuleSpec(
-            api_groups=("batch",),
-            resources=("jobs", "cronjobs"),
-            verbs=mutate,
-        ),
-        PolicyRuleSpec(
-            api_groups=("networking.k8s.io",),
-            resources=("networkpolicies",),
-            verbs=mutate,
-        ),
-        PolicyRuleSpec(
-            api_groups=("gateway.networking.k8s.io",),
-            resources=("gateways", "httproutes"),
-            verbs=mutate,
-        ),
-        PolicyRuleSpec(
-            api_groups=("resource.k8s.io",),
-            resources=("resourceclaims", "resourceclaimtemplates"),
-            verbs=mutate,
-        ),
-        PolicyRuleSpec(
-            api_groups=("coordination.k8s.io",),
-            resources=("leases",),
-            verbs=mutate,
-        ),
-        PolicyRuleSpec(
-            api_groups=("build.bertrand.dev",),
-            resources=("buildkitbuilds",),
-            verbs=("create", "get", "list", "watch"),
-        ),
-        PolicyRuleSpec(
-            api_groups=("build.bertrand.dev",),
-            resources=("bertrandimages",),
-            verbs=read,
-        ),
-        PolicyRuleSpec(
-            api_groups=("dra.bertrand.dev",),
-            resources=("bertranddevices",),
-            verbs=read,
-        ),
-        PolicyRuleSpec(
-            api_groups=("ceph.bertrand.dev",),
-            resources=("cephrepositoryvolumes", "cephrepositoryworktrees"),
-            verbs=read,
-        ),
+        {
+            "apiGroups": [DEV_GROUP],
+            "resources": ["codeopenrequests"],
+            "verbs": ["create", "get", "list", "watch"],
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["pods", "services", "configmaps"],
+            "verbs": mutate,
+        },
+        {"apiGroups": [""], "resources": ["pods/log"], "verbs": read},
+        {"apiGroups": [""], "resources": ["pods/attach"], "verbs": ["get", "create"]},
+        {
+            "apiGroups": [""],
+            "resources": ["secrets", "persistentvolumeclaims"],
+            "verbs": read,
+        },
+        {
+            "apiGroups": ["apps"],
+            "resources": ["deployments", "daemonsets"],
+            "verbs": mutate,
+        },
+        {
+            "apiGroups": ["batch"],
+            "resources": ["jobs", "cronjobs"],
+            "verbs": mutate,
+        },
+        {
+            "apiGroups": ["networking.k8s.io"],
+            "resources": ["networkpolicies"],
+            "verbs": mutate,
+        },
+        {
+            "apiGroups": ["gateway.networking.k8s.io"],
+            "resources": ["gateways", "httproutes"],
+            "verbs": mutate,
+        },
+        {
+            "apiGroups": ["resource.k8s.io"],
+            "resources": ["resourceclaims", "resourceclaimtemplates"],
+            "verbs": mutate,
+        },
+        {
+            "apiGroups": ["coordination.k8s.io"],
+            "resources": ["leases"],
+            "verbs": mutate,
+        },
+        {
+            "apiGroups": ["build.bertrand.dev"],
+            "resources": ["buildkitbuilds"],
+            "verbs": ["create", "get", "list", "watch"],
+        },
+        {
+            "apiGroups": ["build.bertrand.dev"],
+            "resources": ["bertrandimages"],
+            "verbs": read,
+        },
+        {
+            "apiGroups": ["dra.bertrand.dev"],
+            "resources": ["bertranddevices"],
+            "verbs": read,
+        },
+        {
+            "apiGroups": ["ceph.bertrand.dev"],
+            "resources": ["cephrepositorystates"],
+            "verbs": read,
+        },
     )
 
 
-def _dev_cluster_rules() -> tuple[PolicyRuleSpec, ...]:
-    read = ("get", "list", "watch")
+def _dev_cluster_rules() -> tuple[PolicyRuleManifest, ...]:
+    read = ["get", "list", "watch"]
     return (
-        PolicyRuleSpec(
-            api_groups=("",),
-            resources=("nodes",),
-            verbs=read,
-        ),
-        PolicyRuleSpec(
-            api_groups=("gateway.networking.k8s.io",),
-            resources=("gatewayclasses",),
-            verbs=("get", "list", "watch", "create", "update", "patch"),
-        ),
-        PolicyRuleSpec(
-            api_groups=("resource.k8s.io",),
-            resources=("deviceclasses", "resourceslices"),
-            verbs=read,
-        ),
-        PolicyRuleSpec(
-            api_groups=("node.bertrand.dev",),
-            resources=("bertrandnodes",),
-            verbs=read,
-        ),
+        {"apiGroups": [""], "resources": ["nodes"], "verbs": read},
+        {
+            "apiGroups": ["gateway.networking.k8s.io"],
+            "resources": ["gatewayclasses"],
+            "verbs": ["get", "list", "watch", "create", "update", "patch"],
+        },
+        {
+            "apiGroups": ["resource.k8s.io"],
+            "resources": ["deviceclasses", "resourceslices"],
+            "verbs": read,
+        },
+        {
+            "apiGroups": ["node.bertrand.dev"],
+            "resources": ["bertrandnodes"],
+            "verbs": read,
+        },
     )
 
 

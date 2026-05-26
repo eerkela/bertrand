@@ -8,12 +8,10 @@ from typing import TYPE_CHECKING, cast
 from bertrand.env.git import until
 from bertrand.env.kube.custom_object import (
     CustomObjectResource,
-    CustomObjectSpec,
     CustomObjectWrapper,
 )
 
 if TYPE_CHECKING:
-    import builtins
     from datetime import datetime
 
     from .api.client import Kube
@@ -27,20 +25,6 @@ VOLUME_SNAPSHOT_CLASS_KIND = "VolumeSnapshotClass"
 VOLUME_SNAPSHOT_CLASS_PLURAL = "volumesnapshotclasses"
 VOLUME_SNAPSHOT_WAIT_INTERVAL_SECONDS = 0.5
 
-_VOLUME_SNAPSHOT_CLASS_SPEC = CustomObjectSpec(
-    group=SNAPSHOT_GROUP,
-    version=SNAPSHOT_VERSION,
-    kind=VOLUME_SNAPSHOT_CLASS_KIND,
-    plural=VOLUME_SNAPSHOT_CLASS_PLURAL,
-    scope="cluster",
-)
-_VOLUME_SNAPSHOT_SPEC = CustomObjectSpec(
-    group=SNAPSHOT_GROUP,
-    version=SNAPSHOT_VERSION,
-    kind=VOLUME_SNAPSHOT_KIND,
-    plural=VOLUME_SNAPSHOT_PLURAL,
-)
-
 
 class VolumeSnapshotClass(CustomObjectWrapper):
     """Wrapper around one cluster-scoped `VolumeSnapshotClass`.
@@ -50,66 +34,6 @@ class VolumeSnapshotClass(CustomObjectWrapper):
     _obj : CustomObject
         Generic custom object returned by the snapshot API.
     """
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        name: str,
-        timeout: float,
-    ) -> VolumeSnapshotClass | None:
-        """Read one `VolumeSnapshotClass` by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            Snapshot class name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        VolumeSnapshotClass | None
-            Wrapped snapshot class, or `None` if it does not exist.
-        """
-        return await _VOLUME_SNAPSHOT_CLASS_RESOURCE.get(
-            kube,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[VolumeSnapshotClass]:
-        """List `VolumeSnapshotClass` objects with optional labels.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Optional exact-match label selector.
-
-        Returns
-        -------
-        list[VolumeSnapshotClass]
-            Wrapped snapshot classes matching the selector.
-        """
-        return await _VOLUME_SNAPSHOT_CLASS_RESOURCE.list(
-            kube,
-            labels=labels,
-            timeout=timeout,
-        )
 
     @classmethod
     async def create(
@@ -155,7 +79,7 @@ class VolumeSnapshotClass(CustomObjectWrapper):
             "deletionPolicy": deletion_policy,
             "parameters": dict(parameters or {}),
         }
-        return await _VOLUME_SNAPSHOT_CLASS_RESOURCE.create_manifest(
+        return await cls.resource.create_manifest(
             kube,
             manifest=manifest,
             timeout=timeout,
@@ -184,11 +108,13 @@ class VolumeSnapshotClass(CustomObjectWrapper):
         return str(self._obj.payload.get("deletionPolicy") or "").strip()
 
 
-_VOLUME_SNAPSHOT_CLASS_RESOURCE: CustomObjectResource[VolumeSnapshotClass] = (
-    CustomObjectResource(
-        spec=_VOLUME_SNAPSHOT_CLASS_SPEC,
-        parser=VolumeSnapshotClass._from_object,
-    )
+VolumeSnapshotClass.resource = CustomObjectResource(
+    group=SNAPSHOT_GROUP,
+    version=SNAPSHOT_VERSION,
+    kind=VOLUME_SNAPSHOT_CLASS_KIND,
+    plural=VOLUME_SNAPSHOT_CLASS_PLURAL,
+    scope="cluster",
+    parser=VolumeSnapshotClass._from_object,
 )
 
 
@@ -200,74 +126,6 @@ class VolumeSnapshot(CustomObjectWrapper):
     _obj : CustomObject
         Generic custom object returned by the snapshot API.
     """
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        timeout: float,
-    ) -> VolumeSnapshot | None:
-        """Read one `VolumeSnapshot` by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the snapshot.
-        name : str
-            Snapshot name.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        VolumeSnapshot | None
-            Wrapped snapshot, or `None` if it does not exist.
-        """
-        return await _VOLUME_SNAPSHOT_RESOURCE.get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[VolumeSnapshot]:
-        """List namespaced `VolumeSnapshot` objects.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace to query.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Optional exact-match label selector.
-
-        Returns
-        -------
-        list[VolumeSnapshot]
-            Wrapped snapshots matching the selector.
-        """
-        return await _VOLUME_SNAPSHOT_RESOURCE.list(
-            kube,
-            namespace=namespace,
-            labels=labels,
-            timeout=timeout,
-        )
 
     @classmethod
     async def create(
@@ -308,7 +166,7 @@ class VolumeSnapshot(CustomObjectWrapper):
         VolumeSnapshot
             Wrapped created snapshot.
         """
-        return await _VOLUME_SNAPSHOT_RESOURCE.create(
+        return await cls.resource.create(
             kube,
             namespace=namespace,
             name=name,
@@ -332,7 +190,7 @@ class VolumeSnapshot(CustomObjectWrapper):
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("delete VolumeSnapshot")
-        await _VOLUME_SNAPSHOT_RESOURCE.delete_by_name(
+        await type(self).resource.delete_by_name(
             kube,
             namespace=namespace,
             name=name,
@@ -420,7 +278,7 @@ class VolumeSnapshot(CustomObjectWrapper):
             Maximum wait budget in seconds.
         """
         namespace, name = self._require_namespace_name("wait for VolumeSnapshot")
-        await _VOLUME_SNAPSHOT_RESOURCE.wait_deleted(
+        await type(self).resource.wait_deleted(
             label=f"VolumeSnapshot {namespace}/{name}",
             timeout=timeout,
             refresh=lambda remaining: self.refresh(kube, timeout=remaining),
@@ -501,7 +359,10 @@ class VolumeSnapshot(CustomObjectWrapper):
         return namespace, name
 
 
-_VOLUME_SNAPSHOT_RESOURCE: CustomObjectResource[VolumeSnapshot] = CustomObjectResource(
-    spec=_VOLUME_SNAPSHOT_SPEC,
+VolumeSnapshot.resource = CustomObjectResource(
+    group=SNAPSHOT_GROUP,
+    version=SNAPSHOT_VERSION,
+    kind=VOLUME_SNAPSHOT_KIND,
+    plural=VOLUME_SNAPSHOT_PLURAL,
     parser=VolumeSnapshot._from_object,
 )

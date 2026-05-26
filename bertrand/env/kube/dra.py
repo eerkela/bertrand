@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.kube.custom_object import (
     CustomObjectResource,
-    CustomObjectSpec,
     CustomObjectWrapper,
 )
 
@@ -27,33 +26,6 @@ RESOURCE_CLAIM_PLURAL = "resourceclaims"
 RESOURCE_CLAIM_TEMPLATE_KIND = "ResourceClaimTemplate"
 RESOURCE_CLAIM_TEMPLATE_PLURAL = "resourceclaimtemplates"
 
-_DEVICE_CLASS_SPEC = CustomObjectSpec(
-    group=DRA_GROUP,
-    version=DRA_VERSION,
-    kind=DEVICE_CLASS_KIND,
-    plural=DEVICE_CLASS_PLURAL,
-    scope="cluster",
-)
-_RESOURCE_SLICE_SPEC = CustomObjectSpec(
-    group=DRA_GROUP,
-    version=DRA_VERSION,
-    kind=RESOURCE_SLICE_KIND,
-    plural=RESOURCE_SLICE_PLURAL,
-    scope="cluster",
-)
-_RESOURCE_CLAIM_SPEC = CustomObjectSpec(
-    group=DRA_GROUP,
-    version=DRA_VERSION,
-    kind=RESOURCE_CLAIM_KIND,
-    plural=RESOURCE_CLAIM_PLURAL,
-)
-_RESOURCE_CLAIM_TEMPLATE_SPEC = CustomObjectSpec(
-    group=DRA_GROUP,
-    version=DRA_VERSION,
-    kind=RESOURCE_CLAIM_TEMPLATE_KIND,
-    plural=RESOURCE_CLAIM_TEMPLATE_PLURAL,
-)
-
 
 class DeviceClass(CustomObjectWrapper):
     """Wrapper around one Kubernetes DRA `DeviceClass`."""
@@ -70,25 +42,12 @@ class DeviceClass(CustomObjectWrapper):
     ) -> DeviceClass:
         """Create or patch a DRA `DeviceClass`.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            DeviceClass name.
-        spec : Mapping[str, object]
-            DeviceClass spec payload.
-        timeout : float
-            Maximum request budget in seconds.
-        labels : Mapping[str, str] | None, optional
-            Kubernetes labels to apply.
-
         Returns
         -------
         DeviceClass
             Wrapped class object.
         """
-        return await _DEVICE_CLASS_RESOURCE.upsert(
+        return await cls.resource.upsert(
             kube,
             name=name,
             spec=spec,
@@ -97,8 +56,12 @@ class DeviceClass(CustomObjectWrapper):
         )
 
 
-_DEVICE_CLASS_RESOURCE: CustomObjectResource[DeviceClass] = CustomObjectResource(
-    spec=_DEVICE_CLASS_SPEC,
+DeviceClass.resource = CustomObjectResource(
+    group=DRA_GROUP,
+    version=DRA_VERSION,
+    kind=DEVICE_CLASS_KIND,
+    plural=DEVICE_CLASS_PLURAL,
+    scope="cluster",
     parser=DeviceClass._from_object,
 )
 
@@ -118,25 +81,12 @@ class ResourceSlice(CustomObjectWrapper):
     ) -> ResourceSlice:
         """Create or patch a DRA `ResourceSlice`.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            ResourceSlice name.
-        spec : Mapping[str, object]
-            ResourceSlice spec payload.
-        timeout : float
-            Maximum request budget in seconds.
-        labels : Mapping[str, str] | None, optional
-            Kubernetes labels to apply.
-
         Returns
         -------
         ResourceSlice
             Wrapped ResourceSlice.
         """
-        return await _RESOURCE_SLICE_RESOURCE.upsert(
+        return await cls.resource.upsert(
             kube,
             name=name,
             spec=spec,
@@ -145,48 +95,18 @@ class ResourceSlice(CustomObjectWrapper):
         )
 
 
-_RESOURCE_SLICE_RESOURCE: CustomObjectResource[ResourceSlice] = CustomObjectResource(
-    spec=_RESOURCE_SLICE_SPEC,
+ResourceSlice.resource = CustomObjectResource(
+    group=DRA_GROUP,
+    version=DRA_VERSION,
+    kind=RESOURCE_SLICE_KIND,
+    plural=RESOURCE_SLICE_PLURAL,
+    scope="cluster",
     parser=ResourceSlice._from_object,
 )
 
 
 class ResourceClaim(CustomObjectWrapper):
     """Wrapper around one namespaced DRA `ResourceClaim`."""
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        timeout: float,
-    ) -> ResourceClaim | None:
-        """Read one DRA `ResourceClaim` by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the claim.
-        name : str
-            Claim name.
-        timeout : float
-            Maximum request budget in seconds.
-
-        Returns
-        -------
-        ResourceClaim | None
-            Wrapped claim, or `None` when missing.
-        """
-        return await _RESOURCE_CLAIM_RESOURCE.get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
 
     @property
     def status(self) -> Mapping[str, object]:
@@ -200,8 +120,11 @@ class ResourceClaim(CustomObjectWrapper):
         return self._obj.status
 
 
-_RESOURCE_CLAIM_RESOURCE: CustomObjectResource[ResourceClaim] = CustomObjectResource(
-    spec=_RESOURCE_CLAIM_SPEC,
+ResourceClaim.resource = CustomObjectResource(
+    group=DRA_GROUP,
+    version=DRA_VERSION,
+    kind=RESOURCE_CLAIM_KIND,
+    plural=RESOURCE_CLAIM_PLURAL,
     parser=ResourceClaim._from_object,
 )
 
@@ -222,27 +145,12 @@ class ResourceClaimTemplate(CustomObjectWrapper):
     ) -> ResourceClaimTemplate:
         """Create one DRA `ResourceClaimTemplate`.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the template.
-        name : str
-            ResourceClaimTemplate name.
-        spec : Mapping[str, object]
-            ResourceClaimTemplate spec payload.
-        labels : Mapping[str, str]
-            Kubernetes labels to apply.
-        timeout : float
-            Maximum request budget in seconds.
-
         Returns
         -------
         ResourceClaimTemplate
             Wrapped ResourceClaimTemplate.
         """
-        return await _RESOURCE_CLAIM_TEMPLATE_RESOURCE.create(
+        return await cls.resource.create(
             kube,
             namespace=namespace,
             name=name,
@@ -264,27 +172,12 @@ class ResourceClaimTemplate(CustomObjectWrapper):
     ) -> ResourceClaimTemplate:
         """Create or patch one DRA `ResourceClaimTemplate`.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the template.
-        name : str
-            ResourceClaimTemplate name.
-        spec : Mapping[str, object]
-            ResourceClaimTemplate spec payload.
-        labels : Mapping[str, str]
-            Kubernetes labels to apply.
-        timeout : float
-            Maximum request budget in seconds.
-
         Returns
         -------
         ResourceClaimTemplate
             Wrapped created or patched ResourceClaimTemplate.
         """
-        return await _RESOURCE_CLAIM_TEMPLATE_RESOURCE.upsert(
+        return await cls.resource.upsert(
             kube,
             namespace=namespace,
             name=name,
@@ -305,7 +198,7 @@ class ResourceClaimTemplate(CustomObjectWrapper):
         """
         if not self._obj.namespace or not self._obj.name:
             return
-        await _RESOURCE_CLAIM_TEMPLATE_RESOURCE.delete_by_name(
+        await type(self).resource.delete_by_name(
             kube,
             namespace=self._obj.namespace,
             name=self._obj.name,
@@ -313,11 +206,12 @@ class ResourceClaimTemplate(CustomObjectWrapper):
         )
 
 
-_RESOURCE_CLAIM_TEMPLATE_RESOURCE: CustomObjectResource[ResourceClaimTemplate] = (
-    CustomObjectResource(
-        spec=_RESOURCE_CLAIM_TEMPLATE_SPEC,
-        parser=ResourceClaimTemplate._from_object,
-    )
+ResourceClaimTemplate.resource = CustomObjectResource(
+    group=DRA_GROUP,
+    version=DRA_VERSION,
+    kind=RESOURCE_CLAIM_TEMPLATE_KIND,
+    plural=RESOURCE_CLAIM_TEMPLATE_PLURAL,
+    parser=ResourceClaimTemplate._from_object,
 )
 
 
@@ -337,7 +231,7 @@ async def ensure_dra_api(kube: Kube, *, timeout: float) -> None:
         If the Kubernetes DRA API is unavailable.
     """
     try:
-        await _DEVICE_CLASS_RESOURCE.list(kube, timeout=timeout)
+        await DeviceClass.list(kube, timeout=timeout)
     except OSError as err:
         msg = (
             "Kubernetes Dynamic Resource Allocation API "

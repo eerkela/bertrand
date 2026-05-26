@@ -5,19 +5,18 @@ from __future__ import annotations
 import hashlib
 import platform
 import uuid
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bertrand.env.config.core import _check_uuid
-from bertrand.env.git import BERTRAND_ENV, Deadline
+from bertrand.env.git import BERTRAND_ENV
 from bertrand.env.host import HOST_ID_FILE
-from bertrand.env.kube.capability.base import delete_capabilities_for_scope
-from bertrand.env.kube.capability.device import delete_device_inventory_for_host
-from bertrand.env.kube.custom_object import CustomObjectMetadata
-from bertrand.env.kube.custom_resource import CustomResource
+from bertrand.env.kube.custom_object import (
+    CustomObjectMetadata,
+    CustomObjectResource,
+)
 from bertrand.env.kube.node import Node
 
 if TYPE_CHECKING:
@@ -35,29 +34,15 @@ BERTRAND_NODE_HOST_LABEL = "bertrand.dev/node-host"
 BERTRAND_NODE_KUBE_LABEL = "bertrand.dev/node-kubernetes"
 BERTRAND_NODE_PHASE_LABEL = "bertrand.dev/node-phase"
 
-_NON_EMPTY = {"type": "string", "minLength": 1}
 _BERTRAND_NODE_LABELS = {
     BERTRAND_ENV: "1",
     BERTRAND_NODE_LABEL: BERTRAND_NODE_LABEL_VALUE,
-}
-_BERTRAND_NODE_SPEC_SCHEMA = {
-    "type": "object",
-    "required": ["host_id", "node_name", "phase", "created_at", "last_seen_at"],
-    "properties": {
-        "host_id": _NON_EMPTY,
-        "node_name": _NON_EMPTY,
-        "display_name": {"type": "string"},
-        "phase": {"type": "string", "enum": ["Active", "Retired"]},
-        "created_at": {"type": "string", "format": "date-time"},
-        "last_seen_at": {"type": "string", "format": "date-time"},
-        "retired_at": {"type": "string", "format": "date-time", "nullable": True},
-    },
 }
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
 type _BertrandNodePhase = Literal["Active", "Retired"]
 
 
-class _BertrandNodeSpecPayload(BaseModel):
+class _BertrandNodeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     host_id: _NonEmptyString
     node_name: _NonEmptyString
@@ -96,54 +81,22 @@ class _BertrandNodeSpecPayload(BaseModel):
         return value.astimezone(UTC)
 
 
-class _BertrandNodePayload(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-    api_version: str = Field(default="", alias="apiVersion")
-    kind: str = ""
-    metadata: CustomObjectMetadata = Field(default_factory=CustomObjectMetadata)
-    spec: _BertrandNodeSpecPayload
-
-
-@dataclass(frozen=True)
-class BertrandNodeRecord:
+class BertrandNodeRecord(BaseModel):
     """Cluster-scoped Bertrand host identity record.
 
     Parameters
     ----------
     metadata : CustomObjectMetadata
         Kubernetes metadata for the custom object.
-    spec : _BertrandNodeSpecPayload
+    spec : _BertrandNodeSpec
         Validated Bertrand node identity payload.
     """
 
+    model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
+    api_version: str = Field(default="", alias="apiVersion")
+    kind: str = ""
     metadata: CustomObjectMetadata
-    spec: _BertrandNodeSpecPayload
-
-    @classmethod
-    def from_payload(cls, payload: object) -> Self:
-        """Validate a raw Kubernetes custom-object payload.
-
-        Parameters
-        ----------
-        payload : object
-            Raw custom-object payload returned by Kubernetes.
-
-        Returns
-        -------
-        Self
-            Validated Bertrand node record.
-
-        Raises
-        ------
-        OSError
-            If the payload is malformed.
-        """
-        try:
-            parsed = _BertrandNodePayload.model_validate(payload)
-        except ValidationError as err:
-            msg = f"malformed {BERTRAND_NODE_KIND} payload: {err}"
-            raise OSError(msg) from err
-        return cls(metadata=parsed.metadata, spec=parsed.spec)
+    spec: _BertrandNodeSpec
 
     @property
     def name(self) -> str:
@@ -176,38 +129,21 @@ class BertrandNodeRecord:
         return self.spec.retired_at
 
 
-_BERTRAND_NODE_RESOURCE = CustomResource[BertrandNodeRecord](
+BERTRAND_NODE_RESOURCE = CustomObjectResource[BertrandNodeRecord](
     group=BERTRAND_NODE_GROUP,
     version=BERTRAND_NODE_VERSION,
     kind=BERTRAND_NODE_KIND,
     plural=BERTRAND_NODE_PLURAL,
-    singular="bertrandnode",
-    parser=BertrandNodeRecord.from_payload,
-    spec_schema=_BERTRAND_NODE_SPEC_SCHEMA,
-    labels=_BERTRAND_NODE_LABELS,
     scope="cluster",
+    labels=_BERTRAND_NODE_LABELS,
+    singular="bertrandnode",
+    payload_parser=BertrandNodeRecord.model_validate,
+    payload_error_context=f"{BERTRAND_NODE_KIND} payload",
+    spec_model=_BertrandNodeSpec,
+    spec_schema_overrides={
+        "required": ["host_id", "node_name", "phase", "created_at", "last_seen_at"],
+    },
 )
-
-
-async def ensure_bertrand_node_crd(kube: Kube, *, timeout: float) -> None:
-    """Converge the cluster-scoped Bertrand node identity CRD.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum convergence budget in seconds.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
-    """
-    if timeout <= 0:
-        msg = "BertrandNode CRD timeout must be non-negative"
-        raise TimeoutError(msg)
-    await _BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=timeout)
 
 
 async def ensure_local_bertrand_node(
@@ -245,7 +181,7 @@ async def ensure_local_bertrand_node(
         msg = "BertrandNode convergence timeout must be non-negative"
         raise TimeoutError(msg)
     host_id = current_host_id() if host_id is None else _check_uuid(host_id)
-    await ensure_bertrand_node_crd(kube, timeout=timeout)
+    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=timeout)
     node = await Node.local(kube, timeout=timeout)
     existing = await get_bertrand_node(kube, host_id=host_id, timeout=timeout)
     now = datetime.now(UTC)
@@ -256,7 +192,7 @@ async def ensure_local_bertrand_node(
         )
     else:
         chosen_display = display_name.strip()
-    spec = _BertrandNodeSpecPayload(
+    spec = _BertrandNodeSpec(
         host_id=host_id,
         node_name=node.name,
         display_name=chosen_display,
@@ -265,10 +201,10 @@ async def ensure_local_bertrand_node(
         last_seen_at=now,
         retired_at=None,
     )
-    return await _BERTRAND_NODE_RESOURCE.upsert(
+    return await BERTRAND_NODE_RESOURCE.upsert(
         kube,
         name=bertrand_node_name(host_id),
-        spec=spec.model_dump(mode="json"),
+        spec=spec,
         labels={
             BERTRAND_NODE_HOST_LABEL: _hash_label(host_id),
             BERTRAND_NODE_KUBE_LABEL: _hash_label(node.name),
@@ -291,7 +227,7 @@ async def get_bertrand_node(
     BertrandNodeRecord | None
         Matching record, or ``None`` when it does not exist.
     """
-    return await _BERTRAND_NODE_RESOURCE.get(
+    return await BERTRAND_NODE_RESOURCE.get(
         kube,
         name=bertrand_node_name(host_id),
         timeout=timeout,
@@ -329,12 +265,12 @@ async def retire_bertrand_node(
         msg = "BertrandNode retirement timeout must be non-negative"
         raise TimeoutError(msg)
     host_id = current_host_id() if host_id is None else _check_uuid(host_id)
-    await ensure_bertrand_node_crd(kube, timeout=timeout)
+    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=timeout)
     existing = await get_bertrand_node(kube, host_id=host_id, timeout=timeout)
     if existing is None:
         return None
     now = datetime.now(UTC)
-    spec = _BertrandNodeSpecPayload(
+    spec = _BertrandNodeSpec(
         host_id=existing.host_id,
         node_name=existing.node_name,
         display_name=existing.display_name,
@@ -343,10 +279,10 @@ async def retire_bertrand_node(
         last_seen_at=existing.spec.last_seen_at,
         retired_at=existing.retired_at or now,
     )
-    return await _BERTRAND_NODE_RESOURCE.upsert(
+    return await BERTRAND_NODE_RESOURCE.upsert(
         kube,
         name=existing.name,
-        spec=spec.model_dump(mode="json"),
+        spec=spec,
         labels={
             BERTRAND_NODE_HOST_LABEL: _hash_label(existing.host_id),
             BERTRAND_NODE_KUBE_LABEL: _hash_label(existing.node_name),
@@ -370,7 +306,7 @@ async def list_bertrand_nodes(
     list[BertrandNodeRecord]
         Matching Bertrand node records.
     """
-    records = await _BERTRAND_NODE_RESOURCE.list(kube, timeout=timeout)
+    records = await BERTRAND_NODE_RESOURCE.list(kube, timeout=timeout)
     allowed_hosts = {_check_uuid(item) for item in host_ids or ()}
     allowed_nodes = {item.strip() for item in node_names or () if item.strip()}
     if allowed_hosts:
@@ -426,81 +362,6 @@ async def resolve_host_id_for_node(
         )
         raise OSError(msg)
     return records[0].host_id
-
-
-async def gc_retired_bertrand_node_state(
-    kube: Kube,
-    *,
-    timeout: float,
-    grace_seconds: int = 604_800,
-    limit: int = 8,
-) -> list[BertrandNodeRecord]:
-    """Delete eligible retired node-scoped Bertrand state.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum GC budget in seconds.
-    grace_seconds : int, optional
-        Minimum time a node must remain retired before its scoped state is deleted.
-    limit : int, optional
-        Maximum number of node records to collect in this pass.
-
-    Returns
-    -------
-    list[BertrandNodeRecord]
-        Retired node records whose scoped state was deleted.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or GC exceeds the budget.
-    ValueError
-        If `grace_seconds` or `limit` is negative.
-    """
-    if timeout <= 0:
-        msg = "BertrandNode GC timeout must be non-negative"
-        raise TimeoutError(msg)
-    if grace_seconds < 0 or limit < 0:
-        msg = "BertrandNode GC grace_seconds and limit must be non-negative"
-        raise ValueError(msg)
-    if limit == 0:
-        return []
-
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BertrandNode GC timeout must be non-negative",
-    )
-    now = datetime.now(UTC)
-    grace = timedelta(seconds=grace_seconds)
-    collected: list[BertrandNodeRecord] = []
-    for record in await list_bertrand_nodes(kube, timeout=deadline.remaining()):
-        if len(collected) >= limit:
-            break
-        if record.phase != "Retired" or record.retired_at is None:
-            continue
-        if now - record.retired_at < grace:
-            continue
-        await delete_capabilities_for_scope(
-            kube,
-            scope="node",
-            scope_value=record.host_id,
-            timeout=deadline.remaining(),
-        )
-        await delete_device_inventory_for_host(
-            kube,
-            host_id=record.host_id,
-            timeout=deadline.remaining(),
-        )
-        await _BERTRAND_NODE_RESOURCE.delete_by_name(
-            kube,
-            name=record.name,
-            timeout=deadline.remaining(),
-        )
-        collected.append(record)
-    return collected
 
 
 def current_host_id() -> str:

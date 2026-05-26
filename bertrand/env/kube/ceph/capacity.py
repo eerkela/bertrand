@@ -9,22 +9,23 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     PositiveInt,
-    ValidationError,
     field_validator,
     model_validator,
 )
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.ceph.api import CephCapacitySnapshot, CephOSD, parse_size_bytes
-from bertrand.env.kube.custom_object import CustomObjectMetadata  # noqa: TC001
-from bertrand.env.kube.custom_resource import CustomResource, ensure_custom_resources
+from bertrand.env.kube.custom_object import (
+    CustomObjectMetadata,
+    CustomObjectResource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection, Mapping
@@ -33,27 +34,16 @@ if TYPE_CHECKING:
 
 CEPH_CAPACITY_GROUP = "ceph.bertrand.dev"
 CEPH_CAPACITY_VERSION = "v1alpha1"
-STORAGE_POLICY_KIND = "CephStorageAutoscaler"
-STORAGE_POLICY_PLURAL = "cephstorageautoscalers"
+STORAGE_STATE_KIND = "CephStorageState"
+STORAGE_STATE_PLURAL = "cephstoragestates"
 STORAGE_ACTION_KIND = "CephStorageAction"
 STORAGE_ACTION_PLURAL = "cephstorageactions"
-STORAGE_NODE_KIND = "CephStorageNode"
-STORAGE_NODE_PLURAL = "cephstoragenodes"
-STORAGE_OSD_KIND = "CephStorageOSD"
-STORAGE_OSD_PLURAL = "cephstorageosds"
-STORAGE_RESERVATION_KIND = "CephStorageReservation"
-STORAGE_RESERVATION_PLURAL = "cephstoragereservations"
-STORAGE_POLICY_NAME = "default"
+STORAGE_STATE_NAME = "default"
 STORAGE_CONTROLLER_LABEL = "bertrand.dev/ceph-storage-controller"
 STORAGE_CONTROLLER_LABEL_VALUE = "v1"
 STORAGE_OSD_LABEL = "bertrand.dev/ceph-storage-osd"
 STORAGE_OSD_LABEL_VALUE = "v1"
 STORAGE_OSD_NAME_LABEL = "bertrand.dev/ceph-storage-osd-name"
-STORAGE_OSD_ORIGIN_LABEL = "bertrand.dev/ceph-storage-osd-origin"
-STORAGE_OSD_PHASE_LABEL = "bertrand.dev/ceph-storage-osd-phase"
-STORAGE_OSD_NODE_LABEL = "bertrand.dev/ceph-storage-osd-node"
-STORAGE_OSD_HOST_LABEL = "bertrand.dev/ceph-storage-osd-host"
-STORAGE_OSD_PV_LABEL = "bertrand.dev/ceph-storage-osd-pv"
 STORAGE_CONTROLLER_LABELS = {
     BERTRAND_ENV: "1",
     STORAGE_CONTROLLER_LABEL: STORAGE_CONTROLLER_LABEL_VALUE,
@@ -324,7 +314,7 @@ class _CephStoragePolicySpec(BaseModel):
         return self
 
 
-class _CephStoragePolicyStatus(BaseModel):
+class CephStoragePolicyStatus(BaseModel):
     """Observed status emitted by the Ceph capacity controller."""
 
     model_config = ConfigDict(extra="forbid")
@@ -356,42 +346,6 @@ class _CephStoragePolicyStatus(BaseModel):
     last_shrink_at: datetime | None = None
     last_reconciled_at: datetime | None = None
     last_error: str = ""
-
-
-class CephStoragePolicyRecord(BaseModel):
-    """Validated `CephStorageAutoscaler` custom-resource payload."""
-
-    model_config = ConfigDict(extra="forbid")
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["CephStorageAutoscaler"]
-    metadata: CustomObjectMetadata
-    spec: _CephStoragePolicySpec = Field(default_factory=_CephStoragePolicySpec)
-    status: _CephStoragePolicyStatus | None = None
-
-    @classmethod
-    def from_payload(cls, payload: object) -> CephStoragePolicyRecord:
-        """Validate a Kubernetes custom-object payload.
-
-        Parameters
-        ----------
-        payload : object
-            Raw custom-object payload returned by Kubernetes.
-
-        Returns
-        -------
-        CephStoragePolicyRecord
-            Validated storage policy record.
-
-        Raises
-        ------
-        OSError
-            If the payload is malformed.
-        """
-        try:
-            return cls.model_validate(payload)
-        except ValidationError as err:
-            msg = f"malformed {STORAGE_POLICY_KIND} custom object: {err}"
-            raise OSError(msg) from err
 
 
 class _CephStorageActionSpec(BaseModel):
@@ -465,91 +419,28 @@ class CephStorageActionRecord(BaseModel):
     spec: _CephStorageActionSpec
     status: _CephStorageActionStatus = Field(default_factory=_CephStorageActionStatus)
 
-    @classmethod
-    def from_payload(cls, payload: object) -> CephStorageActionRecord:
-        """Validate a Kubernetes custom-object payload.
-
-        Parameters
-        ----------
-        payload : object
-            Raw custom-object payload returned by Kubernetes.
-
-        Returns
-        -------
-        CephStorageActionRecord
-            Validated storage action record.
-
-        Raises
-        ------
-        OSError
-            If the payload is malformed.
-        """
-        try:
-            return cls.model_validate(payload)
-        except ValidationError as err:
-            msg = f"malformed {STORAGE_ACTION_KIND} custom object: {err}"
-            raise OSError(msg) from err
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes action object name."""
+        return self.metadata.name
 
 
-class _CephStorageReservationSpec(BaseModel):
-    """Desired storage reservation for one Bertrand-owned write path."""
+class CephStorageReservation(BaseModel):
+    """Storage reservation embedded in `CephStorageState`."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: Annotated[str, Field(min_length=1)]
     owner_kind: Annotated[str, Field(min_length=1)]
     owner_name: Annotated[str, Field(min_length=1)]
     request_id: Annotated[str, Field(min_length=1)]
     requested_bytes: Annotated[int, Field(ge=1)]
     reason: Annotated[str, Field(min_length=1)]
     expires_at: datetime
-
-
-class _CephStorageReservationStatus(BaseModel):
-    """Observed readiness state for one storage reservation."""
-
-    model_config = ConfigDict(extra="forbid")
     phase: StorageReservationPhase = "Pending"
     ready_at: datetime | None = None
     released_at: datetime | None = None
     observed_free_bytes: Annotated[int, Field(ge=0)] = 0
     last_error: str = ""
-
-
-class CephStorageReservationRecord(BaseModel):
-    """Validated `CephStorageReservation` custom-resource payload."""
-
-    model_config = ConfigDict(extra="forbid")
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["CephStorageReservation"]
-    metadata: CustomObjectMetadata
-    spec: _CephStorageReservationSpec
-    status: _CephStorageReservationStatus = Field(
-        default_factory=_CephStorageReservationStatus
-    )
-
-    @classmethod
-    def from_payload(cls, payload: object) -> CephStorageReservationRecord:
-        """Validate a Kubernetes custom-object payload.
-
-        Parameters
-        ----------
-        payload : object
-            Raw custom-object payload returned by Kubernetes.
-
-        Returns
-        -------
-        CephStorageReservationRecord
-            Validated storage reservation record.
-
-        Raises
-        ------
-        OSError
-            If the payload is malformed.
-        """
-        try:
-            return cls.model_validate(payload)
-        except ValidationError as err:
-            msg = f"malformed {STORAGE_RESERVATION_KIND} custom object: {err}"
-            raise OSError(msg) from err
 
     def expires_at_utc(self) -> datetime:
         """Return the reservation expiry timestamp normalized to UTC.
@@ -559,7 +450,7 @@ class CephStorageReservationRecord(BaseModel):
         datetime
             UTC-normalized expiry timestamp.
         """
-        expires_at = self.spec.expires_at
+        expires_at = self.expires_at
         if expires_at.tzinfo is None:
             return expires_at.replace(tzinfo=UTC)
         return expires_at.astimezone(UTC)
@@ -577,15 +468,46 @@ class CephStorageReservationRecord(BaseModel):
         bool
             True when the reservation is pending or ready and unexpired.
         """
-        return self.status.phase in {"Pending", "Ready"} and self.expires_at_utc() > now
+        return self.phase in {"Pending", "Ready"} and self.expires_at_utc() > now
 
+    def spec_payload(self) -> dict[str, object]:
+        """Return the legacy reservation spec payload.
 
-class _CephStorageNodeSpec(BaseModel):
-    """Desired identity contract for one node capacity report."""
+        Returns
+        -------
+        dict[str, object]
+            JSON-serializable reservation spec.
+        """
+        return self.model_dump(
+            mode="json",
+            include={
+                "owner_kind",
+                "owner_name",
+                "request_id",
+                "requested_bytes",
+                "reason",
+                "expires_at",
+            },
+        )
 
-    model_config = ConfigDict(extra="forbid")
-    node_name: Annotated[str, Field(min_length=1)]
-    host_id: Annotated[str, Field(min_length=1)]
+    def status_payload(self) -> dict[str, object]:
+        """Return the legacy reservation status payload.
+
+        Returns
+        -------
+        dict[str, object]
+            JSON-serializable reservation status.
+        """
+        return self.model_dump(
+            mode="json",
+            include={
+                "phase",
+                "ready_at",
+                "released_at",
+                "observed_free_bytes",
+                "last_error",
+            },
+        )
 
 
 class _CephStorageNodePVStatus(BaseModel):
@@ -598,10 +520,13 @@ class _CephStorageNodePVStatus(BaseModel):
     pv_free_bytes: Annotated[int, Field(ge=0)] = 0
 
 
-class _CephStorageNodeStatus(BaseModel):
-    """Observed host-local capacity state reported by one node agent."""
+class CephStorageNodeReport(BaseModel):
+    """Host-local capacity state reported by one node agent."""
 
     model_config = ConfigDict(extra="forbid")
+    name: Annotated[str, Field(min_length=1)]
+    node_name: Annotated[str, Field(min_length=1)]
+    host_id: Annotated[str, Field(min_length=1)]
     free_bytes: Annotated[int, Field(ge=0)] = 0
     path: str = ""
     lvm_free_bytes: Annotated[int, Field(ge=0)] = 0
@@ -611,47 +536,44 @@ class _CephStorageNodeStatus(BaseModel):
     heartbeat_at: datetime | None = None
     last_error: str = ""
 
-
-class CephStorageNodeRecord(BaseModel):
-    """Validated `CephStorageNode` custom-resource payload."""
-
-    model_config = ConfigDict(extra="forbid")
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["CephStorageNode"]
-    metadata: CustomObjectMetadata
-    spec: _CephStorageNodeSpec
-    status: _CephStorageNodeStatus | None = None
-
-    @classmethod
-    def from_payload(cls, payload: object) -> CephStorageNodeRecord:
-        """Validate a Kubernetes custom-object payload.
-
-        Parameters
-        ----------
-        payload : object
-            Raw custom-object payload returned by Kubernetes.
+    def spec_payload(self) -> dict[str, object]:
+        """Return the legacy node-report spec payload.
 
         Returns
         -------
-        CephStorageNodeRecord
-            Validated storage node report.
-
-        Raises
-        ------
-        OSError
-            If the payload is malformed.
+        dict[str, object]
+            JSON-serializable node-report spec.
         """
-        try:
-            return cls.model_validate(payload)
-        except ValidationError as err:
-            msg = f"malformed {STORAGE_NODE_KIND} custom object: {err}"
-            raise OSError(msg) from err
+        return self.model_dump(mode="json", include={"node_name", "host_id"})
+
+    def status_payload(self) -> dict[str, object]:
+        """Return the legacy node-report status payload.
+
+        Returns
+        -------
+        dict[str, object]
+            JSON-serializable node-report status.
+        """
+        return self.model_dump(
+            mode="json",
+            include={
+                "free_bytes",
+                "path",
+                "lvm_free_bytes",
+                "lvm_pvs",
+                "lvm_pv_inventory",
+                "loop_fallback_active",
+                "heartbeat_at",
+                "last_error",
+            },
+        )
 
 
-class _CephStorageOSDSpec(BaseModel):
-    """Desired/storage identity for one Bertrand-managed Rook OSD substrate."""
+class CephStorageOSD(BaseModel):
+    """Managed OSD inventory embedded in `CephStorageState`."""
 
     model_config = ConfigDict(extra="forbid")
+    name: Annotated[str, Field(min_length=1)]
     origin: StorageOSDOrigin
     node_name: Annotated[str, Field(min_length=1)]
     host_id: Annotated[str, Field(min_length=1)]
@@ -669,9 +591,17 @@ class _CephStorageOSDSpec(BaseModel):
     persistent_volume_claim_name: str = ""
     device_set_name: Annotated[str, Field(min_length=1)]
     target_bytes: Annotated[int, Field(ge=1)]
+    phase: StorageOSDPhase = "Pending"
+    observed_bytes: Annotated[int, Field(ge=0)] = 0
+    ceph_osd_id: Annotated[int, Field(ge=0)] | None = None
+    created_at: datetime | None = None
+    phase_changed_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    retired_at: datetime | None = None
+    last_error: str = ""
 
     @model_validator(mode="after")
-    def _validate_origin_fields(self) -> _CephStorageOSDSpec:
+    def _validate_origin_fields(self) -> CephStorageOSD:
         if self.origin == "lvm-pv":
             if not (self.pv_name and self.pv_uuid and self.lv_name and self.lv_path):
                 msg = "LVM-backed OSD records require PV and LV identity fields"
@@ -688,55 +618,94 @@ class _CephStorageOSDSpec(BaseModel):
             raise ValueError(msg)
         return self
 
-
-class _CephStorageOSDStatus(BaseModel):
-    """Observed lifecycle state for one managed OSD substrate."""
-
-    model_config = ConfigDict(extra="forbid")
-    phase: StorageOSDPhase = "Pending"
-    observed_bytes: Annotated[int, Field(ge=0)] = 0
-    ceph_osd_id: Annotated[int, Field(ge=0)] | None = None
-    created_at: datetime | None = None
-    phase_changed_at: datetime | None = None
-    last_seen_at: datetime | None = None
-    retired_at: datetime | None = None
-    last_error: str = ""
-
-
-class CephStorageOSDRecord(BaseModel):
-    """Validated `CephStorageOSD` custom-resource payload."""
-
-    model_config = ConfigDict(extra="forbid")
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["CephStorageOSD"]
-    metadata: CustomObjectMetadata
-    spec: _CephStorageOSDSpec
-    status: _CephStorageOSDStatus = Field(default_factory=_CephStorageOSDStatus)
-
-    @classmethod
-    def from_payload(cls, payload: object) -> CephStorageOSDRecord:
-        """Validate a Kubernetes custom-object payload.
-
-        Parameters
-        ----------
-        payload : object
-            Raw custom-object payload returned by Kubernetes.
+    def spec_payload(self) -> dict[str, object]:
+        """Return the legacy OSD spec payload.
 
         Returns
         -------
-        CephStorageOSDRecord
-            Validated storage OSD record.
-
-        Raises
-        ------
-        OSError
-            If the payload is malformed.
+        dict[str, object]
+            JSON-serializable OSD spec.
         """
-        try:
-            return cls.model_validate(payload)
-        except ValidationError as err:
-            msg = f"malformed {STORAGE_OSD_KIND} custom object: {err}"
-            raise OSError(msg) from err
+        return self.model_dump(
+            mode="json",
+            include={
+                "origin",
+                "node_name",
+                "host_id",
+                "pv_name",
+                "pv_uuid",
+                "pv_device",
+                "lv_name",
+                "lv_path",
+                "loop_file",
+                "loop_device",
+                "block_path",
+                "csi_volume_id",
+                "persistent_volume_name",
+                "persistent_volume_claim_namespace",
+                "persistent_volume_claim_name",
+                "device_set_name",
+                "target_bytes",
+            },
+        )
+
+    def status_payload(self) -> dict[str, object]:
+        """Return the legacy OSD status payload.
+
+        Returns
+        -------
+        dict[str, object]
+            JSON-serializable OSD status.
+        """
+        return self.model_dump(
+            mode="json",
+            include={
+                "phase",
+                "observed_bytes",
+                "ceph_osd_id",
+                "created_at",
+                "phase_changed_at",
+                "last_seen_at",
+                "retired_at",
+                "last_error",
+            },
+        )
+
+
+class CephStorageStateStatus(BaseModel):
+    """Collapsed Ceph storage controller state."""
+
+    model_config = ConfigDict(extra="forbid")
+    policy: CephStoragePolicyStatus | None = None
+    reservations: dict[str, CephStorageReservation] = Field(default_factory=dict)
+    nodes: dict[str, CephStorageNodeReport] = Field(default_factory=dict)
+    osds: dict[str, CephStorageOSD] = Field(default_factory=dict)
+
+
+class CephStorageStateRecord(BaseModel):
+    """Validated `CephStorageState` custom-resource payload."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    api_version: str = Field(alias="apiVersion")
+    kind: Literal["CephStorageState"]
+    metadata: CustomObjectMetadata
+    spec: _CephStoragePolicySpec = Field(default_factory=_CephStoragePolicySpec)
+    status: CephStorageStateStatus = Field(default_factory=CephStorageStateStatus)
+
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes storage state object name."""
+        return self.metadata.name
+
+    @property
+    def generation(self) -> int:
+        """Return the Kubernetes metadata generation."""
+        return self.metadata.generation
+
+    @property
+    def policy_status(self) -> CephStoragePolicyStatus | None:
+        """Return the latest controller policy summary."""
+        return self.status.policy
 
 
 @dataclass(frozen=True)
@@ -944,13 +913,13 @@ class CephStoragePlanner:
 
     def osd_inventory(
         self,
-        osds: Collection[CephStorageOSDRecord],
+        osds: Collection[CephStorageOSD],
     ) -> StorageOSDInventory:
         """Return loop/LVM OSD inventory inferred from durable OSD records.
 
         Parameters
         ----------
-        osds : Collection[CephStorageOSDRecord]
+        osds : Collection[CephStorageOSD]
             OSD records to inspect.
 
         Returns
@@ -958,27 +927,27 @@ class CephStoragePlanner:
         StorageOSDInventory
             Quality-oriented OSD inventory.
         """
-        ready = [record for record in osds if record.status.phase == "Ready"]
+        ready = [record for record in osds if record.phase == "Ready"]
         loop_ids = {
-            record.status.ceph_osd_id
+            record.ceph_osd_id
             for record in ready
-            if record.spec.origin == "loop-fallback"
-            and record.status.ceph_osd_id is not None
+            if record.origin == "loop-fallback"
+            and record.ceph_osd_id is not None
         }
         lvm_ids = {
-            record.status.ceph_osd_id
+            record.ceph_osd_id
             for record in ready
-            if record.spec.origin == "lvm-pv" and record.status.ceph_osd_id is not None
+            if record.origin == "lvm-pv" and record.ceph_osd_id is not None
         }
         elastic_bytes = sum(
-            record.status.observed_bytes or record.spec.target_bytes
+            record.observed_bytes or record.target_bytes
             for record in ready
-            if record.spec.origin == "loop-fallback"
+            if record.origin == "loop-fallback"
         )
         durable_bytes = sum(
-            record.status.observed_bytes or record.spec.target_bytes
+            record.observed_bytes or record.target_bytes
             for record in ready
-            if record.spec.origin == "lvm-pv"
+            if record.origin == "lvm-pv"
         )
         return StorageOSDInventory(
             loop_osd_ids=frozenset(loop_ids),
@@ -1011,13 +980,13 @@ class CephStoragePlanner:
 
     @staticmethod
     def osd_admission_in_flight(
-        osds: Collection[CephStorageOSDRecord],
+        osds: Collection[CephStorageOSD],
     ) -> bool:
         """Return whether Rook is still admitting or retiring a managed OSD.
 
         Parameters
         ----------
-        osds : Collection[CephStorageOSDRecord]
+        osds : Collection[CephStorageOSD]
             Durable OSD inventory records to inspect.
 
         Returns
@@ -1026,20 +995,20 @@ class CephStoragePlanner:
             True when any active OSD record is not yet terminal or ready.
         """
         return any(
-            record.status.phase in STORAGE_OSD_IN_FLIGHT_PHASES for record in osds
+            record.phase in STORAGE_OSD_IN_FLIGHT_PHASES for record in osds
         )
 
     def managed_osds(
         self,
         *,
-        osd_records: Collection[CephStorageOSDRecord],
+        osd_records: Collection[CephStorageOSD],
         osds: Collection[CephOSD],
     ) -> list[_ManagedOSD]:
         """Return shrink-eligible managed OSD inventory.
 
         Parameters
         ----------
-        osd_records : Collection[CephStorageOSDRecord]
+        osd_records : Collection[CephStorageOSD]
             Durable OSD records that identify autoscaler-created OSDs.
         osds : Collection[CephOSD]
             Live Ceph OSD inventory.
@@ -1056,9 +1025,9 @@ class CephStoragePlanner:
         }
         candidates: list[_ManagedOSD] = []
         for record in osd_records:
-            if record.spec.origin != "loop-fallback" or record.status.phase != "Ready":
+            if record.origin != "loop-fallback" or record.phase != "Ready":
                 continue
-            osd_id = record.status.ceph_osd_id
+            osd_id = record.ceph_osd_id
             if osd_id is None:
                 continue
             osd = live.get(osd_id)
@@ -1067,10 +1036,10 @@ class CephStoragePlanner:
             candidates.append(
                 _ManagedOSD(
                     osd_id=osd_id,
-                    node_name=record.spec.node_name or osd.node_name,
-                    host_id=record.spec.host_id,
-                    size_bytes=record.status.observed_bytes or record.spec.target_bytes,
-                    created_at=self.utc(record.status.created_at),
+                    node_name=record.node_name or osd.node_name,
+                    host_id=record.host_id,
+                    size_bytes=record.observed_bytes or record.target_bytes,
+                    created_at=self.utc(record.created_at),
                 )
             )
         return candidates
@@ -1079,9 +1048,9 @@ class CephStoragePlanner:
     def eligible_nodes(
         *,
         ready_nodes: Collection[str],
-        reports: Collection[CephStorageNodeRecord],
+        reports: Collection[CephStorageNodeReport],
         actions: Collection[CephStorageActionRecord],
-        osds: Collection[CephStorageOSDRecord],
+        osds: Collection[CephStorageOSD],
         growth_bytes: int,
     ) -> list[_EligibleStorageNode]:
         """Return deterministic node slots eligible for storage expansion.
@@ -1090,11 +1059,11 @@ class CephStoragePlanner:
         ----------
         ready_nodes : Collection[str]
             Kubernetes nodes currently ready for Bertrand registry pulls.
-        reports : Collection[CephStorageNodeRecord]
+        reports : Collection[CephStorageNodeReport]
             Node-local free-space reports.
         actions : Collection[CephStorageActionRecord]
             Existing storage actions used to apply failed-target retry cooldowns.
-        osds : Collection[CephStorageOSDRecord]
+        osds : Collection[CephStorageOSD]
             Durable managed OSD inventory.
         growth_bytes : int
             Bytes required by one fallback growth step.
@@ -1111,26 +1080,25 @@ class CephStoragePlanner:
         active_osds = [
             record
             for record in osds
-            if record.status.phase not in {"Failed", "Retired", "Retiring"}
+            if record.phase not in {"Failed", "Retired", "Retiring"}
         ]
         failed_targets = CephStoragePlanner._failed_osd_targets_in_cooldown(
             osds, now=now
         ) | CephStoragePlanner._failed_action_targets_in_cooldown(actions, now=now)
         lvm_by_pv = {
-            (record.spec.host_id, record.spec.pv_uuid): record
+            (record.host_id, record.pv_uuid): record
             for record in active_osds
-            if record.spec.origin == "lvm-pv" and record.spec.pv_uuid
+            if record.origin == "lvm-pv" and record.pv_uuid
         }
         loop_by_host = {
-            record.spec.host_id: record
+            record.host_id: record
             for record in active_osds
-            if record.spec.origin == "loop-fallback"
+            if record.origin == "loop-fallback"
         }
         for report in reports:
-            status = report.status
-            if report.spec.node_name not in ready or status is None:
+            if report.node_name not in ready:
                 continue
-            heartbeat = status.heartbeat_at
+            heartbeat = report.heartbeat_at
             if heartbeat is None:
                 continue
             if heartbeat.tzinfo is None:
@@ -1138,59 +1106,59 @@ class CephStoragePlanner:
             heartbeat = heartbeat.astimezone(UTC)
             if (now - heartbeat).total_seconds() > STORAGE_NODE_REPORT_MAX_AGE_SECONDS:
                 continue
-            for pv in status.lvm_pv_inventory:
+            for pv in report.lvm_pv_inventory:
                 if pv.pv_free_bytes < growth_bytes:
                     continue
-                existing = lvm_by_pv.get((report.spec.host_id, pv.pv_uuid))
+                existing = lvm_by_pv.get((report.host_id, pv.pv_uuid))
                 target_name = (
-                    existing.metadata.name
+                    existing.name
                     if existing is not None
-                    else storage_lvm_osd_name(report.spec.host_id, pv.pv_uuid)
+                    else storage_lvm_osd_name(report.host_id, pv.pv_uuid)
                 )
                 if target_name in failed_targets:
                     continue
                 lvm.append(
                     _EligibleStorageNode(
-                        node_name=report.spec.node_name,
-                        host_id=report.spec.host_id,
+                        node_name=report.node_name,
+                        host_id=report.host_id,
                         operation="expand-lvm",
                         pv_name=pv.pv_name,
                         pv_uuid=pv.pv_uuid,
                         pv_free_bytes=pv.pv_free_bytes,
-                        lv_name=existing.spec.lv_name if existing is not None else None,
+                        lv_name=existing.lv_name if existing is not None else None,
                         storage_osd_name=target_name,
                         current_bytes=(
-                            existing.spec.target_bytes if existing is not None else 0
+                            existing.target_bytes if existing is not None else 0
                         ),
                         available_bytes=pv.pv_free_bytes,
                         target_bytes=(
-                            existing.spec.target_bytes + growth_bytes
+                            existing.target_bytes + growth_bytes
                             if existing is not None
                             else growth_bytes
                         ),
                     )
                 )
-            if status.free_bytes >= growth_bytes:
-                existing = loop_by_host.get(report.spec.host_id)
+            if report.free_bytes >= growth_bytes:
+                existing = loop_by_host.get(report.host_id)
                 target_name = (
-                    existing.metadata.name
+                    existing.name
                     if existing is not None
-                    else storage_loop_osd_name(report.spec.host_id)
+                    else storage_loop_osd_name(report.host_id)
                 )
                 if target_name in failed_targets:
                     continue
                 loop.append(
                     _EligibleStorageNode(
-                        node_name=report.spec.node_name,
-                        host_id=report.spec.host_id,
+                        node_name=report.node_name,
+                        host_id=report.host_id,
                         operation="expand-loop",
                         storage_osd_name=target_name,
                         current_bytes=(
-                            existing.spec.target_bytes if existing is not None else 0
+                            existing.target_bytes if existing is not None else 0
                         ),
-                        available_bytes=status.free_bytes,
+                        available_bytes=report.free_bytes,
                         target_bytes=(
-                            existing.spec.target_bytes + growth_bytes
+                            existing.target_bytes + growth_bytes
                             if existing is not None
                             else growth_bytes
                         ),
@@ -1214,7 +1182,7 @@ class CephStoragePlanner:
 
     @staticmethod
     def _failed_osd_targets_in_cooldown(
-        osds: Collection[CephStorageOSDRecord],
+        osds: Collection[CephStorageOSD],
         *,
         now: datetime,
     ) -> frozenset[str]:
@@ -1227,19 +1195,19 @@ class CephStoragePlanner:
         """
         names: set[str] = set()
         for record in osds:
-            if record.status.phase != "Failed":
+            if record.phase != "Failed":
                 continue
             failed_at = (
-                CephStoragePlanner.utc(record.status.phase_changed_at)
-                or CephStoragePlanner.utc(record.status.last_seen_at)
-                or CephStoragePlanner.utc(record.status.created_at)
+                CephStoragePlanner.utc(record.phase_changed_at)
+                or CephStoragePlanner.utc(record.last_seen_at)
+                or CephStoragePlanner.utc(record.created_at)
             )
             if failed_at is None:
                 continue
             if (
                 now - failed_at
             ).total_seconds() < STORAGE_TARGET_RETRY_COOLDOWN_SECONDS:
-                names.add(record.metadata.name)
+                names.add(record.name)
         return frozenset(names)
 
     @staticmethod
@@ -1277,7 +1245,7 @@ class CephStoragePlanner:
 
     @staticmethod
     def active_reservation_bytes(
-        reservations: Collection[CephStorageReservationRecord],
+        reservations: Collection[CephStorageReservation],
         *,
         now: datetime,
     ) -> int:
@@ -1289,7 +1257,7 @@ class CephStoragePlanner:
             Sum of unexpired pending and ready reservation bytes.
         """
         return sum(
-            reservation.spec.requested_bytes
+            reservation.requested_bytes
             for reservation in reservations
             if reservation.is_active(now)
         )
@@ -1297,9 +1265,9 @@ class CephStoragePlanner:
     def growth_recommendation(
         self,
         *,
-        policy: CephStoragePolicyRecord,
+        policy: CephStorageStateRecord,
         capacity: CephCapacitySnapshot,
-        reservations: Collection[CephStorageReservationRecord],
+        reservations: Collection[CephStorageReservation],
         now: datetime,
     ) -> StorageGrowthRecommendation:
         """Return adaptive headroom and growth demand for one reconcile pass.
@@ -1312,21 +1280,24 @@ class CephStoragePlanner:
         spec = policy.spec
         free_bytes = max(0, capacity.total_bytes - capacity.used_bytes)
         previous_rate = (
-            policy.status.write_rate_ewma_bytes_per_second
-            if policy.status is not None
+            policy.policy_status.write_rate_ewma_bytes_per_second
+            if policy.policy_status is not None
             else 0.0
         )
         instantaneous_rate = 0.0
         if (
-            policy.status is not None
-            and policy.status.used_bytes is not None
-            and policy.status.last_reconciled_at is not None
+            policy.policy_status is not None
+            and policy.policy_status.used_bytes is not None
+            and policy.policy_status.last_reconciled_at is not None
         ):
-            previous_time = self.utc(policy.status.last_reconciled_at)
+            previous_time = self.utc(policy.policy_status.last_reconciled_at)
             if previous_time is not None:
                 elapsed = max(0.0, (now - previous_time).total_seconds())
                 if elapsed > 0:
-                    delta = max(0, capacity.used_bytes - policy.status.used_bytes)
+                    delta = max(
+                        0,
+                        capacity.used_bytes - policy.policy_status.used_bytes,
+                    )
                     instantaneous_rate = delta / elapsed
         alpha = spec.write_rate_ewma_alpha
         ewma_rate = (alpha * instantaneous_rate) + ((1 - alpha) * previous_rate)
@@ -1371,10 +1342,10 @@ class CephStoragePlanner:
     def plan_grow_actions(
         self,
         *,
-        policy: CephStoragePolicyRecord,
+        policy: CephStorageStateRecord,
         capacity: CephCapacitySnapshot,
         actions: Collection[CephStorageActionRecord],
-        osd_records: Collection[CephStorageOSDRecord],
+        osd_records: Collection[CephStorageOSD],
         eligible_nodes: list[_EligibleStorageNode],
         growth: StorageGrowthRecommendation,
         min_growth_bytes: int,
@@ -1383,13 +1354,13 @@ class CephStoragePlanner:
 
         Parameters
         ----------
-        policy : CephStoragePolicyRecord
+        policy : CephStorageStateRecord
             Active storage policy.
         capacity : CephCapacitySnapshot
             Current Ceph capacity snapshot.
         actions : Collection[CephStorageActionRecord]
             Existing storage action records.
-        osd_records : Collection[CephStorageOSDRecord]
+        osd_records : Collection[CephStorageOSD]
             Durable OSD inventory used to gate overlapping admission.
         eligible_nodes : list[_EligibleStorageNode]
             Node-local growth targets, ordered by storage preference.
@@ -1478,9 +1449,9 @@ class CephStoragePlanner:
     def plan_lvm_coverage_actions(
         self,
         *,
-        policy: CephStoragePolicyRecord,
+        policy: CephStorageStateRecord,
         actions: Collection[CephStorageActionRecord],
-        osd_records: Collection[CephStorageOSDRecord],
+        osd_records: Collection[CephStorageOSD],
         eligible_nodes: list[_EligibleStorageNode],
     ) -> list[PlannedStorageAction]:
         """Return actions that preserve one LVM OSD per usable PV.
@@ -1527,7 +1498,7 @@ class CephStoragePlanner:
     def lvm_osds_for_shrink(
         self,
         *,
-        osd_records: Collection[CephStorageOSDRecord],
+        osd_records: Collection[CephStorageOSD],
         osds: Collection[CephOSD],
     ) -> list[_ManagedLVMOSD]:
         """Return live LVM OSDs eligible for drain/recreate shrink planning.
@@ -1544,22 +1515,22 @@ class CephStoragePlanner:
         }
         candidates: list[_ManagedLVMOSD] = []
         for record in osd_records:
-            if record.spec.origin != "lvm-pv" or record.status.phase != "Ready":
+            if record.origin != "lvm-pv" or record.phase != "Ready":
                 continue
-            osd_id = record.status.ceph_osd_id
+            osd_id = record.ceph_osd_id
             if osd_id is None or osd_id not in live:
                 continue
             candidates.append(
                 _ManagedLVMOSD(
-                    name=record.metadata.name,
+                    name=record.name,
                     osd_id=osd_id,
-                    node_name=record.spec.node_name,
-                    host_id=record.spec.host_id,
-                    pv_name=record.spec.pv_name,
-                    pv_uuid=record.spec.pv_uuid,
-                    lv_name=record.spec.lv_name,
-                    size_bytes=record.status.observed_bytes or record.spec.target_bytes,
-                    created_at=self.utc(record.status.created_at),
+                    node_name=record.node_name,
+                    host_id=record.host_id,
+                    pv_name=record.pv_name,
+                    pv_uuid=record.pv_uuid,
+                    lv_name=record.lv_name,
+                    size_bytes=record.observed_bytes or record.target_bytes,
+                    created_at=self.utc(record.created_at),
                 )
             )
         return candidates
@@ -1567,7 +1538,7 @@ class CephStoragePlanner:
     def lvm_shrink_preview(
         self,
         *,
-        policy: CephStoragePolicyRecord,
+        policy: CephStorageStateRecord,
         capacity: CephCapacitySnapshot,
         growth: StorageGrowthRecommendation,
         lvm_osds: Collection[_ManagedLVMOSD],
@@ -1614,10 +1585,10 @@ class CephStoragePlanner:
     def plan_lvm_shrink_action(
         self,
         *,
-        policy: CephStoragePolicyRecord,
+        policy: CephStorageStateRecord,
         capacity: CephCapacitySnapshot,
         actions: Collection[CephStorageActionRecord],
-        osd_records: Collection[CephStorageOSDRecord],
+        osd_records: Collection[CephStorageOSD],
         growth: StorageGrowthRecommendation,
         lvm_candidates: Collection[_ManagedLVMOSD],
         loop_candidates: Collection[_ManagedOSD],
@@ -1679,7 +1650,7 @@ class CephStoragePlanner:
     def plan_shrink_action(
         self,
         *,
-        policy: CephStoragePolicyRecord,
+        policy: CephStorageStateRecord,
         capacity: CephCapacitySnapshot,
         actions: Collection[CephStorageActionRecord],
         candidates: Collection[_ManagedOSD],
@@ -1688,7 +1659,7 @@ class CephStoragePlanner:
 
         Parameters
         ----------
-        policy : CephStoragePolicyRecord
+        policy : CephStorageStateRecord
             Active storage policy.
         capacity : CephCapacitySnapshot
             Current Ceph capacity snapshot.
@@ -1744,7 +1715,7 @@ class CephStoragePlanner:
     def plan_loop_offload_action(
         self,
         *,
-        policy: CephStoragePolicyRecord,
+        policy: CephStorageStateRecord,
         capacity: CephCapacitySnapshot,
         actions: Collection[CephStorageActionRecord],
         eligible_nodes: list[_EligibleStorageNode],
@@ -1755,7 +1726,7 @@ class CephStoragePlanner:
 
         Parameters
         ----------
-        policy : CephStoragePolicyRecord
+        policy : CephStorageStateRecord
             Active storage policy.
         capacity : CephCapacitySnapshot
             Current Ceph capacity snapshot.
@@ -1852,377 +1823,50 @@ class CephStoragePlanner:
         )
 
 
-_STORAGE_POLICY_SPEC_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "enabled": {"type": "boolean", "default": True},
-        "high_watermark": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "default": 0.75,
-        },
-        "target_watermark": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "default": 0.65,
-        },
-        "shrink_enabled": {"type": "boolean", "default": True},
-        "low_watermark": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "default": 0.45,
-        },
-        "shrink_target_watermark": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "default": 0.60,
-        },
-        "shrink_cooldown_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "default": 3600,
-        },
-        "min_lvm_osd_size": {
-            "type": "string",
-            "pattern": r"^[1-9][0-9]*[MGT]$",
-            "default": "16G",
-        },
-        "lvm_shrink_min_reclaim": {
-            "type": "string",
-            "pattern": r"^[1-9][0-9]*[MGT]$",
-            "default": "16G",
-        },
-        "growth_step": {
-            "type": "string",
-            "pattern": r"^[1-9][0-9]*[MGT]$",
-            "default": "16G",
-        },
-        "min_growth_step": {
-            "type": "string",
-            "pattern": r"^[1-9][0-9]*[MGT]$",
-            "default": "16G",
-        },
-        "max_growth_per_reconcile": {
-            "type": "string",
-            "pattern": r"^[1-9][0-9]*[MGT]$",
-            "default": "128G",
-        },
-        "target_headroom_ratio": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "default": 0.35,
-        },
-        "min_headroom": {
-            "type": "string",
-            "pattern": r"^[1-9][0-9]*[MGT]$",
-            "default": "16G",
-        },
-        "burst_window_seconds": {"type": "integer", "minimum": 1, "default": 900},
-        "burst_multiplier": {"type": "number", "exclusiveMinimum": 0, "default": 2.0},
-        "write_rate_ewma_alpha": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1,
-            "default": 0.35,
-        },
-        "default_write_reservation": {
-            "type": "string",
-            "pattern": r"^[1-9][0-9]*[MGT]$",
-            "default": "16G",
-        },
-        "max_actions_per_reconcile": {"type": "integer", "minimum": 1, "default": 3},
-        "reconcile_interval_seconds": {"type": "integer", "minimum": 1, "default": 30},
-    },
-}
-_STORAGE_POLICY_STATUS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "observedGeneration": {"type": "integer"},
-        "total_bytes": {"type": "integer"},
-        "used_bytes": {"type": "integer"},
-        "used_ratio": {"type": "number"},
-        "free_bytes": {"type": "integer", "nullable": True},
-        "headroom_target_bytes": {"type": "integer"},
-        "reserved_bytes": {"type": "integer"},
-        "write_rate_ewma_bytes_per_second": {"type": "number"},
-        "projected_seconds_to_headroom_floor": {
-            "type": "number",
-            "nullable": True,
-        },
-        "growth_recommendation_bytes": {"type": "integer"},
-        "pending_actions": {"type": "integer"},
-        "running_actions": {"type": "integer"},
-        "succeeded_actions": {"type": "integer"},
-        "failed_actions": {"type": "integer"},
-        "managed_osds": {"type": "integer"},
-        "loop_osds": {"type": "integer"},
-        "lvm_osds": {"type": "integer"},
-        "elastic_bytes": {"type": "integer"},
-        "durable_bytes": {"type": "integer"},
-        "lvm_preferred": {"type": "boolean"},
-        "shrink_candidates": {"type": "integer"},
-        "missing_lvm_osd_pvs": {"type": "integer"},
-        "lvm_reclaimable_bytes": {"type": "integer"},
-        "lvm_shrink_candidate": {"type": "string"},
-        "lvm_shrink_target_bytes": {"type": "integer"},
-        "last_shrink_at": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": True,
-        },
-        "last_reconciled_at": {"type": "string", "format": "date-time"},
-        "last_error": {"type": "string"},
-    },
-}
-_STORAGE_ACTION_SPEC_SCHEMA = {
-    "type": "object",
-    "required": ["policy_generation", "operation", "node_name", "host_id", "reason"],
-    "properties": {
-        "policy_generation": {"type": "integer", "minimum": 0},
-        "operation": {
-            "type": "string",
-            "enum": ["expand-lvm", "expand-loop", "retire-loop", "shrink-lvm"],
-        },
-        "node_name": {"type": "string", "minLength": 1},
-        "host_id": {"type": "string", "minLength": 1},
-        "osd_id": {"type": "integer", "minimum": 0, "nullable": True},
-        "target_bytes": {"type": "integer", "minimum": 1, "nullable": True},
-        "pv_name": {"type": "string", "nullable": True},
-        "lv_name": {"type": "string", "nullable": True},
-        "storage_osd_name": {"type": "string", "nullable": True},
-        "reason": {"type": "string", "minLength": 1},
-    },
-}
-_STORAGE_ACTION_STATUS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "phase": {"type": "string", "enum": list(STORAGE_ACTION_PHASES)},
-        "started_at": {"type": "string", "format": "date-time"},
-        "finished_at": {"type": "string", "format": "date-time"},
-        "message": {"type": "string"},
-        "diagnostics": {"type": "string"},
-        "worker_node": {"type": "string"},
-        "created_osd_ids": {
-            "type": "array",
-            "items": {"type": "integer", "minimum": 0},
-        },
-        "removed_osd_ids": {
-            "type": "array",
-            "items": {"type": "integer", "minimum": 0},
-        },
-        "osd_origin": {
-            "type": "string",
-            "enum": ["lvm-pv", "loop-fallback"],
-            "nullable": True,
-        },
-        "osd_quality": {
-            "type": "string",
-            "enum": ["elastic", "durable"],
-            "nullable": True,
-        },
-        "source_pv": {"type": "string"},
-        "source_lv": {"type": "string"},
-        "provisioned_bytes": {
-            "type": "integer",
-            "minimum": 0,
-            "nullable": True,
-        },
-    },
-}
-_STORAGE_RESERVATION_SPEC_SCHEMA = {
-    "type": "object",
-    "required": [
-        "owner_kind",
-        "owner_name",
-        "request_id",
-        "requested_bytes",
-        "reason",
-        "expires_at",
-    ],
-    "properties": {
-        "owner_kind": {"type": "string", "minLength": 1},
-        "owner_name": {"type": "string", "minLength": 1},
-        "request_id": {"type": "string", "minLength": 1},
-        "requested_bytes": {"type": "integer", "minimum": 1},
-        "reason": {"type": "string", "minLength": 1},
-        "expires_at": {"type": "string", "format": "date-time"},
-    },
-}
-_STORAGE_RESERVATION_STATUS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "phase": {"type": "string", "enum": list(STORAGE_RESERVATION_PHASES)},
-        "ready_at": {"type": "string", "format": "date-time", "nullable": True},
-        "released_at": {"type": "string", "format": "date-time", "nullable": True},
-        "observed_free_bytes": {"type": "integer", "minimum": 0},
-        "last_error": {"type": "string"},
-    },
-}
-_STORAGE_NODE_SPEC_SCHEMA = {
-    "type": "object",
-    "required": ["node_name", "host_id"],
-    "properties": {
-        "node_name": {"type": "string", "minLength": 1},
-        "host_id": {"type": "string", "minLength": 1},
-    },
-}
-_STORAGE_NODE_STATUS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "free_bytes": {"type": "integer", "minimum": 0},
-        "path": {"type": "string"},
-        "lvm_free_bytes": {"type": "integer", "minimum": 0},
-        "lvm_pvs": {"type": "array", "items": {"type": "string"}},
-        "lvm_pv_inventory": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["pv_name", "pv_uuid"],
-                "properties": {
-                    "pv_name": {"type": "string", "minLength": 1},
-                    "pv_uuid": {"type": "string", "minLength": 1},
-                    "pv_size_bytes": {"type": "integer", "minimum": 0},
-                    "pv_free_bytes": {"type": "integer", "minimum": 0},
-                },
-            },
-        },
-        "loop_fallback_active": {"type": "boolean"},
-        "heartbeat_at": {"type": "string", "format": "date-time"},
-        "last_error": {"type": "string"},
-    },
-}
-_STORAGE_OSD_SPEC_SCHEMA = {
-    "type": "object",
-    "required": [
-        "origin",
-        "node_name",
-        "host_id",
-        "block_path",
-        "device_set_name",
-        "target_bytes",
-    ],
-    "properties": {
-        "origin": {"type": "string", "enum": ["lvm-pv", "loop-fallback"]},
-        "node_name": {"type": "string", "minLength": 1},
-        "host_id": {"type": "string", "minLength": 1},
-        "pv_name": {"type": "string"},
-        "pv_uuid": {"type": "string"},
-        "pv_device": {"type": "string"},
-        "lv_name": {"type": "string"},
-        "lv_path": {"type": "string"},
-        "loop_file": {"type": "string"},
-        "loop_device": {"type": "string"},
-        "block_path": {"type": "string", "minLength": 1},
-        "csi_volume_id": {"type": "string"},
-        "persistent_volume_name": {"type": "string"},
-        "persistent_volume_claim_namespace": {"type": "string"},
-        "persistent_volume_claim_name": {"type": "string"},
-        "device_set_name": {"type": "string", "minLength": 1},
-        "target_bytes": {"type": "integer", "minimum": 1},
-    },
-}
-_STORAGE_OSD_STATUS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "phase": {"type": "string", "enum": list(STORAGE_OSD_PHASES)},
-        "observed_bytes": {"type": "integer", "minimum": 0},
-        "ceph_osd_id": {"type": "integer", "minimum": 0, "nullable": True},
-        "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": True,
-        },
-        "phase_changed_at": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": True,
-        },
-        "last_seen_at": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": True,
-        },
-        "retired_at": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": True,
-        },
-        "last_error": {"type": "string"},
-    },
-}
-
-STORAGE_POLICY_RESOURCE = CustomResource[CephStoragePolicyRecord](
+STORAGE_STATE_RESOURCE = CustomObjectResource[CephStorageStateRecord](
     group=CEPH_CAPACITY_GROUP,
     version=CEPH_CAPACITY_VERSION,
-    kind=STORAGE_POLICY_KIND,
-    plural=STORAGE_POLICY_PLURAL,
-    singular="cephstorageautoscaler",
-    short_names=("csa",),
-    parser=CephStoragePolicyRecord.from_payload,
-    spec_schema=_STORAGE_POLICY_SPEC_SCHEMA,
-    status_schema=_STORAGE_POLICY_STATUS_SCHEMA,
+    kind=STORAGE_STATE_KIND,
+    plural=STORAGE_STATE_PLURAL,
     labels=STORAGE_CONTROLLER_LABELS,
+    singular="cephstoragestate",
+    short_names=("csstate",),
+    payload_parser=CephStorageStateRecord.model_validate,
+    payload_error_context=f"{STORAGE_STATE_KIND} custom object",
+    spec_model=_CephStoragePolicySpec,
+    spec_schema_include_defaults=True,
+    status_model=CephStorageStateStatus,
 )
-STORAGE_ACTION_RESOURCE = CustomResource[CephStorageActionRecord](
+STORAGE_ACTION_RESOURCE = CustomObjectResource[CephStorageActionRecord](
     group=CEPH_CAPACITY_GROUP,
     version=CEPH_CAPACITY_VERSION,
     kind=STORAGE_ACTION_KIND,
     plural=STORAGE_ACTION_PLURAL,
+    labels=STORAGE_CONTROLLER_LABELS,
     singular="cephstorageaction",
     short_names=("csact",),
-    parser=CephStorageActionRecord.from_payload,
-    spec_schema=_STORAGE_ACTION_SPEC_SCHEMA,
-    status_schema=_STORAGE_ACTION_STATUS_SCHEMA,
-    labels=STORAGE_CONTROLLER_LABELS,
+    payload_parser=CephStorageActionRecord.model_validate,
+    payload_error_context=f"{STORAGE_ACTION_KIND} custom object",
+    spec_model=_CephStorageActionSpec,
+    status_model=_CephStorageActionStatus,
+    status_schema_overrides={
+        "properties": {
+            "started_at": {"type": "string", "format": "date-time"},
+            "finished_at": {"type": "string", "format": "date-time"},
+            "created_osd_ids": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 0},
+            },
+            "removed_osd_ids": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 0},
+            },
+        },
+    },
 )
-STORAGE_RESERVATION_RESOURCE = CustomResource[CephStorageReservationRecord](
-    group=CEPH_CAPACITY_GROUP,
-    version=CEPH_CAPACITY_VERSION,
-    kind=STORAGE_RESERVATION_KIND,
-    plural=STORAGE_RESERVATION_PLURAL,
-    singular="cephstoragereservation",
-    short_names=("csres",),
-    parser=CephStorageReservationRecord.from_payload,
-    spec_schema=_STORAGE_RESERVATION_SPEC_SCHEMA,
-    status_schema=_STORAGE_RESERVATION_STATUS_SCHEMA,
-    labels=STORAGE_CONTROLLER_LABELS,
-)
-STORAGE_NODE_RESOURCE = CustomResource[CephStorageNodeRecord](
-    group=CEPH_CAPACITY_GROUP,
-    version=CEPH_CAPACITY_VERSION,
-    kind=STORAGE_NODE_KIND,
-    plural=STORAGE_NODE_PLURAL,
-    singular="cephstoragenode",
-    short_names=("csnode",),
-    parser=CephStorageNodeRecord.from_payload,
-    spec_schema=_STORAGE_NODE_SPEC_SCHEMA,
-    status_schema=_STORAGE_NODE_STATUS_SCHEMA,
-    labels=STORAGE_CONTROLLER_LABELS,
-)
-STORAGE_OSD_RESOURCE = CustomResource[CephStorageOSDRecord](
-    group=CEPH_CAPACITY_GROUP,
-    version=CEPH_CAPACITY_VERSION,
-    kind=STORAGE_OSD_KIND,
-    plural=STORAGE_OSD_PLURAL,
-    singular="cephstorageosd",
-    short_names=("csosd",),
-    parser=CephStorageOSDRecord.from_payload,
-    spec_schema=_STORAGE_OSD_SPEC_SCHEMA,
-    status_schema=_STORAGE_OSD_STATUS_SCHEMA,
-    labels={**STORAGE_CONTROLLER_LABELS, STORAGE_OSD_LABEL: STORAGE_OSD_LABEL_VALUE},
-    crd_labels=STORAGE_CONTROLLER_LABELS,
-)
-_STORAGE_RESOURCES: tuple[CustomResource[Any], ...] = (
-    STORAGE_POLICY_RESOURCE,
+_STORAGE_RESOURCES: tuple[CustomObjectResource[Any], ...] = (
+    STORAGE_STATE_RESOURCE,
     STORAGE_ACTION_RESOURCE,
-    STORAGE_RESERVATION_RESOURCE,
-    STORAGE_NODE_RESOURCE,
-    STORAGE_OSD_RESOURCE,
 )
 
 
@@ -2244,11 +1888,16 @@ async def ensure_ceph_capacity_crds(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         msg = "Ceph capacity CRD timeout must be non-negative"
         raise TimeoutError(msg)
-    await ensure_custom_resources(kube, resources=_STORAGE_RESOURCES, timeout=timeout)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Ceph capacity CRD timeout must be non-negative",
+    )
+    for resource in _STORAGE_RESOURCES:
+        await resource.ensure_crd(kube, timeout=deadline.remaining())
 
 
 async def ensure_default_storage_policy(kube: Kube, *, timeout: float) -> None:
-    """Converge the singleton default storage policy record.
+    """Converge the singleton collapsed Ceph storage state.
 
     Parameters
     ----------
@@ -2258,37 +1907,31 @@ async def ensure_default_storage_policy(kube: Kube, *, timeout: float) -> None:
         Maximum convergence budget in seconds.
     """
     deadline = _deadline_from_budget(timeout)
-    await STORAGE_POLICY_RESOURCE.upsert(
+    await STORAGE_STATE_RESOURCE.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_POLICY_NAME,
-        spec=cast(
-            "dict[str, object]",
-            _CephStoragePolicySpec().model_dump(mode="json"),
-        ),
+        name=STORAGE_STATE_NAME,
+        spec=_CephStoragePolicySpec(),
         timeout=deadline.remaining(),
     )
 
 
-def storage_watch_targets() -> tuple[tuple[CustomResource[Any], str], ...]:
+def storage_watch_targets() -> tuple[tuple[CustomObjectResource[Any], str], ...]:
     """Return capacity resources watched by the storage controller.
 
     Returns
     -------
-    tuple[tuple[CustomResource[Any], str], ...]
-        Resource/context pairs for storage policy, actions, and node reports.
+    tuple[tuple[CustomObjectResource[Any], str], ...]
+        Resource/context pairs for storage state and action queue updates.
     """
     return (
-        (STORAGE_POLICY_RESOURCE, STORAGE_POLICY_PLURAL),
+        (STORAGE_STATE_RESOURCE, STORAGE_STATE_PLURAL),
         (STORAGE_ACTION_RESOURCE, STORAGE_ACTION_PLURAL),
-        (STORAGE_RESERVATION_RESOURCE, STORAGE_RESERVATION_PLURAL),
-        (STORAGE_NODE_RESOURCE, STORAGE_NODE_PLURAL),
-        (STORAGE_OSD_RESOURCE, STORAGE_OSD_PLURAL),
     )
 
 
-async def read_storage_policy(kube: Kube, *, timeout: float) -> CephStoragePolicyRecord:
-    """Read and validate the singleton storage policy.
+async def read_storage_state(kube: Kube, *, timeout: float) -> CephStorageStateRecord:
+    """Read and validate the singleton collapsed storage state.
 
     Parameters
     ----------
@@ -2299,24 +1942,39 @@ async def read_storage_policy(kube: Kube, *, timeout: float) -> CephStoragePolic
 
     Returns
     -------
-    CephStoragePolicyRecord
-        Validated singleton storage policy.
+    CephStorageStateRecord
+        Validated singleton storage state.
 
     Raises
     ------
     OSError
-        If the singleton policy resource does not exist.
+        If the singleton storage state resource does not exist.
     """
-    record = await STORAGE_POLICY_RESOURCE.get(
+    record = await STORAGE_STATE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_POLICY_NAME,
+        name=STORAGE_STATE_NAME,
         timeout=timeout,
     )
     if record is None:
-        msg = f"{STORAGE_POLICY_KIND} {STORAGE_POLICY_NAME!r} is missing"
+        msg = f"{STORAGE_STATE_KIND} {STORAGE_STATE_NAME!r} is missing"
         raise OSError(msg)
     return record
+
+
+async def _patch_storage_state_status(
+    kube: Kube,
+    *,
+    status: CephStorageStateStatus,
+    timeout: float,
+) -> CephStorageStateRecord:
+    return await STORAGE_STATE_RESOURCE.patch_status(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
+        status=status,
+        timeout=timeout,
+    )
 
 
 async def list_storage_actions(
@@ -2343,51 +2001,6 @@ async def list_storage_actions(
     )
 
 
-async def list_storage_reservations(
-    kube: Kube, *, timeout: float
-) -> list[CephStorageReservationRecord]:
-    """List and validate storage reservation resources.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum request budget in seconds.
-
-    Returns
-    -------
-    list[CephStorageReservationRecord]
-        Validated storage reservation records.
-    """
-    return await STORAGE_RESERVATION_RESOURCE.list(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
-    )
-
-
-async def read_storage_reservation(
-    kube: Kube,
-    *,
-    name: str,
-    timeout: float,
-) -> CephStorageReservationRecord | None:
-    """Read one storage reservation by name.
-
-    Returns
-    -------
-    CephStorageReservationRecord | None
-        Validated reservation, or None when it does not exist.
-    """
-    return await STORAGE_RESERVATION_RESOURCE.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=name,
-        timeout=timeout,
-    )
-
-
 async def upsert_storage_reservation(
     kube: Kube,
     *,
@@ -2398,12 +2011,12 @@ async def upsert_storage_reservation(
     reason: str,
     expires_at: datetime,
     timeout: float,
-) -> CephStorageReservationRecord:
+) -> CephStorageReservation:
     """Create or refresh a pending storage reservation.
 
     Returns
     -------
-    CephStorageReservationRecord
+    CephStorageReservation
         Validated reservation record.
     """
     name = storage_reservation_name(
@@ -2411,70 +2024,69 @@ async def upsert_storage_reservation(
         owner_name=owner_name,
         request_id=request_id,
     )
-    spec = _CephStorageReservationSpec(
+    state = await read_storage_state(kube, timeout=timeout)
+    entry = CephStorageReservation(
+        name=name,
         owner_kind=owner_kind,
         owner_name=owner_name,
         request_id=request_id,
         requested_bytes=requested_bytes,
         reason=reason,
         expires_at=expires_at,
-    ).model_dump(mode="json")
-    record = await STORAGE_RESERVATION_RESOURCE.upsert(
+        phase="Pending",
+        ready_at=None,
+        released_at=None,
+        observed_free_bytes=0,
+        last_error="",
+    )
+    status = state.status.model_copy(
+        update={"reservations": {**state.status.reservations, name: entry}},
+    )
+    refreshed = await _patch_storage_state_status(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=name,
-        spec=cast("dict[str, object]", spec),
+        status=status,
         timeout=timeout,
     )
-    await STORAGE_RESERVATION_RESOURCE.patch_status(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=name,
-        status={
-            "phase": "Pending",
-            "ready_at": None,
-            "released_at": None,
-            "observed_free_bytes": 0,
-            "last_error": "",
-        },
-        timeout=timeout,
-    )
-    refreshed = await STORAGE_RESERVATION_RESOURCE.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=name,
-        timeout=timeout,
-    )
-    return refreshed or record
+    return refreshed.status.reservations.get(name, entry)
 
 
 async def patch_storage_reservation_status(
     kube: Kube,
     *,
-    reservation: CephStorageReservationRecord,
+    reservation: CephStorageReservation,
     status: Mapping[str, object],
     timeout: float,
-) -> CephStorageReservationRecord:
+) -> CephStorageReservation:
     """Patch one storage reservation status.
 
     Returns
     -------
-    CephStorageReservationRecord
+    CephStorageReservation
         Freshly validated reservation returned by the Kubernetes API.
     """
-    return await STORAGE_RESERVATION_RESOURCE.patch_status(
+    patched = CephStorageReservation.model_validate(
+        {**reservation.model_dump(mode="python"), **dict(status)}
+    )
+    state = await read_storage_state(kube, timeout=timeout)
+    refreshed = await _patch_storage_state_status(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=reservation.metadata.name,
-        status=dict(status),
+        status=state.status.model_copy(
+            update={
+                "reservations": {
+                    **state.status.reservations,
+                    reservation.name: patched,
+                },
+            },
+        ),
         timeout=timeout,
     )
+    return refreshed.status.reservations.get(reservation.name, patched)
 
 
 async def release_storage_reservation(
     kube: Kube,
     *,
-    reservation: CephStorageReservationRecord,
+    reservation: CephStorageReservation,
     timeout: float,
 ) -> None:
     """Mark a reservation released.
@@ -2483,12 +2095,12 @@ async def release_storage_reservation(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    reservation : CephStorageReservationRecord
+    reservation : CephStorageReservation
         Reservation to release.
     timeout : float
         Maximum request budget in seconds.
     """
-    if reservation.status.phase in {"Released", "Expired", "Failed"}:
+    if reservation.phase in {"Released", "Expired", "Failed"}:
         return
     await patch_storage_reservation_status(
         kube,
@@ -2505,14 +2117,14 @@ async def release_storage_reservation(
 async def wait_storage_reservation_ready(
     kube: Kube,
     *,
-    reservation: CephStorageReservationRecord,
+    reservation: CephStorageReservation,
     timeout: float,
-) -> CephStorageReservationRecord:
+) -> CephStorageReservation:
     """Wait until a storage reservation becomes ready.
 
     Returns
     -------
-    CephStorageReservationRecord
+    CephStorageReservation
         Reservation in `Ready` phase.
 
     Raises
@@ -2523,24 +2135,21 @@ async def wait_storage_reservation_ready(
         If the reservation does not become ready before `timeout`.
     """
     msg = (
-        f"storage reservation {reservation.metadata.name!r} was not ready before "
+        f"storage reservation {reservation.name!r} was not ready before "
         "the operation timeout; run `bertrand cluster storage doctor`"
     )
     deadline = Deadline.from_timeout(timeout, message=msg)
     while deadline.remaining() > 0:
-        fresh = await read_storage_reservation(
-            kube,
-            name=reservation.metadata.name,
-            timeout=deadline.remaining(),
-        )
+        state = await read_storage_state(kube, timeout=deadline.remaining())
+        fresh = state.status.reservations.get(reservation.name)
         if fresh is None:
-            msg = f"storage reservation {reservation.metadata.name!r} disappeared"
+            msg = f"storage reservation {reservation.name!r} disappeared"
             raise OSError(msg)
-        if fresh.status.phase == "Ready":
+        if fresh.phase == "Ready":
             return fresh
-        if fresh.status.phase in {"Failed", "Expired", "Released"}:
-            detail = fresh.status.last_error or f"phase is {fresh.status.phase}"
-            msg = f"storage reservation {fresh.metadata.name!r} is not usable: {detail}"
+        if fresh.phase in {"Failed", "Expired", "Released"}:
+            detail = fresh.last_error or f"phase is {fresh.phase}"
+            msg = f"storage reservation {fresh.name!r} is not usable: {detail}"
             raise OSError(msg)
         await asyncio.sleep(deadline.bounded(2.0))
     raise TimeoutError(msg)
@@ -2556,12 +2165,12 @@ async def reserve_ceph_storage(
     requested_bytes: int,
     reason: str,
     timeout: float,
-) -> AsyncIterator[CephStorageReservationRecord]:
+) -> AsyncIterator[CephStorageReservation]:
     """Hold a hard storage reservation for one Bertrand-owned write.
 
     Yields
     ------
-    CephStorageReservationRecord
+    CephStorageReservation
         Ready reservation record.
     """
     deadline = _deadline_from_budget(timeout)
@@ -2590,30 +2199,6 @@ async def reserve_ceph_storage(
             )
 
 
-async def list_storage_node_reports(
-    kube: Kube, *, timeout: float
-) -> list[CephStorageNodeRecord]:
-    """List and validate node capacity report resources.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum request budget in seconds.
-
-    Returns
-    -------
-    list[CephStorageNodeRecord]
-        Validated node capacity report records.
-    """
-    return await STORAGE_NODE_RESOURCE.list(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
-    )
-
-
 async def create_storage_actions(
     kube: Kube,
     *,
@@ -2635,54 +2220,25 @@ async def create_storage_actions(
         Maximum creation budget in seconds.
     """
     for action in actions:
-        spec: dict[str, object] = {
-            "policy_generation": policy_generation,
-            "operation": action.operation,
-            "node_name": action.node_name,
-            "host_id": action.host_id,
-            "reason": action.reason,
-        }
-        if action.osd_id is not None:
-            spec["osd_id"] = action.osd_id
-        if action.target_bytes is not None:
-            spec["target_bytes"] = action.target_bytes
-        if action.pv_name is not None:
-            spec["pv_name"] = action.pv_name
-        if action.lv_name is not None:
-            spec["lv_name"] = action.lv_name
-        if action.storage_osd_name is not None:
-            spec["storage_osd_name"] = action.storage_osd_name
+        spec = _CephStorageActionSpec(
+            policy_generation=policy_generation,
+            operation=action.operation,
+            node_name=action.node_name,
+            host_id=action.host_id,
+            osd_id=action.osd_id,
+            target_bytes=action.target_bytes,
+            pv_name=action.pv_name,
+            lv_name=action.lv_name,
+            storage_osd_name=action.storage_osd_name,
+            reason=action.reason,
+        )
         await STORAGE_ACTION_RESOURCE.create(
             kube,
             namespace=BERTRAND_NAMESPACE,
-            name=f"{STORAGE_POLICY_NAME}-{uuid.uuid4().hex[:12]}",
+            name=f"{STORAGE_STATE_NAME}-{uuid.uuid4().hex[:12]}",
             spec=spec,
             timeout=timeout,
         )
-
-
-async def list_storage_osds(
-    kube: Kube, *, timeout: float
-) -> list[CephStorageOSDRecord]:
-    """List and validate managed OSD inventory resources.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum request budget in seconds.
-
-    Returns
-    -------
-    list[CephStorageOSDRecord]
-        Validated OSD inventory records.
-    """
-    return await STORAGE_OSD_RESOURCE.list(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
-    )
 
 
 async def upsert_storage_osd(
@@ -2692,7 +2248,7 @@ async def upsert_storage_osd(
     spec: Mapping[str, object],
     phase: StorageOSDPhase,
     timeout: float,
-) -> CephStorageOSDRecord:
+) -> CephStorageOSD:
     """Upsert one managed OSD record and refresh its phase status.
 
     Parameters
@@ -2710,152 +2266,75 @@ async def upsert_storage_osd(
 
     Returns
     -------
-    CephStorageOSDRecord
+    CephStorageOSD
         Converged OSD inventory record.
     """
     now = datetime.now(UTC)
-    existing_record = await STORAGE_OSD_RESOURCE.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=name,
-        timeout=timeout,
-    )
-    record = await STORAGE_OSD_RESOURCE.upsert(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=name,
-        spec=spec,
-        labels=_storage_osd_labels(name=name, spec=spec, phase=phase),
-        timeout=timeout,
-    )
-    await STORAGE_OSD_RESOURCE.patch_status(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=name,
-        status={
+    state = await read_storage_state(kube, timeout=timeout)
+    existing = state.status.osds.get(name)
+    entry = CephStorageOSD.model_validate(
+        {
+            "name": name,
+            **dict(spec),
             "phase": phase,
-            "created_at": (
-                existing_record.status.created_at.isoformat()
-                if existing_record is not None
-                and existing_record.status.created_at is not None
-                else now.isoformat()
-            ),
+            "created_at": existing.created_at if existing is not None else now,
             "phase_changed_at": (
-                existing_record.status.phase_changed_at.isoformat()
-                if existing_record is not None
-                and existing_record.status.phase == phase
-                and existing_record.status.phase_changed_at is not None
-                else now.isoformat()
+                existing.phase_changed_at
+                if existing is not None
+                and existing.phase == phase
+                and existing.phase_changed_at is not None
+                else now
             ),
-            "last_seen_at": now.isoformat(),
+            "last_seen_at": now,
             "last_error": "",
-        },
-        timeout=timeout,
+        }
     )
-    refreshed = await STORAGE_OSD_RESOURCE.get(
+    refreshed = await _patch_storage_state_status(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=name,
+        status=state.status.model_copy(
+            update={"osds": {**state.status.osds, name: entry}},
+        ),
         timeout=timeout,
     )
-    return refreshed or record
+    return refreshed.status.osds.get(name, entry)
 
 
 async def patch_storage_osd_status(
     kube: Kube,
     *,
-    osd: CephStorageOSDRecord,
+    osd: CephStorageOSD,
     status: Mapping[str, object],
     timeout: float,
-) -> CephStorageOSDRecord:
+) -> CephStorageOSD:
     """Patch the status for one managed OSD record.
 
     Returns
     -------
-    CephStorageOSDRecord
+    CephStorageOSD
         Freshly validated OSD record returned by the Kubernetes API.
     """
     now = datetime.now(UTC)
     payload = {"last_seen_at": now.isoformat(), **dict(status)}
     phase = payload.get("phase")
-    if isinstance(phase, str) and phase != osd.status.phase:
+    if isinstance(phase, str) and phase != osd.phase:
         payload.setdefault("phase_changed_at", now.isoformat())
     elif isinstance(phase, str) and "phase_changed_at" not in payload:
-        if osd.status.phase_changed_at is not None:
-            payload["phase_changed_at"] = osd.status.phase_changed_at.isoformat()
+        if osd.phase_changed_at is not None:
+            payload["phase_changed_at"] = osd.phase_changed_at.isoformat()
         else:
             payload["phase_changed_at"] = now.isoformat()
-    return await STORAGE_OSD_RESOURCE.patch_status(
+    patched = CephStorageOSD.model_validate(
+        {**osd.model_dump(mode="python"), **payload}
+    )
+    state = await read_storage_state(kube, timeout=timeout)
+    refreshed = await _patch_storage_state_status(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=osd.metadata.name,
-        status=payload,
+        status=state.status.model_copy(
+            update={"osds": {**state.status.osds, osd.name: patched}},
+        ),
         timeout=timeout,
     )
-
-
-def _storage_osd_labels(
-    *,
-    name: str,
-    spec: Mapping[str, object],
-    phase: StorageOSDPhase,
-) -> dict[str, str]:
-    node_name = str(spec.get("node_name") or "")
-    host_id = str(spec.get("host_id") or "")
-    pv_uuid = str(spec.get("pv_uuid") or spec.get("pv_name") or name)
-    return {
-        STORAGE_OSD_ORIGIN_LABEL: str(spec.get("origin") or ""),
-        STORAGE_OSD_PHASE_LABEL: phase.lower(),
-        STORAGE_OSD_NODE_LABEL: _hash_label(node_name),
-        STORAGE_OSD_HOST_LABEL: _hash_label(host_id),
-        STORAGE_OSD_PV_LABEL: _hash_label(pv_uuid),
-    }
-
-
-async def patch_storage_policy_status(
-    kube: Kube,
-    *,
-    policy: CephStoragePolicyRecord,
-    status: Mapping[str, object],
-    timeout: float,
-) -> None:
-    """Patch the singleton storage policy status.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    policy : CephStoragePolicyRecord
-        Policy record whose generation should be observed.
-    status : Mapping[str, object]
-        Status fields to patch.
-    timeout : float
-        Maximum patch budget in seconds.
-    """
-    payload = {"observedGeneration": policy.metadata.generation, **dict(status)}
-    await STORAGE_POLICY_RESOURCE.patch_status(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_POLICY_NAME,
-        status=payload,
-        timeout=timeout,
-    )
-
-
-def storage_action_from_payload(payload: object) -> CephStorageActionRecord:
-    """Validate one storage action payload.
-
-    Parameters
-    ----------
-    payload : object
-        Raw custom-object payload.
-
-    Returns
-    -------
-    CephStorageActionRecord
-        Validated storage action record.
-    """
-    return CephStorageActionRecord.from_payload(payload)
+    return refreshed.status.osds.get(osd.name, patched)
 
 
 async def upsert_storage_node_report(
@@ -2881,18 +2360,16 @@ async def upsert_storage_node_report(
     timeout : float
         Maximum update budget in seconds.
     """
-    await STORAGE_NODE_RESOURCE.upsert(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=storage_node_report_name(host_id),
-        spec={"node_name": node_name, "host_id": host_id},
-        timeout=timeout,
+    name = storage_node_report_name(host_id)
+    state = await read_storage_state(kube, timeout=timeout)
+    entry = CephStorageNodeReport.model_validate(
+        {"name": name, "node_name": node_name, "host_id": host_id, **dict(status)}
     )
-    await STORAGE_NODE_RESOURCE.patch_status(
+    await _patch_storage_state_status(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=storage_node_report_name(host_id),
-        status=status,
+        status=state.status.model_copy(
+            update={"nodes": {**state.status.nodes, name: entry}},
+        ),
         timeout=timeout,
     )
 
@@ -2925,7 +2402,7 @@ async def pending_storage_actions(
         for action in actions
         if action.spec.node_name == node_name and action.status.phase == "Pending"
     ]
-    pending.sort(key=lambda action: action.metadata.name)
+    pending.sort(key=lambda action: action.name)
     return pending
 
 
@@ -2952,7 +2429,7 @@ async def patch_storage_action_status(
     await STORAGE_ACTION_RESOURCE.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
-        name=action.metadata.name,
+        name=action.name,
         status=status,
         timeout=timeout,
     )

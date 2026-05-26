@@ -49,6 +49,13 @@ class WatchExpired(OSError):  # noqa: N818
     """Raised when Kubernetes expires a watch resource version."""
 
 
+@dataclass(frozen=True)
+class _RawWatchEvent:
+    type: WatchEventType
+    object: object
+    raw_type: str
+
+
 _WATCH_END = object()
 
 
@@ -92,6 +99,102 @@ def _watch_error_status(value: object) -> tuple[int | None, str]:
 
     detail = message or reason or str(value).strip()
     return code, detail
+
+
+def _watch_kwargs(
+    *,
+    timeout: float,
+    resource_version: str | None,
+    labels: Mapping[str, str] | None,
+    field_selector: str | None,
+    api_kwargs: Mapping[str, object] | None,
+) -> dict[str, object]:
+    kwargs = dict(api_kwargs or {})
+    label_selector = _label_selector(labels)
+    if label_selector is not None:
+        kwargs["label_selector"] = label_selector
+    if field_selector is not None:
+        field_selector = field_selector.strip()
+        if field_selector:
+            kwargs["field_selector"] = field_selector
+    if resource_version is not None:
+        resource_version = resource_version.strip()
+        if resource_version:
+            kwargs["resource_version"] = resource_version
+    if not math.isinf(timeout):
+        kwargs.setdefault("timeout_seconds", max(1, math.ceil(timeout)))
+    return kwargs
+
+
+def _watch_api_exception_detail(err: ApiException) -> str:
+    return (err.body or err.reason or str(err)).strip()
+
+
+async def _read_watch_payload(
+    iterator: Iterator[object],
+    *,
+    remaining: float,
+    timeout: float,
+    context: str,
+) -> object:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_next_watch_payload, iterator),
+            timeout=None if math.isinf(remaining) else remaining,
+        )
+    except TimeoutError as err:
+        msg = f"{context} watch timed out after {timeout} seconds"
+        raise TimeoutError(msg) from err
+
+
+def _raw_watch_event(payload: object, *, context: str) -> _RawWatchEvent | OSError:
+    if not isinstance(payload, Mapping):
+        msg = f"{context} watch returned malformed event payload"
+        return OSError(msg)
+    payload = cast("Mapping[str, object]", payload)
+
+    raw_type = str(payload.get("type") or "").strip()
+    if raw_type not in _WATCH_EVENT_TYPES:
+        msg = f"{context} watch returned unknown event type {raw_type!r}"
+        return OSError(msg)
+    event_type = cast("WatchEventType", raw_type)
+
+    raw_object = payload.get("object")
+    if raw_object is None:
+        raw_object = payload.get("raw_object")
+    if raw_object is None:
+        msg = f"{context} watch event is missing object payload"
+        return OSError(msg)
+    if event_type == "ERROR":
+        return _watch_error_event_exception(raw_object, context=context)
+    return _RawWatchEvent(type=event_type, object=raw_object, raw_type=raw_type)
+
+
+def _watch_error_event_exception(raw_object: object, *, context: str) -> OSError:
+    code, detail = _watch_error_status(raw_object)
+    if code == 410:
+        msg = f"{context} watch expired: {detail}"
+        return WatchExpired(msg)
+    if detail:
+        msg = f"{context} watch returned an error event: {detail}"
+    else:
+        msg = f"{context} watch returned an error event"
+    return OSError(msg)
+
+
+def _typed_watch_event[T](
+    raw: _RawWatchEvent,
+    *,
+    wrapper: Callable[[object], T],
+) -> WatchEvent[T]:
+    obj = wrapper(raw.object)
+    return WatchEvent(
+        type=raw.type,
+        object=obj,
+        resource_version=_watch_resource_version(obj)
+        or _watch_resource_version(raw.object),
+        raw_type=raw.raw_type,
+    )
 
 
 async def watch[T](
@@ -147,21 +250,13 @@ async def watch[T](
         timeout,
         message=f"{context} watch timed out before request could start",
     )
-    kwargs = dict(api_kwargs or {})
-    label_selector = _label_selector(labels)
-    if label_selector is not None:
-        kwargs["label_selector"] = label_selector
-    if field_selector is not None:
-        field_selector = field_selector.strip()
-        if field_selector:
-            kwargs["field_selector"] = field_selector
-    if resource_version is not None:
-        resource_version = resource_version.strip()
-        if resource_version:
-            kwargs["resource_version"] = resource_version
-    if not math.isinf(timeout):
-        kwargs.setdefault("timeout_seconds", max(1, math.ceil(timeout)))
-
+    kwargs = _watch_kwargs(
+        timeout=timeout,
+        resource_version=resource_version,
+        labels=labels,
+        field_selector=field_selector,
+        api_kwargs=api_kwargs,
+    )
     watcher = kubernetes.watch.Watch()
     iterator = watcher.stream(fn, **kwargs)
     try:
@@ -170,61 +265,32 @@ async def watch[T](
                 f"{context} watch timed out after {timeout} seconds"
             )
             try:
-                payload = await asyncio.wait_for(
-                    asyncio.to_thread(_next_watch_payload, iterator),
-                    timeout=None if math.isinf(remaining) else remaining,
+                payload = await _read_watch_payload(
+                    iterator,
+                    remaining=remaining,
+                    timeout=timeout,
+                    context=context,
                 )
-            except TimeoutError as err:
-                msg = f"{context} watch timed out after {timeout} seconds"
-                raise TimeoutError(msg) from err
             except ApiException as err:
+                detail = _watch_api_exception_detail(err)
                 if err.status == 410:
-                    detail = (err.body or err.reason or str(err)).strip()
                     msg = f"{context} watch expired: {detail}"
                     raise WatchExpired(msg) from err
-                detail = (err.body or err.reason or str(err)).strip()
                 msg = (
                     f"{context} watch failed with kubernetes API status "
                     f"{err.status}: {detail}"
                 )
                 raise OSError(msg) from err
-
             if payload is _WATCH_END:
                 return
-            if not isinstance(payload, Mapping):
-                msg = f"{context} watch returned malformed event payload"
-                raise OSError(msg)
-            payload = cast("Mapping[str, object]", payload)
-
-            raw_type = str(payload.get("type") or "").strip()
-            if raw_type not in _WATCH_EVENT_TYPES:
-                msg = f"{context} watch returned unknown event type {raw_type!r}"
-                raise OSError(msg)
-            event_type = cast("WatchEventType", raw_type)
-
-            raw_object = payload.get("object")
-            if raw_object is None:
-                raw_object = payload.get("raw_object")
-            if raw_object is None:
-                msg = f"{context} watch event is missing object payload"
-                raise OSError(msg)
-            if event_type == "ERROR":
-                code, detail = _watch_error_status(raw_object)
-                if code == 410:
-                    msg = f"{context} watch expired: {detail}"
-                    raise WatchExpired(msg)
-                if detail:
-                    msg = f"{context} watch returned an error event: {detail}"
-                else:
-                    msg = f"{context} watch returned an error event"
-                raise OSError(msg)
-            obj = wrapper(raw_object)
-            yield WatchEvent(
-                type=event_type,
-                object=obj,
-                resource_version=_watch_resource_version(obj)
-                or _watch_resource_version(raw_object),
-                raw_type=raw_type,
+            raw = _raw_watch_event(payload, context=context)
+            if isinstance(raw, WatchExpired):
+                raise WatchExpired(str(raw))
+            if isinstance(raw, OSError):
+                raise OSError(str(raw))
+            yield _typed_watch_event(
+                raw,
+                wrapper=wrapper,
             )
     finally:
         watcher.stop()

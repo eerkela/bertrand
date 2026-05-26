@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import NamespacedMutableResourceMixin, ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ConfigMap(
-    NamespacedMutableResourceMixin[kube_client.V1ConfigMap],
+    BuiltinResourceObject[kube_client.V1ConfigMap],
     NamespacedKubeMetadata[kube_client.V1ConfigMap],
 ):
     """General-purpose wrapper around one Kubernetes ConfigMap object.
@@ -37,59 +37,18 @@ class ConfigMap(
 
     _obj: kube_client.V1ConfigMap
 
-    @classmethod
-    def _client(cls) -> ResourceClient[kube_client.V1ConfigMap, Self]:
-        return ResourceClient(
-            scope="namespaced",
+    resource: ClassVar[BuiltinResource[kube_client.V1ConfigMap]] = (
+        BuiltinResource.namespaced(
+            api="core",
             kind="ConfigMap",
+            slug="config_map",
             expected=kube_client.V1ConfigMap,
             list_type=kube_client.V1ConfigMapList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, namespace, name, request_timeout: (
-                kube.core.read_namespaced_config_map(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.core.list_config_map_for_all_namespaces(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_namespace=lambda kube, namespace, labels, fields, timeout: (
-                kube.core.list_namespaced_config_map(
-                    namespace=namespace,
-                    label_selector=labels,
-                    field_selector=fields,
-                    _request_timeout=timeout,
-                )
-            ),
-            create=lambda kube, namespace, _name, manifest, request_timeout: (
-                kube.core.create_namespaced_config_map(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            patch=lambda kube, namespace, name, manifest, request_timeout: (
-                kube.core.patch_namespaced_config_map(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            delete=lambda kube, namespace, name, request_timeout: (
-                kube.core.delete_namespaced_config_map(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
+            create=True,
+            patch=True,
+            delete=True,
         )
+    )
 
     @staticmethod
     def _manifest(
@@ -175,8 +134,9 @@ class ConfigMap(
             annotations=annotations,
         )
 
-        return await cls._client().upsert(
+        return await cls.resource.upsert(
             kube,
+            owner=cls,
             namespace=namespace,
             name=name,
             manifest=manifest,

@@ -6,38 +6,16 @@ from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.kube.custom_object import (
     CustomObjectResource,
-    CustomObjectSpec,
     CustomObjectWrapper,
 )
 
 if TYPE_CHECKING:
-    import builtins
     from collections.abc import Mapping, Sequence
 
     from bertrand.env.kube.api.client import Kube
 
 GATEWAY_API_GROUP = "gateway.networking.k8s.io"
 GATEWAY_API_VERSION = "v1"
-
-_GATEWAY_CLASS_SPEC = CustomObjectSpec(
-    group=GATEWAY_API_GROUP,
-    version=GATEWAY_API_VERSION,
-    kind="GatewayClass",
-    plural="gatewayclasses",
-    scope="cluster",
-)
-_GATEWAY_SPEC = CustomObjectSpec(
-    group=GATEWAY_API_GROUP,
-    version=GATEWAY_API_VERSION,
-    kind="Gateway",
-    plural="gateways",
-)
-_HTTP_ROUTE_SPEC = CustomObjectSpec(
-    group=GATEWAY_API_GROUP,
-    version=GATEWAY_API_VERSION,
-    kind="HTTPRoute",
-    plural="httproutes",
-)
 
 
 class GatewayClass(CustomObjectWrapper):
@@ -48,36 +26,6 @@ class GatewayClass(CustomObjectWrapper):
     _obj : CustomObject
         Generic custom object payload returned by Kubernetes.
     """
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        name: str,
-        timeout: float,
-    ) -> GatewayClass | None:
-        """Read one GatewayClass by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            GatewayClass name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        GatewayClass | None
-            Wrapped GatewayClass, or `None` if it does not exist.
-        """
-        return await _GATEWAY_CLASS_RESOURCE.get(
-            kube,
-            name=name,
-            timeout=timeout,
-        )
 
     @classmethod
     async def upsert(
@@ -109,7 +57,7 @@ class GatewayClass(CustomObjectWrapper):
         GatewayClass
             Wrapped created or patched GatewayClass.
         """
-        return await _GATEWAY_CLASS_RESOURCE.upsert(
+        return await cls.resource.upsert(
             kube,
             name=name,
             spec={"controllerName": controller_name},
@@ -139,25 +87,13 @@ class GatewayClass(CustomObjectWrapper):
         """
         return _condition_message(self._obj.status, "Accepted")
 
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this GatewayClass from the cluster.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        await _GATEWAY_CLASS_RESOURCE.delete_by_name(
-            kube,
-            name=self.name,
-            timeout=timeout,
-        )
-
-
-_GATEWAY_CLASS_RESOURCE: CustomObjectResource[GatewayClass] = CustomObjectResource(
-    spec=_GATEWAY_CLASS_SPEC,
+GatewayClass.resource = CustomObjectResource(
+    group=GATEWAY_API_GROUP,
+    version=GATEWAY_API_VERSION,
+    kind="GatewayClass",
+    plural="gatewayclasses",
+    scope="cluster",
     parser=GatewayClass._from_object,
 )
 
@@ -170,40 +106,6 @@ class Gateway(CustomObjectWrapper):
     _obj : CustomObject
         Generic custom object payload returned by Kubernetes.
     """
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        timeout: float,
-    ) -> Gateway | None:
-        """Read one Gateway by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Gateway.
-        name : str
-            Gateway name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Gateway | None
-            Wrapped Gateway, or `None` if it does not exist.
-        """
-        return await _GATEWAY_RESOURCE.get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
 
     @classmethod
     async def upsert(
@@ -241,7 +143,7 @@ class Gateway(CustomObjectWrapper):
         Gateway
             Wrapped created or patched Gateway.
         """
-        return await _GATEWAY_RESOURCE.upsert(
+        return await cls.resource.upsert(
             kube,
             namespace=namespace,
             name=name,
@@ -274,26 +176,12 @@ class Gateway(CustomObjectWrapper):
                 out.append(value)
         return tuple(out)
 
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this Gateway from the cluster.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        await _GATEWAY_RESOURCE.delete_by_name(
-            kube,
-            namespace=self.namespace,
-            name=self.name,
-            timeout=timeout,
-        )
-
-
-_GATEWAY_RESOURCE: CustomObjectResource[Gateway] = CustomObjectResource(
-    spec=_GATEWAY_SPEC,
+Gateway.resource = CustomObjectResource(
+    group=GATEWAY_API_GROUP,
+    version=GATEWAY_API_VERSION,
+    kind="Gateway",
+    plural="gateways",
     parser=Gateway._from_object,
 )
 
@@ -306,74 +194,6 @@ class HTTPRoute(CustomObjectWrapper):
     _obj : CustomObject
         Generic custom object payload returned by Kubernetes.
     """
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        timeout: float,
-    ) -> HTTPRoute | None:
-        """Read one HTTPRoute by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the HTTPRoute.
-        name : str
-            HTTPRoute name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        HTTPRoute | None
-            Wrapped HTTPRoute, or `None` if it does not exist.
-        """
-        return await _HTTP_ROUTE_RESOURCE.get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[HTTPRoute]:
-        """List HTTPRoutes with optional label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the HTTPRoutes.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[HTTPRoute]
-            Wrapped HTTPRoutes matching the requested filters.
-        """
-        return await _HTTP_ROUTE_RESOURCE.list(
-            kube,
-            namespace=namespace,
-            labels=labels,
-            timeout=timeout,
-        )
 
     @classmethod
     async def upsert(
@@ -414,7 +234,7 @@ class HTTPRoute(CustomObjectWrapper):
         HTTPRoute
             Wrapped created or patched HTTPRoute.
         """
-        return await _HTTP_ROUTE_RESOURCE.upsert(
+        return await cls.resource.upsert(
             kube,
             namespace=namespace,
             name=name,
@@ -445,26 +265,12 @@ class HTTPRoute(CustomObjectWrapper):
             if value
         )
 
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this HTTPRoute from the cluster.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        await _HTTP_ROUTE_RESOURCE.delete_by_name(
-            kube,
-            namespace=self.namespace,
-            name=self.name,
-            timeout=timeout,
-        )
-
-
-_HTTP_ROUTE_RESOURCE: CustomObjectResource[HTTPRoute] = CustomObjectResource(
-    spec=_HTTP_ROUTE_SPEC,
+HTTPRoute.resource = CustomObjectResource(
+    group=GATEWAY_API_GROUP,
+    version=GATEWAY_API_VERSION,
+    kind="HTTPRoute",
+    plural="httproutes",
     parser=HTTPRoute._from_object,
 )
 

@@ -4,26 +4,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 import kubernetes
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import NamespacedMutableResourceMixin, ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 from .api.view import ServicePortView
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
     from .api.client import Kube
-    from .api.spec import ServicePortSpec
 
 type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
 
 
 @dataclass(frozen=True)
 class Service(
-    NamespacedMutableResourceMixin[kubernetes.client.V1Service],
+    BuiltinResourceObject[kubernetes.client.V1Service],
     NamespacedKubeMetadata[kubernetes.client.V1Service],
 ):
     """General-purpose wrapper around one Kubernetes Service object.
@@ -41,59 +40,18 @@ class Service(
 
     _obj: kubernetes.client.V1Service
 
-    @classmethod
-    def _client(cls) -> ResourceClient[kubernetes.client.V1Service, Self]:
-        return ResourceClient(
-            scope="namespaced",
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1Service]] = (
+        BuiltinResource.namespaced(
+            api="core",
             kind="Service",
+            slug="service",
             expected=kubernetes.client.V1Service,
             list_type=kubernetes.client.V1ServiceList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, namespace, name, request_timeout: (
-                kube.core.read_namespaced_service(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.core.list_service_for_all_namespaces(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_namespace=lambda kube, namespace, labels, fields, timeout: (
-                kube.core.list_namespaced_service(
-                    namespace=namespace,
-                    label_selector=labels,
-                    field_selector=fields,
-                    _request_timeout=timeout,
-                )
-            ),
-            create=lambda kube, namespace, _name, manifest, request_timeout: (
-                kube.core.create_namespaced_service(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            patch=lambda kube, namespace, name, manifest, request_timeout: (
-                kube.core.patch_namespaced_service(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            delete=lambda kube, namespace, name, request_timeout: (
-                kube.core.delete_namespaced_service(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
+            create=True,
+            patch=True,
+            delete=True,
         )
+    )
 
     @staticmethod
     def _manifest(
@@ -101,7 +59,7 @@ class Service(
         namespace: str,
         name: str,
         selector: Mapping[str, str],
-        ports: Collection[ServicePortSpec],
+        ports: Collection[ServicePortView],
         labels: Mapping[str, str] | None,
         annotations: Mapping[str, str] | None,
         service_type: ServiceType,
@@ -118,20 +76,7 @@ class Service(
             "spec": {
                 "type": service_type,
                 "selector": dict(selector),
-                "ports": [
-                    {
-                        key: value
-                        for key, value in {
-                            "name": port.name,
-                            "port": port.port,
-                            "targetPort": port.target_port,
-                            "protocol": port.protocol,
-                            "nodePort": port.node_port,
-                        }.items()
-                        if value is not None
-                    }
-                    for port in ports
-                ],
+                "ports": [_service_port_manifest(port) for port in ports],
             },
         }
 
@@ -143,7 +88,7 @@ class Service(
         namespace: str,
         name: str,
         selector: Mapping[str, str],
-        ports: Collection[ServicePortSpec],
+        ports: Collection[ServicePortView],
         timeout: float,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
@@ -161,7 +106,7 @@ class Service(
             Service name to create or patch.
         selector : Mapping[str, str]
             Pod label selector for the Service.
-        ports : Collection[ServicePortSpec]
+        ports : Collection[ServicePortView]
             Ports exposed by the Service.
         timeout : float
             Maximum request budget in seconds. If infinite, wait indefinitely.
@@ -198,8 +143,9 @@ class Service(
             annotations=annotations,
             service_type=service_type,
         )
-        return await cls._client().upsert(
+        return await cls.resource.upsert(
             kube,
+            owner=cls,
             namespace=namespace,
             name=name,
             manifest=manifest,
@@ -272,12 +218,12 @@ class Service(
         """
         return dict(self.selector) == dict(selector)
 
-    def exposes(self, port: ServicePortSpec) -> bool:
+    def exposes(self, port: ServicePortView) -> bool:
         """Return whether this Service exposes a matching port.
 
         Parameters
         ----------
-        port : ServicePortSpec
+        port : ServicePortView
             Expected Service port declaration.
 
         Returns
@@ -299,7 +245,7 @@ class Service(
         *,
         service_type: ServiceType,
         selector: Mapping[str, str],
-        ports: Collection[ServicePortSpec],
+        ports: Collection[ServicePortView],
     ) -> bool:
         """Return whether this Service matches the expected shape.
 
@@ -309,7 +255,7 @@ class Service(
             Expected Kubernetes Service type.
         selector : Mapping[str, str]
             Expected selector labels.
-        ports : Collection[ServicePortSpec]
+        ports : Collection[ServicePortView]
             Expected Service ports.
 
         Returns
@@ -322,3 +268,17 @@ class Service(
             and self.selects(selector)
             and all(self.exposes(port) for port in ports)
         )
+
+
+def _service_port_manifest(port: ServicePortView) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in {
+            "name": port.name,
+            "port": port.port,
+            "targetPort": port.target_port,
+            "protocol": port.protocol,
+            "nodePort": port.node_port,
+        }.items()
+        if value is not None
+    }

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
 from .api.metadata import KubeMetadata
-from .api.resource import ClusterMutableResourceMixin, ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -20,7 +20,7 @@ NAMESPACE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 @dataclass(frozen=True)
 class Namespace(
-    ClusterMutableResourceMixin[kube_client.V1Namespace],
+    BuiltinResourceObject[kube_client.V1Namespace],
     KubeMetadata[kube_client.V1Namespace],
 ):
     """General-purpose wrapper around one Kubernetes Namespace object.
@@ -33,47 +33,18 @@ class Namespace(
 
     _obj: kube_client.V1Namespace
 
-    @classmethod
-    def _client(cls) -> ResourceClient[kube_client.V1Namespace, Self]:
-        return ResourceClient(
-            scope="cluster",
+    resource: ClassVar[BuiltinResource[kube_client.V1Namespace]] = (
+        BuiltinResource.cluster(
+            api="core",
             kind="Namespace",
+            slug="namespace",
             expected=kube_client.V1Namespace,
             list_type=kube_client.V1NamespaceList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, _namespace, name, request_timeout: (
-                kube.core.read_namespace(
-                    name=name,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.core.list_namespace(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            create=lambda kube, _namespace, _name, manifest, request_timeout: (
-                kube.core.create_namespace(
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            patch=lambda kube, _namespace, name, manifest, request_timeout: (
-                kube.core.patch_namespace(
-                    name=name,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            delete=lambda kube, _namespace, name, request_timeout: (
-                kube.core.delete_namespace(
-                    name=name,
-                    _request_timeout=request_timeout,
-                )
-            ),
+            create=True,
+            patch=True,
+            delete=True,
         )
+    )
 
     @staticmethod
     def _manifest(
@@ -133,8 +104,9 @@ class Namespace(
             msg = "Namespace upsert requires non-empty name"
             raise OSError(msg)
         manifest = cls._manifest(name=name, labels=labels, annotations=annotations)
-        return await cls._client().upsert(
+        return await cls.resource.upsert(
             kube,
+            owner=cls,
             name=name,
             manifest=manifest,
             timeout=timeout,

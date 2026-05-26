@@ -16,7 +16,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationError,
     ValidationInfo,
     field_validator,
 )
@@ -31,8 +30,10 @@ from bertrand.env.git import (
     Deadline,
 )
 from bertrand.env.kube.api._helpers import _is_missing_api_resource
-from bertrand.env.kube.custom_object import CustomObjectMetadata  # noqa: TC001
-from bertrand.env.kube.custom_resource import CustomResource
+from bertrand.env.kube.custom_object import (
+    CustomObjectMetadata,
+    CustomObjectResource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -58,55 +59,6 @@ PROJECT_IMAGE_CONFIG_ID = "BERTRAND_IMAGE_CONFIG_ID"
 type BuildPullPolicy = Literal["missing", "always", "never"]
 type BuildKitBuildPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
-
-_STRING_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "string"}}
-_BOOL_MAP_SCHEMA = {"type": "object", "additionalProperties": {"type": "boolean"}}
-_BUILDKIT_BUILD_SPEC_SCHEMA = {
-    "type": "object",
-    "required": [
-        "repo_id",
-        "worktree",
-        "worktree_id",
-        "config_id",
-        "image",
-        "dockerfile",
-        "pull",
-    ],
-    "properties": {
-        "repo_id": {"type": "string", "minLength": 1},
-        "worktree": {"type": "string", "minLength": 1},
-        "worktree_id": {"type": "string", "minLength": 1},
-        "config_id": {"type": "string", "minLength": 1},
-        "image": {"type": "string", "minLength": 1},
-        "dockerfile": {"type": "string", "minLength": 1},
-        "build_args": _STRING_MAP_SCHEMA,
-        "target": {"type": "string", "nullable": True},
-        "pull": {"type": "string", "enum": ["missing", "always", "never"]},
-        "secrets": _BOOL_MAP_SCHEMA,
-        "ssh": _BOOL_MAP_SCHEMA,
-        "devices": _BOOL_MAP_SCHEMA,
-        "external_image": {"type": "string", "nullable": True},
-        "auth_id": {"type": "string", "nullable": True},
-    },
-}
-_BUILDKIT_BUILD_STATUS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "phase": {
-            "type": "string",
-            "enum": ["Pending", "Running", "Succeeded", "Failed"],
-        },
-        "observedGeneration": {"type": "integer", "nullable": True},
-        "started_at": {"type": "string", "format": "date-time", "nullable": True},
-        "completed_at": {"type": "string", "format": "date-time", "nullable": True},
-        "active_job": {"type": "string"},
-        "active_platform": {"type": "string"},
-        "external_digest_ref": {"type": "string"},
-        "record_name": {"type": "string"},
-        "message": {"type": "string"},
-        "log_excerpt": {"type": "string"},
-    },
-}
 
 
 @dataclass(frozen=True)
@@ -479,31 +431,6 @@ class BuildKitBuildRecord(BaseModel):
     spec: BuildKitBuildSpec
     status: BuildKitBuildStatus = Field(default_factory=BuildKitBuildStatus)
 
-    @classmethod
-    def from_payload(cls, payload: object) -> BuildKitBuildRecord:
-        """Validate a Kubernetes custom object payload.
-
-        Parameters
-        ----------
-        payload : object
-            Raw Kubernetes custom object payload.
-
-        Returns
-        -------
-        BuildKitBuildRecord
-            Validated build request record.
-
-        Raises
-        ------
-        OSError
-            If the payload is malformed.
-        """
-        try:
-            return cls.model_validate(payload)
-        except (TypeError, ValidationError) as err:
-            msg = f"malformed {BUILDKIT_BUILD_KIND} custom object: {err}"
-            raise OSError(msg) from err
-
     @property
     def name(self) -> str:
         """Return the Kubernetes custom object name.
@@ -588,40 +515,31 @@ def _label_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
-_BUILDKIT_BUILD_RESOURCE = CustomResource[BuildKitBuildRecord](
+BUILDKIT_BUILD_RESOURCE = CustomObjectResource[BuildKitBuildRecord](
     group=BUILDKIT_BUILD_GROUP,
     version=BUILDKIT_BUILD_VERSION,
     kind=BUILDKIT_BUILD_KIND,
     plural=BUILDKIT_BUILD_PLURAL,
+    labels=BUILDKIT_BUILD_LABELS,
     singular="buildkitbuild",
     short_names=("bkbuild",),
-    parser=BuildKitBuildRecord.from_payload,
-    spec_schema=_BUILDKIT_BUILD_SPEC_SCHEMA,
-    status_schema=_BUILDKIT_BUILD_STATUS_SCHEMA,
-    labels=BUILDKIT_BUILD_LABELS,
+    payload_parser=BuildKitBuildRecord.model_validate,
+    payload_error_context=f"{BUILDKIT_BUILD_KIND} custom object",
+    spec_model=BuildKitBuildSpec,
+    spec_schema_overrides={
+        "required": [
+            "repo_id",
+            "worktree",
+            "worktree_id",
+            "config_id",
+            "image",
+            "dockerfile",
+            "pull",
+        ],
+    },
+    status_model=BuildKitBuildStatus,
     default_namespace=BERTRAND_NAMESPACE,
 )
-
-
-async def ensure_buildkit_build_crd(kube: Kube, *, timeout: float) -> None:
-    """Converge the durable BuildKit build request CRD.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum convergence budget in seconds.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or CRD establishment exceeds the budget.
-    """
-    if timeout <= 0:
-        msg = "BuildKitBuild CRD timeout must be non-negative"
-        raise TimeoutError(msg)
-    await _BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=timeout)
 
 
 async def submit_buildkit_build(
@@ -657,10 +575,10 @@ async def submit_buildkit_build(
     deadline = Deadline.from_timeout(
         timeout, message="timeout must be non-negative"
     )
-    return await _BUILDKIT_BUILD_RESOURCE.create(
+    return await BUILDKIT_BUILD_RESOURCE.create(
         kube,
         name=_buildkit_build_name(spec),
-        spec=spec.model_dump(mode="json"),
+        spec=spec,
         labels=spec.request_labels,
         timeout=deadline.remaining(),
     )
@@ -688,7 +606,7 @@ async def get_buildkit_build(
     BuildKitBuildRecord | None
         Build request, or `None` if it does not exist.
     """
-    return await _BUILDKIT_BUILD_RESOURCE.get(
+    return await BUILDKIT_BUILD_RESOURCE.get(
         kube,
         name=name,
         timeout=timeout,
@@ -731,7 +649,7 @@ async def list_buildkit_builds(
         msg = "BuildKitBuild list timeout must be non-negative"
         raise TimeoutError(msg)
     try:
-        return await _BUILDKIT_BUILD_RESOURCE.list(
+        return await BUILDKIT_BUILD_RESOURCE.list(
             kube,
             labels=labels,
             timeout=timeout,
@@ -918,7 +836,7 @@ async def patch_buildkit_build_status(
         by_alias=True,
         exclude_unset=True,
     )
-    return await _BUILDKIT_BUILD_RESOURCE.patch_status(
+    return await BUILDKIT_BUILD_RESOURCE.patch_status(
         kube,
         name=name,
         status=status,

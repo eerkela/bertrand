@@ -20,13 +20,12 @@ from bertrand.env.kube.api.client import (
 from bertrand.env.kube.api.spec import (
     ContainerSpec,
     PodTemplateSpec,
-    PolicyRuleSpec,
 )
 from bertrand.env.kube.build.job import _ProjectBuildExecutor
 from bertrand.env.kube.build.lifecycle import (
     PROJECT_IMAGE_GC_GRACE_SECONDS,
+    PROJECT_IMAGE_RESOURCE,
     ProjectImagePublication,
-    ensure_project_image_crd,
     gc_project_images,
     next_project_image_gc_time,
 )
@@ -39,9 +38,9 @@ from bertrand.env.kube.build.request import (
     BUILDKIT_BUILD_LABEL_VALUE,
     BUILDKIT_BUILD_LABELS,
     BUILDKIT_BUILD_PLURAL,
+    BUILDKIT_BUILD_RESOURCE,
     BuildKitBuildRecord,
     active_buildkit_build_names,
-    ensure_buildkit_build_crd,
     has_active_buildkit_builds,
     list_buildkit_builds,
     patch_buildkit_build_status,
@@ -53,9 +52,8 @@ from bertrand.env.kube.capability.device import (
 from bertrand.env.kube.ceph.api import parse_size_bytes
 from bertrand.env.kube.ceph.capacity import (
     CEPH_CAPACITY_GROUP,
-    STORAGE_POLICY_PLURAL,
-    STORAGE_RESERVATION_PLURAL,
-    read_storage_policy,
+    STORAGE_STATE_PLURAL,
+    read_storage_state,
     reserve_ceph_storage,
 )
 from bertrand.env.kube.ceph.snapshot import cleanup_orphaned_build_sources
@@ -66,12 +64,16 @@ from bertrand.env.kube.dra import (
     RESOURCE_CLAIM_PLURAL,
     RESOURCE_CLAIM_TEMPLATE_PLURAL,
 )
-from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding
+from bertrand.env.kube.rbac import (
+    upsert_cluster_role,
+    upsert_cluster_role_binding,
+)
 from bertrand.env.kube.service_account import ServiceAccount
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from bertrand.env.kube.api.spec import PolicyRuleManifest
     from bertrand.env.kube.job import Job
 
 BUILDKIT_BUILD_CONTROLLER = "bertrand-build-controller"
@@ -376,7 +378,7 @@ class _BuildKitBuildController:
         int
             Reservation bytes parsed from the active storage policy.
         """
-        policy = await read_storage_policy(kube, timeout=timeout)
+        policy = await read_storage_state(kube, timeout=timeout)
         return parse_size_bytes(policy.spec.default_write_reservation)
 
     async def _maybe_gc(self, kube: Kube, *, deadline: Deadline) -> None:
@@ -645,8 +647,8 @@ async def ensure_buildkit_build_controller(
     deadline = Deadline.from_timeout(
         timeout, message="timeout must be non-negative"
     )
-    await ensure_buildkit_build_crd(kube, timeout=deadline.remaining())
-    await ensure_project_image_crd(kube, timeout=deadline.remaining())
+    await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    await PROJECT_IMAGE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     await ServiceAccount.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
@@ -654,14 +656,14 @@ async def ensure_buildkit_build_controller(
         labels=BUILDKIT_BUILD_LABELS,
         timeout=deadline.remaining(),
     )
-    await ClusterRole.upsert(
+    await upsert_cluster_role(
         kube,
         name=BUILDKIT_BUILD_CONTROLLER,
         labels=BUILDKIT_BUILD_LABELS,
         rules=_controller_rules(),
         timeout=deadline.remaining(),
     )
-    await ClusterRoleBinding.upsert(
+    await upsert_cluster_role_binding(
         kube,
         name=BUILDKIT_BUILD_CONTROLLER,
         role_name=BUILDKIT_BUILD_CONTROLLER,
@@ -723,67 +725,67 @@ def main() -> int:
     return 0
 
 
-def _controller_rules() -> tuple[PolicyRuleSpec, ...]:
+def _controller_rules() -> tuple[PolicyRuleManifest, ...]:
     return (
-        PolicyRuleSpec(
-            api_groups=[BUILDKIT_BUILD_GROUP],
-            resources=[
+        {
+            "apiGroups": [BUILDKIT_BUILD_GROUP],
+            "resources": [
                 BUILDKIT_BUILD_PLURAL,
                 f"{BUILDKIT_BUILD_PLURAL}/status",
                 "bertrandimages",
             ],
-            verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
-        ),
-        PolicyRuleSpec(
-            api_groups=["batch"],
-            resources=["jobs"],
-            verbs=["get", "list", "watch", "create", "delete"],
-        ),
-        PolicyRuleSpec(
-            api_groups=["apps"],
-            resources=["deployments"],
-            verbs=["get", "list", "watch", "create", "update", "patch"],
-        ),
-        PolicyRuleSpec(
-            api_groups=[""],
-            resources=["pods", "pods/log", "configmaps", "secrets", "nodes"],
-            verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
-        ),
-        PolicyRuleSpec(
-            api_groups=[""],
-            resources=["persistentvolumeclaims"],
-            verbs=["get", "list", "watch", "create", "delete"],
-        ),
-        PolicyRuleSpec(
-            api_groups=["snapshot.storage.k8s.io"],
-            resources=["volumesnapshots"],
-            verbs=["get", "list", "watch", "create", "delete"],
-        ),
-        PolicyRuleSpec(
-            api_groups=["snapshot.storage.k8s.io"],
-            resources=["volumesnapshotclasses"],
-            verbs=["get", "list", "watch", "create"],
-        ),
-        PolicyRuleSpec(
-            api_groups=[DRA_GROUP],
-            resources=[RESOURCE_CLAIM_PLURAL, RESOURCE_CLAIM_TEMPLATE_PLURAL],
-            verbs=["get", "list", "watch", "create", "delete"],
-        ),
-        PolicyRuleSpec(
-            api_groups=[BERTRAND_DEVICE_GROUP],
-            resources=[BERTRAND_DEVICE_PLURAL],
-            verbs=["get", "list", "watch"],
-        ),
-        PolicyRuleSpec(
-            api_groups=[CEPH_CAPACITY_GROUP],
-            resources=[STORAGE_POLICY_PLURAL, STORAGE_RESERVATION_PLURAL],
-            verbs=["get", "list", "watch", "create", "update", "patch"],
-        ),
-        PolicyRuleSpec(
-            api_groups=[CEPH_CAPACITY_GROUP],
-            resources=[f"{STORAGE_RESERVATION_PLURAL}/status"],
-            verbs=["get", "update", "patch"],
-        ),
+            "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+        },
+        {
+            "apiGroups": ["batch"],
+            "resources": ["jobs"],
+            "verbs": ["get", "list", "watch", "create", "delete"],
+        },
+        {
+            "apiGroups": ["apps"],
+            "resources": ["deployments"],
+            "verbs": ["get", "list", "watch", "create", "update", "patch"],
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["pods", "pods/log", "configmaps", "secrets", "nodes"],
+            "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["persistentvolumeclaims"],
+            "verbs": ["get", "list", "watch", "create", "delete"],
+        },
+        {
+            "apiGroups": ["snapshot.storage.k8s.io"],
+            "resources": ["volumesnapshots"],
+            "verbs": ["get", "list", "watch", "create", "delete"],
+        },
+        {
+            "apiGroups": ["snapshot.storage.k8s.io"],
+            "resources": ["volumesnapshotclasses"],
+            "verbs": ["get", "list", "watch", "create"],
+        },
+        {
+            "apiGroups": [DRA_GROUP],
+            "resources": [RESOURCE_CLAIM_PLURAL, RESOURCE_CLAIM_TEMPLATE_PLURAL],
+            "verbs": ["get", "list", "watch", "create", "delete"],
+        },
+        {
+            "apiGroups": [BERTRAND_DEVICE_GROUP],
+            "resources": [BERTRAND_DEVICE_PLURAL],
+            "verbs": ["get", "list", "watch"],
+        },
+        {
+            "apiGroups": [CEPH_CAPACITY_GROUP],
+            "resources": [STORAGE_STATE_PLURAL],
+            "verbs": ["get", "list", "watch", "create", "update", "patch"],
+        },
+        {
+            "apiGroups": [CEPH_CAPACITY_GROUP],
+            "resources": [f"{STORAGE_STATE_PLURAL}/status"],
+            "verbs": ["get", "update", "patch"],
+        },
     )
 
 

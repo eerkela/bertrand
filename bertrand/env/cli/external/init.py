@@ -613,6 +613,43 @@ class _RepoContext:
     assume_yes: bool
 
 
+@dataclass(frozen=True)
+class _RepoResourcePlan:
+    enabled: set[Resource[Any]]
+    disabled: set[Resource[Any]]
+
+    @classmethod
+    def parse(cls, *, enable: list[str], disable: list[str]) -> _RepoResourcePlan:
+        enabled: set[Resource[Any]] = {RESOURCE_NAMES["bertrand"]}
+        enabled.update(_parse_resource_specs(enable, for_disable=False))
+        disabled = _parse_resource_specs(disable, for_disable=True)
+        protected = {
+            name
+            for name in PROTECTED_DISABLE_RESOURCES
+            if RESOURCE_NAMES[name] in disabled
+        }
+        if protected:
+            names = ", ".join(sorted(protected))
+            msg = f"cannot disable required Bertrand resources: {names}"
+            raise ValueError(msg)
+        return cls(enabled=enabled - disabled, disabled=disabled)
+
+    def context(self, *, assume_yes: bool) -> _RepoContext:
+        return _RepoContext(
+            enable=self.enabled,
+            disable=self.disabled,
+            assume_yes=assume_yes,
+        )
+
+
+@dataclass(frozen=True)
+class _RepoTarget:
+    repo: GitRepository
+    worktree: Path
+    target: Path
+    recovered_repo_id: str | None
+
+
 @dataclass
 class _RepoState:
     kube: Kube
@@ -682,85 +719,113 @@ async def _ensure_bare_worktrees(
         msg = "bare-worktree convergence requires a mounted repository alias"
         raise OSError(msg)
     mount = GitRepository(REPO_DIR / state.repo_id / REPO_MOUNT_EXT / ".git")
-    deadline = state.deadline
-    target_branch: str | None = None
-
-    # specific-worktree mode: capture source branch identity before any conversion so
-    # we can remap to canonical converged worktree paths afterwards.
-    if state.worktree != Path():
-        source_worktree = state.repo.root / state.worktree
-        match = next(
-            (wt for wt in await state.repo.worktrees() if wt.path == source_worktree),
-            None,
-        )
-        if match is None:
-            msg = (
-                f"targeted worktree {source_worktree} is not registered in source "
-                f"repository {state.repo.root}"
-            )
-            raise OSError(msg)
-        target_branch = match.branch
-        if target_branch is None:
-            msg = (
-                f"targeted worktree {source_worktree} has detached HEAD; please attach "
-                "it to a branch before running `bertrand init`."
-            )
-            raise OSError(msg)
+    target_branch = await _target_worktree_branch(state)
 
     # new repository: initialize a bare history store and create the first worktree
     if not state.repo:  # source repo is uninitialized or missing
-        branch = await GitRepository.default_branch()
-        default_worktree = state.mount_alias / branch
-        # destination repo is also uninitialized - create initial worktree
-        if not mount:
-            await mount.init(branch=branch, bare=True)
-            await mount.create_worktree(
-                branch,
-                target=default_worktree,
-                create_branch=True,
-            )
-        elif await mount.is_bare():
-            if not any(wt.branch == branch for wt in await mount.worktrees()):
-                await mount.create_worktree(
-                    branch,
-                    target=default_worktree,
-                    create_branch=True,
-                )
-            await mount.sync_worktrees()
-        else:
-            msg = f"managed destination repository at {state.mount_alias} must be bare"
-            raise OSError(msg)
+        await _ensure_new_bare_repository(mount, alias=state.mount_alias)
         state.repo = mount
         return
 
     # conversion path: mirror all refs from source into destination, then converge
     # one worktree per local branch under refs/heads/*
     if state.repo != mount:
-        if await state.repo.dirty():
-            msg = (
-                f"cannot convert repository at {state.repo.root}: "
-                "worktree has uncommitted changes"
-            )
-            raise OSError(msg)
-        await mount.mirror_from(state.repo, timeout=deadline.remaining())
+        await _mirror_source_repo(state, mount)
 
     # assert mounted directory is well-formed, then sync worktrees
-    if not mount:
-        msg = f"managed destination repository does not exist at {state.mount_alias}"
-        raise OSError(msg)
-    if not await mount.is_bare():
-        msg = f"managed destination repository at {state.mount_alias} must be bare"
-        raise OSError(msg)
+    await _assert_bare_managed_repo(mount, alias=state.mount_alias)
     await mount.sync_worktrees()
     state.repo = mount
-    if target_branch is not None:
-        if not any(wt.branch == target_branch for wt in await mount.worktrees()):
-            msg = (
-                f"failed to map targeted source worktree branch {target_branch!r} into "
-                f"converged repository at {mount.root}"
+    await _remap_target_worktree(state, target_branch=target_branch)
+
+
+async def _target_worktree_branch(state: _RepoState) -> str | None:
+    # specific-worktree mode: capture source branch identity before any conversion so
+    # we can remap to canonical converged worktree paths afterwards.
+    if state.worktree == Path():
+        return None
+    source_worktree = state.repo.root / state.worktree
+    match = next(
+        (wt for wt in await state.repo.worktrees() if wt.path == source_worktree),
+        None,
+    )
+    if match is None:
+        msg = (
+            f"targeted worktree {source_worktree} is not registered in source "
+            f"repository {state.repo.root}"
+        )
+        raise OSError(msg)
+    if match.branch is None:
+        msg = (
+            f"targeted worktree {source_worktree} has detached HEAD; please attach "
+            "it to a branch before running `bertrand init`."
+        )
+        raise OSError(msg)
+    return match.branch
+
+
+async def _ensure_new_bare_repository(
+    mount: GitRepository,
+    *,
+    alias: Path,
+) -> None:
+    branch = await GitRepository.default_branch()
+    default_worktree = alias / branch
+    # destination repo is also uninitialized - create initial worktree
+    if not mount:
+        await mount.init(branch=branch, bare=True)
+        await mount.create_worktree(
+            branch,
+            target=default_worktree,
+            create_branch=True,
+        )
+        return
+    if await mount.is_bare():
+        if not any(wt.branch == branch for wt in await mount.worktrees()):
+            await mount.create_worktree(
+                branch,
+                target=default_worktree,
+                create_branch=True,
             )
-            raise OSError(msg)
-        state.worktree = Path(target_branch)
+        await mount.sync_worktrees()
+        return
+    msg = f"managed destination repository at {alias} must be bare"
+    raise OSError(msg)
+
+
+async def _mirror_source_repo(state: _RepoState, mount: GitRepository) -> None:
+    if await state.repo.dirty():
+        msg = (
+            f"cannot convert repository at {state.repo.root}: "
+            "worktree has uncommitted changes"
+        )
+        raise OSError(msg)
+    await mount.mirror_from(state.repo, timeout=state.deadline.remaining())
+
+
+async def _assert_bare_managed_repo(mount: GitRepository, *, alias: Path) -> None:
+    if not mount:
+        msg = f"managed destination repository does not exist at {alias}"
+        raise OSError(msg)
+    if not await mount.is_bare():
+        msg = f"managed destination repository at {alias} must be bare"
+        raise OSError(msg)
+
+
+async def _remap_target_worktree(
+    state: _RepoState,
+    *,
+    target_branch: str | None,
+) -> None:
+    if target_branch is None:
+        return
+    if not any(wt.branch == target_branch for wt in await state.repo.worktrees()):
+        msg = (
+            f"failed to map targeted source worktree branch {target_branch!r} into "
+            f"converged repository at {state.repo.root}"
+        )
+        raise OSError(msg)
+    state.worktree = Path(target_branch)
 
 
 async def _ensure_repo_hooks(
@@ -835,100 +900,116 @@ async def _render_config_artifacts(
     state: _RepoState,
     context: _RepoContext,
 ) -> None:
-    render_targets: list[Path] = []
+    # render all targeted worktrees based on existing configuration (if any), then
+    # apply enable/disable deltas before syncing artifacts.
+    for worktree in await _config_render_targets(state):
+        await _sync_worktree_config(state, context, worktree)
+
+
+async def _config_render_targets(state: _RepoState) -> tuple[Path, ...]:
+    if state.worktree != Path():
+        return (state.worktree,)
 
     # repository-level targeting converges all branch-attached in-repo worktrees;
     # detached and out-of-tree worktrees are skipped with warnings.
-    if state.worktree == Path():
-        for worktree in sorted(
-            await state.repo.worktrees(),
-            key=lambda wt: wt.path.as_posix(),
-        ):
-            if worktree.branch is None:
-                print(
-                    f"bertrand: skipping detached worktree during repository-wide "
-                    f"render: {worktree.path}",
-                    file=sys.stderr,
-                )
-                continue
-            if not worktree.path.is_relative_to(state.repo.root):
-                print(
-                    f"bertrand: skipping out-of-tree worktree during repository-wide "
-                    f"render: {worktree.path}",
-                    file=sys.stderr,
-                )
-                continue
-            render_targets.append(worktree.path.relative_to(state.repo.root))
-    else:
-        render_targets.append(state.worktree)
-    if not render_targets:
+    targets: list[Path] = []
+    for worktree in sorted(
+        await state.repo.worktrees(),
+        key=lambda wt: wt.path.as_posix(),
+    ):
+        if worktree.branch is None:
+            print(
+                f"bertrand: skipping detached worktree during repository-wide "
+                f"render: {worktree.path}",
+                file=sys.stderr,
+            )
+            continue
+        if not worktree.path.is_relative_to(state.repo.root):
+            print(
+                f"bertrand: skipping out-of-tree worktree during repository-wide "
+                f"render: {worktree.path}",
+                file=sys.stderr,
+            )
+            continue
+        targets.append(worktree.path.relative_to(state.repo.root))
+    if not targets:
         msg = "repository-wide config render found no eligible branch worktrees"
         raise OSError(msg)
+    return tuple(targets)
 
-    # render all targeted worktrees based on existing configuration (if any), then
-    # apply enable/disable deltas before syncing artifacts.
-    for worktree in render_targets:
-        root = state.repo.root / worktree
-        config = await Config.load(
-            root,
-            kube=state.kube,
-            repo=state.repo,
-            timeout=state.deadline.remaining(),
-        )
-        config.resources.update({resource.name: None for resource in context.enable})
-        config.init = Config.Init(
-            repo=state.repo,
-            worktree=worktree,
-        )
-        async with config:
-            for resource in context.disable:
-                config.resources.pop(resource.name, None)
-                for relative in sorted(
-                    resource.paths,
-                    key=lambda item: item.as_posix(),
-                ):
-                    path = root / relative
-                    if not path.exists() and not path.is_symlink():
-                        continue
-                    if path.is_dir() and not path.is_symlink():
-                        shutil.rmtree(path, ignore_errors=True)
-                    else:
-                        path.unlink(missing_ok=True)
-            await config.sync()
+
+async def _sync_worktree_config(
+    state: _RepoState,
+    context: _RepoContext,
+    worktree: Path,
+) -> None:
+    root = state.repo.root / worktree
+    config = await Config.load(
+        root,
+        kube=state.kube,
+        repo=state.repo,
+        timeout=state.deadline.remaining(),
+    )
+    config.resources.update({resource.name: None for resource in context.enable})
+    config.init = Config.Init(
+        repo=state.repo,
+        worktree=worktree,
+    )
+    async with config:
+        _remove_disabled_resource_artifacts(root, config, context)
+        await config.sync()
+
+
+def _remove_disabled_resource_artifacts(
+    root: Path,
+    config: Config,
+    context: _RepoContext,
+) -> None:
+    for resource in context.disable:
+        config.resources.pop(resource.name, None)
+        for relative in sorted(resource.paths, key=lambda item: item.as_posix()):
+            path = root / relative
+            if not path.exists() and not path.is_symlink():
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
 
 
 async def _make_initial_commit(
     state: _RepoState,
     _context: _RepoContext,
 ) -> None:
-    worktree_path: Path | None = None
-
-    # repository-level target: use the HEAD or first branch-attached worktree for
-    # commit operations
-    if state.worktree == Path():
-        branch_targets = {
-            wt.branch: wt.path.relative_to(state.repo.root)
-            for wt in await state.repo.worktrees()
-            if wt.branch is not None and wt.path.is_relative_to(state.repo.root)
-        }
-        head = await state.repo.head_branch()
-        if head is not None and head in branch_targets:
-            worktree_path = state.repo.root / branch_targets[head]
-        elif branch_targets:
-            worktree_path = (
-                state.repo.root
-                / sorted(
-                    branch_targets.values(),
-                    key=lambda value: value.as_posix(),
-                )[0]
-            )
-    else:
-        worktree_path = state.repo.root / state.worktree
-
-    # don't commit unless we found a valid worktree path to commit within
+    worktree_path = await _initial_commit_worktree(state)
     if worktree_path is None:
         return
+    await _commit_initial_changes(state, worktree_path)
 
+
+async def _initial_commit_worktree(state: _RepoState) -> Path | None:
+    if state.worktree != Path():
+        return state.repo.root / state.worktree
+
+    # repository-level target: use the HEAD or first branch-attached worktree for
+    # commit operations.
+    branch_targets = {
+        wt.branch: wt.path.relative_to(state.repo.root)
+        for wt in await state.repo.worktrees()
+        if wt.branch is not None and wt.path.is_relative_to(state.repo.root)
+    }
+    head = await state.repo.head_branch()
+    if head is not None and head in branch_targets:
+        return state.repo.root / branch_targets[head]
+    if not branch_targets:
+        return None
+    return state.repo.root / sorted(
+        branch_targets.values(),
+        key=lambda value: value.as_posix(),
+    )[0]
+
+
+async def _commit_initial_changes(state: _RepoState, worktree_path: Path) -> None:
     # only commit if there are no existing commits
     head = await run(
         ["git", "rev-parse", "--verify", "HEAD"],
@@ -1108,6 +1189,105 @@ async def _mark_repo_failure(
         )
 
 
+def _ensure_git_available() -> None:
+    if shutil.which("git"):
+        return
+    msg = (
+        "Bertrand requires 'git' to initialize a project repository, but it "
+        "was not found in PATH."
+    )
+    raise OSError(msg)
+
+
+async def _resolve_repo_target(
+    kube: Kube,
+    path: Path,
+    *,
+    deadline: Deadline,
+) -> _RepoTarget:
+    raw_path = abspath(path)
+
+    # run managed-alias resurrection before git path resolution so repository
+    # discovery sees the recovered hidden mount layout if one was detached
+    resurrected = await resurrect_repository_mount(
+        kube,
+        raw_path,
+        timeout=deadline.remaining(),
+    )
+    recovered_repo_id = resurrected[0] if resurrected is not None else None
+
+    # search for parent Git repository on target path, and then identify the
+    # ancestor symlink that points to it, if any
+    repo, worktree = await GitRepository.resolve(raw_path.resolve())
+    return _RepoTarget(
+        repo=repo,
+        worktree=worktree,
+        target=_repository_destination_path(raw_path, repo),
+        recovered_repo_id=recovered_repo_id,
+    )
+
+
+def _repository_destination_path(raw_path: Path, repo: GitRepository) -> Path:
+    for candidate in (raw_path, *raw_path.parents):
+        try:
+            if candidate.resolve() == repo.root:
+                return candidate
+        except OSError:
+            pass
+    msg = (
+        f"failed to derive repository destination path from {raw_path}; no "
+        f"ancestor resolves to repository root {repo.root}"
+    )
+    raise OSError(msg)
+
+
+async def _converge_repository(
+    kube: Kube,
+    target: _RepoTarget,
+    resources: _RepoResourcePlan,
+    *,
+    deadline: Deadline,
+    yes: bool,
+) -> None:
+    # synchronize uniquely for each repository path to limit global init lock
+    # contention
+    async with _RepoState.lock(target.repo.root, timeout=deadline.remaining()):
+        await _assert_repo_clean(target.repo)
+        state = _RepoState(
+            kube=kube,
+            repo=target.repo,
+            target=target.target,
+            worktree=target.worktree,
+            repo_id=target.recovered_repo_id or target.repo.repo_id,
+            mount_alias=None,
+            deadline=deadline,
+        )
+        await _run_repo_stages(state, resources.context(assume_yes=yes))
+
+
+async def _assert_repo_clean(repo: GitRepository) -> None:
+    if repo and await repo.dirty():
+        msg = (
+            f"repository at {repo.root} has uncommitted changes; please "
+            "commit or stash them before calling `bertrand init`."
+        )
+        raise OSError(msg)
+
+
+async def _run_repo_stages(state: _RepoState, context: _RepoContext) -> None:
+    try:
+        for stage in REPO_STAGES:
+            await stage(state, context)
+    except _INIT_REPO_STAGE_ERRORS as err:
+        await _mark_repo_failure(
+            state.kube,
+            repo_id=state.repo_id,
+            err=err,
+            deadline=state.deadline,
+        )
+        raise
+
+
 async def bertrand_init(
     path: Path | None,
     *,
@@ -1174,96 +1354,22 @@ async def bertrand_init(
         return
 
     # fail fast if required tools are missing, and validate resource convergence input
-    enabled: set[Resource[Any]] = {RESOURCE_NAMES["bertrand"]}
-    enabled.update(_parse_resource_specs(enable, for_disable=False))
-    disabled = _parse_resource_specs(disable, for_disable=True)
-    protected = {
-        name for name in PROTECTED_DISABLE_RESOURCES if RESOURCE_NAMES[name] in disabled
-    }
-    if protected:
-        names = ", ".join(sorted(protected))
-        msg = f"cannot disable required Bertrand resources: {names}"
-        raise ValueError(msg)
-    enabled -= disabled
-
-    # resolve path to parent git repository and relative worktree
-    if not shutil.which("git"):
-        msg = (
-            "Bertrand requires 'git' to initialize a project repository, but it "
-            "was not found in PATH."
-        )
-        raise OSError(msg)
-    raw_path = abspath(path)
+    try:
+        resources = _RepoResourcePlan.parse(enable=enable, disable=disable)
+    except ValueError as err:
+        raise ValueError(*err.args) from None
+    _ensure_git_available()
 
     with await Kube.host(timeout=deadline.remaining()) as kube:
-        # run managed-alias resurrection before git path resolution so repository
-        # discovery sees the recovered hidden mount layout if one was detached
-        resurrected = await resurrect_repository_mount(
+        target = await _resolve_repo_target(
             kube,
-            raw_path,
-            timeout=deadline.remaining(),
+            path,
+            deadline=deadline,
         )
-        recovered_repo_id: str | None = None
-        if resurrected is not None:
-            recovered_repo_id, _ = resurrected
-
-        # search for parent Git repository on target path, and then identify the
-        # ancestor symlink that points to it, if any
-        repo, worktree = await GitRepository.resolve(raw_path.resolve())
-        target: Path | None = None
-        for candidate in (raw_path, *raw_path.parents):
-            try:
-                if candidate.resolve() == repo.root:
-                    target = candidate
-                    break
-            except OSError:
-                pass
-        if target is None:
-            msg = (
-                f"failed to derive repository destination path from {raw_path}; no "
-                f"ancestor resolves to repository root {repo.root}"
-            )
-            raise OSError(msg)
-
-        # synchronize uniquely for each repository path to limit global init lock
-        # contention
-        async with _RepoState.lock(repo.root, timeout=deadline.remaining()):
-            if repo and await repo.dirty():
-                msg = (
-                    f"repository at {repo.root} has uncommitted changes; please "
-                    "commit or stash them before calling `bertrand init`."
-                )
-                raise OSError(msg)
-
-            # resolve deterministic repository identity from recovered/managed
-            # metadata if available, otherwise derive from this host identity and the
-            # canonical repository root.
-            repo_id = recovered_repo_id or repo.repo_id
-            repo_context = _RepoContext(
-                enable=enabled,
-                disable=disabled,
-                assume_yes=yes,
-            )
-            state = _RepoState(
-                kube=kube,
-                repo=repo,
-                target=target,
-                worktree=worktree,
-                repo_id=repo_id,
-                mount_alias=None,
-                deadline=deadline,
-            )
-
-            # execute all idempotent convergence stages in sequence, allowing recovery
-            # from previous runs
-            try:
-                for stage in REPO_STAGES:
-                    await stage(state, repo_context)
-            except _INIT_REPO_STAGE_ERRORS as err:
-                await _mark_repo_failure(
-                    kube,
-                    repo_id=state.repo_id,
-                    err=err,
-                    deadline=deadline,
-                )
-                raise
+        await _converge_repository(
+            kube,
+            target,
+            resources,
+            deadline=deadline,
+            yes=yes,
+        )

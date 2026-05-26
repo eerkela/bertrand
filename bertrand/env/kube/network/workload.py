@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
-from bertrand.env.kube.api.spec import ServicePortSpec
+from bertrand.env.kube.api.view import ServicePortView
 from bertrand.env.kube.gateway import HTTPRoute
 from bertrand.env.kube.network.gateway import (
     HTTP_ROUTE_LABEL,
@@ -26,13 +26,9 @@ from bertrand.env.kube.workload_refs import (
 )
 
 if TYPE_CHECKING:
+    from bertrand.env.config.bertrand import BertrandModel
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.api.spec import PortProtocol
     from bertrand.env.kube.workload.base import WorkloadIdentity, WorkloadPod
-    from bertrand.env.kube.workload.config import (
-        WorkloadNetworkConfig,
-        WorkloadRouteConfig,
-    )
 
 _SERVICE_PROTOCOLS = frozenset({"TCP", "UDP", "SCTP"})
 _HTTP_ROUTE_HASH_CHARS = 12
@@ -47,14 +43,14 @@ class WorkloadHTTPRouteIntent:
     ----------
     name : str
         Stable Kubernetes HTTPRoute resource name.
-    route : WorkloadRouteConfig
+    route : BertrandModel.Network.Route
         Validated Bertrand route config.
     service_port : int
         Numeric Service backend port used by Gateway API.
     """
 
     name: str
-    route: WorkloadRouteConfig
+    route: BertrandModel.Network.Route
     service_port: int
 
 
@@ -186,7 +182,7 @@ async def delete_workload_service(
 async def ensure_workload_network_policy(
     kube: Kube,
     *,
-    network: WorkloadNetworkConfig,
+    network: BertrandModel.Network,
     workload: WorkloadPod,
     timeout: float,
     route_plan: WorkloadHTTPRoutePlan | None = None,
@@ -197,7 +193,7 @@ async def ensure_workload_network_policy(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    network : WorkloadNetworkConfig
+    network : BertrandModel.Network
         Validated Bertrand network config whose policy selects the NetworkPolicy
         shape.
     workload : WorkloadPod
@@ -298,7 +294,7 @@ async def delete_workload_network_policy(
 async def ensure_workload_http_routes(
     kube: Kube,
     *,
-    network: WorkloadNetworkConfig,
+    network: BertrandModel.Network,
     workload: WorkloadPod,
     timeout: float,
     route_plan: WorkloadHTTPRoutePlan | None = None,
@@ -309,7 +305,7 @@ async def ensure_workload_http_routes(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    network : WorkloadNetworkConfig
+    network : BertrandModel.Network
         Validated Bertrand network config whose route intents select the HTTPRoute
         shape.
     workload : WorkloadPod
@@ -398,7 +394,7 @@ async def ensure_workload_http_routes(
 async def prepare_workload_http_routes(
     kube: Kube,
     *,
-    network: WorkloadNetworkConfig,
+    network: BertrandModel.Network,
     workload: WorkloadPod,
     timeout: float,
 ) -> WorkloadHTTPRoutePlan:
@@ -408,7 +404,7 @@ async def prepare_workload_http_routes(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    network : WorkloadNetworkConfig
+    network : BertrandModel.Network
         Validated Bertrand network config whose route intents select the HTTPRoute
         shape.
     workload : WorkloadPod
@@ -529,7 +525,7 @@ async def delete_workload_http_routes(
         await route.delete(kube, timeout=deadline.remaining())
 
 
-def workload_service_ports(workload: WorkloadPod) -> tuple[ServicePortSpec, ...]:
+def workload_service_ports(workload: WorkloadPod) -> tuple[ServicePortView, ...]:
     """Return the canonical Service ports for a workload.
 
     Parameters
@@ -539,7 +535,7 @@ def workload_service_ports(workload: WorkloadPod) -> tuple[ServicePortSpec, ...]
 
     Returns
     -------
-    tuple[ServicePortSpec, ...]
+    tuple[ServicePortView, ...]
         Deterministic Service port declarations. Each Service port exposes the same
         port number as the container and targets the container's named port.
 
@@ -550,10 +546,10 @@ def workload_service_ports(workload: WorkloadPod) -> tuple[ServicePortSpec, ...]
         protocol.
     """
     seen: set[str] = set()
-    ports: list[ServicePortSpec] = []
+    ports: list[ServicePortView] = []
     for container in workload.template.containers:
         for port in container.ports:
-            name = port.name.strip()
+            name = str(port.get("name", "")).strip()
             if not name:
                 msg = f"workload container {container.name!r} has an unnamed port"
                 raise ValueError(msg)
@@ -562,23 +558,23 @@ def workload_service_ports(workload: WorkloadPod) -> tuple[ServicePortSpec, ...]
                 raise ValueError(msg)
             seen.add(name)
 
-            container_port = int(port.container_port)
+            container_port = int(cast("int | str", port.get("containerPort", 0)))
             if container_port < 1 or container_port > 65535:
                 msg = (
                     f"workload Service port {name!r} is out of range: {container_port}"
                 )
                 raise ValueError(msg)
 
-            protocol = port.protocol.strip().upper()
+            protocol = str(port.get("protocol", "TCP")).strip().upper()
             if protocol not in _SERVICE_PROTOCOLS:
                 msg = f"unsupported workload Service port protocol: {protocol!r}"
                 raise ValueError(msg)
             ports.append(
-                ServicePortSpec(
+                ServicePortView(
                     name=name,
                     port=container_port,
                     target_port=name,
-                    protocol=cast("PortProtocol", protocol),
+                    protocol=protocol,
                 )
             )
     return tuple(sorted(ports, key=lambda item: item.name))
@@ -586,7 +582,7 @@ def workload_service_ports(workload: WorkloadPod) -> tuple[ServicePortSpec, ...]
 
 def workload_http_route_name(
     identity: WorkloadIdentity,
-    route: WorkloadRouteConfig,
+    route: BertrandModel.Network.Route,
 ) -> str:
     """Return the stable HTTPRoute resource name for one route intent.
 
@@ -594,7 +590,7 @@ def workload_http_route_name(
     ----------
     identity : WorkloadIdentity
         Stable workload identity that owns the route.
-    route : WorkloadRouteConfig
+    route : BertrandModel.Network.Route
         External route intent.
 
     Returns
@@ -633,7 +629,7 @@ async def _list_workload_http_routes(
 
 
 def _workload_http_route_plan(
-    network: WorkloadNetworkConfig,
+    network: BertrandModel.Network,
     workload: WorkloadPod,
 ) -> WorkloadHTTPRoutePlan:
     identity = workload.identity
@@ -658,7 +654,7 @@ def _workload_http_route_plan(
 
 
 def _isolated_ingress_rules(
-    network: WorkloadNetworkConfig,
+    network: BertrandModel.Network,
     workload: WorkloadPod,
     *,
     route_plan: WorkloadHTTPRoutePlan | None,
@@ -677,9 +673,9 @@ def _isolated_ingress_rules(
 
 
 def _service_port_for_http_route(
-    route: WorkloadRouteConfig,
-    ports: dict[str, ServicePortSpec],
-) -> ServicePortSpec:
+    route: BertrandModel.Network.Route,
+    ports: dict[str, ServicePortView],
+) -> ServicePortView:
     service_port = ports.get(route.port)
     if service_port is None:
         msg = (
@@ -699,7 +695,7 @@ def _service_port_for_http_route(
 
 def _http_route_rule(
     *,
-    route: WorkloadRouteConfig,
+    route: BertrandModel.Network.Route,
     identity: WorkloadIdentity,
     port: int,
 ) -> dict[str, object]:

@@ -8,22 +8,18 @@ import json
 import os
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Self
+from typing import TYPE_CHECKING, Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY, Deadline
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.api.spec import (
-    ContainerSpec,
-    EnvVarSpec,
-    PodResourceClaimSpec,
-    PodTemplateSpec,
-    PolicyRuleSpec,
+from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
+from bertrand.env.kube.custom_object import (
+    CustomObjectMetadata,
+    CustomObjectResource,
 )
-from bertrand.env.kube.custom_object import CustomObjectMetadata
-from bertrand.env.kube.custom_resource import CustomResource
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.dra import (
     DEVICE_CLASS_PLURAL,
@@ -36,11 +32,16 @@ from bertrand.env.kube.dra import (
     ResourceSlice,
     ensure_dra_api,
 )
-from bertrand.env.kube.rbac import ClusterRole, ClusterRoleBinding
+from bertrand.env.kube.rbac import (
+    upsert_cluster_role,
+    upsert_cluster_role_binding,
+)
 from bertrand.env.kube.service_account import ServiceAccount
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
+
+    from bertrand.env.kube.api.spec import PodResourceClaimManifest, PolicyRuleManifest
 
 DRA_DRIVER_NAME = "bertrand.dev"
 DRA_DEVICE_CLASS = "bertrand-devices"
@@ -71,30 +72,11 @@ _BERTRAND_DEVICE_LABELS = {
     BERTRAND_ENV: "1",
     BERTRAND_DEVICE_LABEL: BERTRAND_DEVICE_LABEL_VALUE,
 }
-_NON_EMPTY = {"type": "string", "minLength": 1}
-_BERTRAND_DEVICE_SPEC_SCHEMA = {
-    "type": "object",
-    "required": [
-        "capability_id",
-        "host_id",
-        "node_name",
-        "device_name",
-        "cdi_selector",
-    ],
-    "properties": {
-        "capability_id": _NON_EMPTY,
-        "host_id": _NON_EMPTY,
-        "node_name": _NON_EMPTY,
-        "device_name": _NON_EMPTY,
-        "cdi_selector": _NON_EMPTY,
-        "attributes": {"type": "object", "additionalProperties": {"type": "string"}},
-    },
-}
 
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
 
 
-class _BertrandDeviceSpecPayload(BaseModel):
+class _BertrandDeviceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     capability_id: _NonEmptyString
     host_id: _NonEmptyString
@@ -142,54 +124,22 @@ class _BertrandDeviceSpecPayload(BaseModel):
         }
 
 
-class _BertrandDevicePayload(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-    api_version: str = Field(default="", alias="apiVersion")
-    kind: str = ""
-    metadata: CustomObjectMetadata = Field(default_factory=CustomObjectMetadata)
-    spec: _BertrandDeviceSpecPayload
-
-
-@dataclass(frozen=True)
-class BertrandDeviceRecord:
+class BertrandDeviceRecord(BaseModel):
     """Managed node-scoped DRA device inventory record.
 
     Parameters
     ----------
     metadata : CustomObjectMetadata
         Kubernetes metadata for the inventory record.
-    spec : _BertrandDeviceSpecPayload
+    spec : _BertrandDeviceSpec
         Validated device inventory payload.
     """
 
+    model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
+    api_version: str = Field(default="", alias="apiVersion")
+    kind: str = ""
     metadata: CustomObjectMetadata
-    spec: _BertrandDeviceSpecPayload
-
-    @classmethod
-    def from_payload(cls, payload: object) -> Self:
-        """Validate one inventory payload from Kubernetes.
-
-        Parameters
-        ----------
-        payload : object
-            Raw Kubernetes custom object payload.
-
-        Returns
-        -------
-        Self
-            Validated inventory record.
-
-        Raises
-        ------
-        OSError
-            If the Kubernetes payload does not match the inventory schema.
-        """
-        try:
-            parsed = _BertrandDevicePayload.model_validate(payload)
-        except ValidationError as err:
-            msg = f"malformed {BERTRAND_DEVICE_KIND} payload: {err}"
-            raise OSError(msg) from err
-        return cls(metadata=parsed.metadata, spec=parsed.spec)
+    spec: _BertrandDeviceSpec
 
     @property
     def name(self) -> str:
@@ -247,16 +197,17 @@ class BertrandDeviceRecord:
         return self.spec.cdi_selector
 
 
-_BERTRAND_DEVICE_RESOURCE = CustomResource[BertrandDeviceRecord](
+BERTRAND_DEVICE_RESOURCE = CustomObjectResource[BertrandDeviceRecord](
     group=BERTRAND_DEVICE_GROUP,
     version=BERTRAND_DEVICE_VERSION,
     kind=BERTRAND_DEVICE_KIND,
     plural=BERTRAND_DEVICE_PLURAL,
-    singular="bertranddevice",
-    parser=BertrandDeviceRecord.from_payload,
-    spec_schema=_BERTRAND_DEVICE_SPEC_SCHEMA,
-    labels=_BERTRAND_DEVICE_LABELS,
     scope="cluster",
+    labels=_BERTRAND_DEVICE_LABELS,
+    singular="bertranddevice",
+    payload_parser=BertrandDeviceRecord.model_validate,
+    payload_error_context=f"{BERTRAND_DEVICE_KIND} payload",
+    spec_model=_BertrandDeviceSpec,
 )
 
 
@@ -304,18 +255,18 @@ class DRAResourceClaimIntent:
     required: bool
     container_name: str | None = None
 
-    def pod_claim(self) -> PodResourceClaimSpec:
+    def pod_claim(self) -> PodResourceClaimManifest:
         """Return the pod-level claim reference.
 
         Returns
         -------
-        PodResourceClaimSpec
+        PodResourceClaimManifest
             Pod resource-claim entry referencing this template.
         """
-        return PodResourceClaimSpec(
-            name=self.claim_name,
-            resource_claim_template_name=self.template_name,
-        )
+        return {
+            "name": self.claim_name,
+            "resourceClaimTemplateName": self.template_name,
+        }
 
 
 async def ensure_dra_backend(
@@ -351,7 +302,7 @@ async def ensure_dra_backend(
         raise TimeoutError(message)
     deadline = Deadline.from_timeout(timeout, message=message)
     await ensure_dra_api(kube, timeout=deadline.remaining())
-    await ensure_device_inventory_crd(kube, timeout=deadline.remaining())
+    await BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     await DeviceClass.upsert(
         kube,
         name=DRA_DEVICE_CLASS,
@@ -366,14 +317,14 @@ async def ensure_dra_backend(
         labels=_DRA_LABELS,
         timeout=deadline.remaining(),
     )
-    await ClusterRole.upsert(
+    await upsert_cluster_role(
         kube,
         name=DRA_PROVIDER_NAME,
         labels=_DRA_LABELS,
         rules=_provider_rules(),
         timeout=deadline.remaining(),
     )
-    await ClusterRoleBinding.upsert(
+    await upsert_cluster_role_binding(
         kube,
         name=DRA_PROVIDER_NAME,
         role_name=DRA_PROVIDER_NAME,
@@ -401,10 +352,12 @@ async def ensure_dra_backend(
                         "agent",
                     ],
                     env=[
-                        EnvVarSpec.field_ref(
-                            DRA_NODE_ENV,
-                            field_path="spec.nodeName",
-                        )
+                        {
+                            "name": DRA_NODE_ENV,
+                            "valueFrom": {
+                                "fieldRef": {"fieldPath": "spec.nodeName"}
+                            },
+                        }
                     ],
                 )
             ],
@@ -415,19 +368,6 @@ async def ensure_dra_backend(
         timeout=deadline.remaining(),
     )
     await daemonset.wait_rollout(kube, timeout=deadline.remaining())
-
-
-async def ensure_device_inventory_crd(kube: Kube, *, timeout: float) -> None:
-    """Converge the Bertrand DRA device inventory CRD.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum convergence budget in seconds.
-    """
-    await _BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, timeout=timeout)
 
 
 async def list_device_inventory(
@@ -466,7 +406,7 @@ async def list_device_inventory(
     allowed_hosts = {_check_uuid(host_id) for host_id in host_ids or ()}
     if len(allowed_hosts) == 1:
         labels[BERTRAND_DEVICE_HOST_LABEL] = _label_value(next(iter(allowed_hosts)))
-    records = await _BERTRAND_DEVICE_RESOURCE.list(
+    records = await BERTRAND_DEVICE_RESOURCE.list(
         kube,
         labels=labels,
         timeout=timeout,
@@ -519,7 +459,7 @@ async def upsert_device_inventory(
     BertrandDeviceRecord
         Validated inventory record returned by Kubernetes.
     """
-    spec = _BertrandDeviceSpecPayload(
+    spec = _BertrandDeviceSpec(
         capability_id=capability_id,
         host_id=host_id,
         node_name=node_name,
@@ -527,10 +467,10 @@ async def upsert_device_inventory(
         cdi_selector=cdi_selector,
         attributes=dict(attributes or {}),
     )
-    return await _BERTRAND_DEVICE_RESOURCE.upsert(
+    return await BERTRAND_DEVICE_RESOURCE.upsert(
         kube,
         name=_device_inventory_name(spec),
-        spec=spec.model_dump(mode="json"),
+        spec=spec,
         labels={
             BERTRAND_DEVICE_CAPABILITY_LABEL: _label_value(spec.capability_id),
             BERTRAND_DEVICE_HOST_LABEL: _label_value(spec.host_id),
@@ -571,7 +511,7 @@ async def delete_device_inventory(
     bool
         Whether a matching inventory record was deleted.
     """
-    spec = _BertrandDeviceSpecPayload(
+    spec = _BertrandDeviceSpec(
         capability_id=capability_id,
         host_id=host_id,
         node_name=node_name,
@@ -591,7 +531,7 @@ async def delete_device_inventory(
         for record in records
     ):
         return False
-    await _BERTRAND_DEVICE_RESOURCE.delete_by_name(
+    await BERTRAND_DEVICE_RESOURCE.delete_by_name(
         kube,
         name=name,
         timeout=timeout,
@@ -627,7 +567,7 @@ async def delete_device_inventory_for_host(
         timeout=timeout,
     )
     for record in records:
-        await _BERTRAND_DEVICE_RESOURCE.delete_by_name(
+        await BERTRAND_DEVICE_RESOURCE.delete_by_name(
             kube,
             name=record.name,
             timeout=timeout,
@@ -993,23 +933,23 @@ async def _publish_node_slice(
     )
 
 
-def _provider_rules() -> tuple[PolicyRuleSpec, ...]:
+def _provider_rules() -> tuple[PolicyRuleManifest, ...]:
     return (
-        PolicyRuleSpec(
-            api_groups=[DRA_GROUP],
-            resources=[
+        {
+            "apiGroups": [DRA_GROUP],
+            "resources": [
                 DEVICE_CLASS_PLURAL,
                 RESOURCE_SLICE_PLURAL,
                 RESOURCE_CLAIM_PLURAL,
                 RESOURCE_CLAIM_TEMPLATE_PLURAL,
             ],
-            verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
-        ),
-        PolicyRuleSpec(
-            api_groups=[BERTRAND_DEVICE_GROUP],
-            resources=[BERTRAND_DEVICE_PLURAL],
-            verbs=["get", "list", "watch"],
-        ),
+            "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+        },
+        {
+            "apiGroups": [BERTRAND_DEVICE_GROUP],
+            "resources": [BERTRAND_DEVICE_PLURAL],
+            "verbs": ["get", "list", "watch"],
+        },
     )
 
 
@@ -1095,7 +1035,7 @@ def _resource_slice_name(node_name: str) -> str:
     return f"bertrand-dra-{_label_value(node_name)}-{_hash(node_name)[:12]}"
 
 
-def _device_inventory_name(spec: _BertrandDeviceSpecPayload) -> str:
+def _device_inventory_name(spec: _BertrandDeviceSpec) -> str:
     digest = _name_digest(spec.host_id, spec.capability_id, spec.device_name)[:24]
     return f"bertrand-device-{digest}"
 

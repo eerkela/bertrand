@@ -10,7 +10,6 @@ from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.custom_object import (
     CustomObject,
     CustomObjectResource,
-    CustomObjectSpec,
     CustomObjectWrapper,
 )
 from bertrand.env.kube.daemonset import DaemonSet
@@ -18,7 +17,6 @@ from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.namespace import Namespace
 
 if TYPE_CHECKING:
-    import builtins
     from collections.abc import Mapping, Sequence
 
     from bertrand.env.kube.api.client import Kube
@@ -57,49 +55,6 @@ METALLB_CRDS = (
 )
 METALLB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
-_IP_ADDRESS_POOL_SPEC = CustomObjectSpec(
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="IPAddressPool",
-    plural="ipaddresspools",
-)
-_L2_ADVERTISEMENT_SPEC = CustomObjectSpec(
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="L2Advertisement",
-    plural="l2advertisements",
-)
-_BGP_ADVERTISEMENT_SPEC = CustomObjectSpec(
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="BGPAdvertisement",
-    plural="bgpadvertisements",
-)
-_BGP_PEER_SPEC = CustomObjectSpec(
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA2,
-    kind="BGPPeer",
-    plural="bgppeers",
-)
-_CONFIGURATION_STATE_SPEC = CustomObjectSpec(
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="ConfigurationState",
-    plural="configurationstates",
-)
-_SERVICE_L2_STATUS_SPEC = CustomObjectSpec(
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="ServiceL2Status",
-    plural="servicel2statuses",
-)
-_SERVICE_BGP_STATUS_SPEC = CustomObjectSpec(
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="ServiceBGPStatus",
-    plural="servicebgpstatuses",
-)
-
 
 class IPAddressPool(CustomObjectWrapper):
     """Wrapper around one MetalLB IPAddressPool.
@@ -109,55 +64,6 @@ class IPAddressPool(CustomObjectWrapper):
     _obj : CustomObject
         Generic MetalLB custom object payload returned by Kubernetes.
     """
-
-    @classmethod
-    async def get(
-        cls, kube: Kube, *, name: str, timeout: float
-    ) -> IPAddressPool | None:
-        """Read one IPAddressPool by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            IPAddressPool name.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        IPAddressPool | None
-            Wrapped IPAddressPool, or ``None`` if it does not exist.
-        """
-        return await _IP_ADDRESS_POOL_RESOURCE.get(
-            kube,
-            namespace=METALLB_NAMESPACE,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(cls, kube: Kube, *, timeout: float) -> builtins.list[IPAddressPool]:
-        """List MetalLB IPAddressPools.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        list[IPAddressPool]
-            Wrapped IPAddressPools.
-        """
-        return await _IP_ADDRESS_POOL_RESOURCE.list(
-            kube,
-            namespace=METALLB_NAMESPACE,
-            timeout=timeout,
-        )
 
     @classmethod
     async def upsert(
@@ -192,7 +98,7 @@ class IPAddressPool(CustomObjectWrapper):
         name = _required_name(name, kind="IPAddressPool")
         normalized = _required_values(addresses, kind="IPAddressPool addresses")
         return await _managed_upsert(
-            _IP_ADDRESS_POOL_RESOURCE,
+            cls.resource,
             kube,
             kind="IPAddressPool",
             name=name,
@@ -245,9 +151,13 @@ class IPAddressPool(CustomObjectWrapper):
         return _int_status(self._obj.status, "assignedIPv4")
 
 
-_IP_ADDRESS_POOL_RESOURCE: CustomObjectResource[IPAddressPool] = CustomObjectResource(
-    spec=_IP_ADDRESS_POOL_SPEC,
+IPAddressPool.resource = CustomObjectResource(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="IPAddressPool",
+    plural="ipaddresspools",
     parser=IPAddressPool._from_object,
+    default_namespace=METALLB_NAMESPACE,
 )
 
 
@@ -259,57 +169,6 @@ class L2Advertisement(CustomObjectWrapper):
     _obj : CustomObject
         Generic MetalLB custom object payload returned by Kubernetes.
     """
-
-    @classmethod
-    async def get(
-        cls, kube: Kube, *, name: str, timeout: float
-    ) -> L2Advertisement | None:
-        """Read one L2Advertisement by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            L2Advertisement name.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        L2Advertisement | None
-            Wrapped L2Advertisement, or ``None`` if absent.
-        """
-        return await _L2_ADVERTISEMENT_RESOURCE.get(
-            kube,
-            namespace=METALLB_NAMESPACE,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls, kube: Kube, *, timeout: float
-    ) -> builtins.list[L2Advertisement]:
-        """List MetalLB L2Advertisements.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        list[L2Advertisement]
-            Wrapped L2Advertisements.
-        """
-        return await _L2_ADVERTISEMENT_RESOURCE.list(
-            kube,
-            namespace=METALLB_NAMESPACE,
-            timeout=timeout,
-        )
 
     @classmethod
     async def upsert(
@@ -348,7 +207,7 @@ class L2Advertisement(CustomObjectWrapper):
         if normalized_interfaces:
             spec["interfaces"] = list(normalized_interfaces)
         return await _managed_upsert(
-            _L2_ADVERTISEMENT_RESOURCE,
+            cls.resource,
             kube,
             kind="L2Advertisement",
             name=name,
@@ -368,11 +227,13 @@ class L2Advertisement(CustomObjectWrapper):
         return _string_tuple(self._obj.spec.get("ipAddressPools", ()))
 
 
-_L2_ADVERTISEMENT_RESOURCE: CustomObjectResource[L2Advertisement] = (
-    CustomObjectResource(
-        spec=_L2_ADVERTISEMENT_SPEC,
-        parser=L2Advertisement._from_object,
-    )
+L2Advertisement.resource = CustomObjectResource(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="L2Advertisement",
+    plural="l2advertisements",
+    parser=L2Advertisement._from_object,
+    default_namespace=METALLB_NAMESPACE,
 )
 
 
@@ -384,53 +245,6 @@ class BGPPeer(CustomObjectWrapper):
     _obj : CustomObject
         Generic MetalLB custom object payload returned by Kubernetes.
     """
-
-    @classmethod
-    async def get(cls, kube: Kube, *, name: str, timeout: float) -> BGPPeer | None:
-        """Read one BGPPeer by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            BGPPeer name.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        BGPPeer | None
-            Wrapped BGPPeer, or ``None`` if absent.
-        """
-        return await _BGP_PEER_RESOURCE.get(
-            kube,
-            namespace=METALLB_NAMESPACE,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(cls, kube: Kube, *, timeout: float) -> builtins.list[BGPPeer]:
-        """List MetalLB BGPPeers.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        list[BGPPeer]
-            Wrapped BGPPeers.
-        """
-        return await _BGP_PEER_RESOURCE.list(
-            kube,
-            namespace=METALLB_NAMESPACE,
-            timeout=timeout,
-        )
 
     @classmethod
     async def upsert(
@@ -488,7 +302,7 @@ class BGPPeer(CustomObjectWrapper):
         if password_secret:
             spec["passwordSecret"] = {"name": password_secret}
         return await _managed_upsert(
-            _BGP_PEER_RESOURCE,
+            cls.resource,
             kube,
             kind="BGPPeer",
             name=name,
@@ -508,9 +322,13 @@ class BGPPeer(CustomObjectWrapper):
         return str(self._obj.spec.get("peerAddress") or "").strip()
 
 
-_BGP_PEER_RESOURCE: CustomObjectResource[BGPPeer] = CustomObjectResource(
-    spec=_BGP_PEER_SPEC,
+BGPPeer.resource = CustomObjectResource(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA2,
+    kind="BGPPeer",
+    plural="bgppeers",
     parser=BGPPeer._from_object,
+    default_namespace=METALLB_NAMESPACE,
 )
 
 
@@ -522,57 +340,6 @@ class BGPAdvertisement(CustomObjectWrapper):
     _obj : CustomObject
         Generic MetalLB custom object payload returned by Kubernetes.
     """
-
-    @classmethod
-    async def get(
-        cls, kube: Kube, *, name: str, timeout: float
-    ) -> BGPAdvertisement | None:
-        """Read one BGPAdvertisement by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            BGPAdvertisement name.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        BGPAdvertisement | None
-            Wrapped BGPAdvertisement, or ``None`` if absent.
-        """
-        return await _BGP_ADVERTISEMENT_RESOURCE.get(
-            kube,
-            namespace=METALLB_NAMESPACE,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls, kube: Kube, *, timeout: float
-    ) -> builtins.list[BGPAdvertisement]:
-        """List MetalLB BGPAdvertisements.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        list[BGPAdvertisement]
-            Wrapped BGPAdvertisements.
-        """
-        return await _BGP_ADVERTISEMENT_RESOURCE.list(
-            kube,
-            namespace=METALLB_NAMESPACE,
-            timeout=timeout,
-        )
 
     @classmethod
     async def upsert(
@@ -622,7 +389,7 @@ class BGPAdvertisement(CustomObjectWrapper):
         if normalized_communities:
             spec["communities"] = list(normalized_communities)
         return await _managed_upsert(
-            _BGP_ADVERTISEMENT_RESOURCE,
+            cls.resource,
             kube,
             kind="BGPAdvertisement",
             name=name,
@@ -642,20 +409,37 @@ class BGPAdvertisement(CustomObjectWrapper):
         return _string_tuple(self._obj.spec.get("ipAddressPools", ()))
 
 
-_BGP_ADVERTISEMENT_RESOURCE: CustomObjectResource[BGPAdvertisement] = (
-    CustomObjectResource(
-        spec=_BGP_ADVERTISEMENT_SPEC,
-        parser=BGPAdvertisement._from_object,
-    )
+BGPAdvertisement.resource = CustomObjectResource(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="BGPAdvertisement",
+    plural="bgpadvertisements",
+    parser=BGPAdvertisement._from_object,
+    default_namespace=METALLB_NAMESPACE,
 )
 _CONFIGURATION_STATE_RESOURCE: CustomObjectResource[CustomObject] = (
-    CustomObjectResource(spec=_CONFIGURATION_STATE_SPEC)
+    CustomObjectResource(
+        group=METALLB_GROUP,
+        version=METALLB_V1BETA1,
+        kind="ConfigurationState",
+        plural="configurationstates",
+    )
 )
 _SERVICE_L2_STATUS_RESOURCE: CustomObjectResource[CustomObject] = (
-    CustomObjectResource(spec=_SERVICE_L2_STATUS_SPEC)
+    CustomObjectResource(
+        group=METALLB_GROUP,
+        version=METALLB_V1BETA1,
+        kind="ServiceL2Status",
+        plural="servicel2statuses",
+    )
 )
 _SERVICE_BGP_STATUS_RESOURCE: CustomObjectResource[CustomObject] = (
-    CustomObjectResource(spec=_SERVICE_BGP_STATUS_SPEC)
+    CustomObjectResource(
+        group=METALLB_GROUP,
+        version=METALLB_V1BETA1,
+        kind="ServiceBGPStatus",
+        plural="servicebgpstatuses",
+    )
 )
 
 
@@ -724,22 +508,22 @@ async def metallb_status(kube: Kube, *, timeout: float) -> dict[str, object]:
     )
     crds = await _crd_status(kube, timeout=timeout)
     pools = await _safe_resource_list(
-        _IP_ADDRESS_POOL_RESOURCE,
+        IPAddressPool.resource,
         kube,
         timeout=timeout,
     )
     l2 = await _safe_resource_list(
-        _L2_ADVERTISEMENT_RESOURCE,
+        L2Advertisement.resource,
         kube,
         timeout=timeout,
     )
     peers = await _safe_resource_list(
-        _BGP_PEER_RESOURCE,
+        BGPPeer.resource,
         kube,
         timeout=timeout,
     )
     bgp = await _safe_resource_list(
-        _BGP_ADVERTISEMENT_RESOURCE,
+        BGPAdvertisement.resource,
         kube,
         timeout=timeout,
     )

@@ -6,35 +6,6 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class ObjectReference:
-    """Read-only Kubernetes object reference.
-
-    Parameters
-    ----------
-    kind : str
-        Referenced Kubernetes kind.
-    namespace : str
-        Referenced Kubernetes namespace, or an empty string for cluster-scoped
-        objects.
-    name : str
-        Referenced Kubernetes object name.
-    api_version : str
-        Referenced Kubernetes API version.
-    uid : str
-        Referenced Kubernetes UID.
-    resource_version : str
-        Referenced Kubernetes resource version.
-    """
-
-    kind: str
-    namespace: str
-    name: str
-    api_version: str = ""
-    uid: str = ""
-    resource_version: str = ""
-
-
-@dataclass(frozen=True)
 class ServicePortView:
     """Read-only Kubernetes Service port view.
 

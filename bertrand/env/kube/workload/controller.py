@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
-from bertrand.env.kube.api.spec import DeploymentStrategySpec
 from bertrand.env.kube.capability.device import upsert_resource_claim_templates
 from bertrand.env.kube.cronjob import CronJob, CronJobConcurrencyPolicy
 from bertrand.env.kube.deployment import Deployment
@@ -38,14 +37,12 @@ from bertrand.env.kube.workload_refs import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from bertrand.env.config.bertrand import BertrandModel
     from bertrand.env.kube.api._helpers import DeletionPropagationPolicy
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.workload.config import (
-        WorkloadConfig,
-        WorkloadExecutionConfig,
-        WorkloadNetworkConfig,
-        WorkloadRolloutConfig,
-        WorkloadScheduleConfig,
+    from bertrand.env.kube.api.spec import (
+        DeploymentRollingUpdateManifest,
+        DeploymentStrategyManifest,
     )
 
 type StableWorkloadController = Deployment | CronJob
@@ -157,10 +154,52 @@ class WorkloadRemoveResult:
         )
 
 
+@dataclass(frozen=True)
+class _WorkloadExecutionFields:
+    """Execution fields shared by generated Jobs and CronJob templates."""
+
+    backoff_limit: int
+    ttl_seconds_after_finished: int | None
+    active_deadline_seconds: int | None
+    parallelism: int
+    completions: int | None
+    completion_mode: JobCompletionMode
+
+    @classmethod
+    def from_config(cls, config: BertrandModel | None) -> _WorkloadExecutionFields:
+        execution = config.execution if config is not None else None
+        return cls(
+            backoff_limit=execution.retries if execution is not None else 0,
+            ttl_seconds_after_finished=execution.ttl if execution is not None else None,
+            active_deadline_seconds=(
+                execution.timeout if execution is not None else None
+            ),
+            parallelism=execution.parallelism if execution is not None else 1,
+            completions=execution.completions if execution is not None else None,
+            completion_mode=_COMPLETION_MODE[
+                execution.completion if execution is not None else "all"
+            ],
+        )
+
+
+@dataclass(frozen=True)
+class _ScaleChanges:
+    """Internal partial result from one workload scale topology."""
+
+    deployment_replicas: int | None = None
+    cronjob_suspended: bool | None = None
+    jobs_deleted: tuple[str, ...] = ()
+    pods_deleted: tuple[str, ...] = ()
+
+
+def _deadline(timeout: float, *, message: str) -> Deadline:
+    return Deadline.from_timeout(timeout, message=message)
+
+
 async def ensure_workload_controller(
     kube: Kube,
     *,
-    config: WorkloadConfig | None,
+    config: BertrandModel | None,
     workload: WorkloadInput,
     timeout: float,
     primary_args: Sequence[str] | None = None,
@@ -198,120 +237,159 @@ async def ensure_workload_controller(
     message = "workload controller convergence timeout must be positive"
     if timeout <= 0:
         raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
-
+    deadline = _deadline(timeout, message=message)
     kind = _topology_kind(config)
-    identity = _identity(workload)
 
     if kind == "deployment":
-        pod = _require_workload_pod(workload, kind=kind)
-        network = _require_network(config)
-        rollout = _rollout(config)
-        route_plan = await prepare_workload_http_routes(
+        return await _ensure_deployment_controller(
             kube,
-            network=network,
-            workload=pod,
-            timeout=deadline.remaining(),
-        )
-        await ensure_workload_claim_templates(
-            kube,
-            workload=pod,
-            timeout=deadline.remaining(),
-        )
-        await _delete_cronjob(
-            kube,
-            identity=pod.identity,
-            timeout=deadline.remaining(),
-        )
-        await _ensure_deployment_network(
-            kube,
-            network=network,
-            workload=pod,
-            route_plan=route_plan,
-            timeout=deadline.remaining(),
-        )
-        return await Deployment.upsert(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=pod.name,
-            labels=pod.labels,
-            selector=pod.selector,
-            pod_template=pod.pod_template(
-                primary_args=primary_args,
-                interactive=interactive,
-                stdin_once=False,
-            ),
-            replicas=_replicas(config),
-            strategy=_rollout_strategy(config),
-            min_ready_seconds=rollout.min_ready if rollout is not None else None,
-            progress_deadline_seconds=rollout.timeout if rollout is not None else None,
-            revision_history_limit=rollout.history if rollout is not None else None,
-            paused=rollout.paused if rollout is not None else None,
-            timeout=deadline.remaining(),
+            config=config,
+            workload=workload,
+            deadline=deadline,
+            primary_args=primary_args,
+            interactive=interactive,
         )
 
     if kind == "cronjob":
-        pod = _require_workload_pod(workload, kind=kind)
-        schedule = _require_schedule(config)
-        await ensure_workload_claim_templates(
+        return await _ensure_cronjob_controller(
             kube,
-            workload=pod,
-            timeout=deadline.remaining(),
-        )
-        await _delete_network_stack(
-            kube,
-            identity=pod.identity,
-            timeout=deadline.remaining(),
-        )
-        await _delete_deployment(
-            kube,
-            identity=pod.identity,
-            timeout=deadline.remaining(),
-        )
-        return await CronJob.upsert(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=pod.name,
-            labels=pod.labels,
-            pod_template=pod.pod_template(primary_args=primary_args),
-            schedule=schedule.cron,
-            backoff_limit=_backoff_limit(config),
-            ttl_seconds_after_finished=_ttl_seconds_after_finished(config),
-            active_deadline_seconds=_active_deadline_seconds(config),
-            parallelism=_parallelism(config),
-            completions=_completions(config),
-            completion_mode=_completion_mode(config),
-            concurrency_policy=_concurrency_policy(schedule),
-            suspend=False if schedule.suspend is None else schedule.suspend,
-            starting_deadline_seconds=schedule.start_deadline,
-            successful_jobs_history_limit=schedule.history.success,
-            failed_jobs_history_limit=schedule.history.failure,
-            time_zone=schedule.timezone,
-            timeout=deadline.remaining(),
+            config=config,
+            workload=workload,
+            deadline=deadline,
+            primary_args=primary_args,
         )
 
-    if kind == "job":
-        if identity is not None:
-            await _delete_stable_resources(
-                kube,
-                identity=identity,
-                timeout=deadline.remaining(),
-            )
-        return None
+    await _delete_stable_resources_if_present(
+        kube,
+        identity=_identity(workload),
+        deadline=deadline,
+    )
+    return None
 
+
+async def _ensure_deployment_controller(
+    kube: Kube,
+    *,
+    config: BertrandModel | None,
+    workload: WorkloadInput,
+    deadline: Deadline,
+    primary_args: Sequence[str] | None,
+    interactive: bool,
+) -> Deployment:
+    pod = _require_workload_pod(workload, kind="deployment")
+    network = _require_network(config)
+    rollout = _rollout(config)
+    route_plan = await prepare_workload_http_routes(
+        kube,
+        network=network,
+        workload=pod,
+        timeout=deadline.remaining(),
+    )
+    await ensure_workload_claim_templates(
+        kube,
+        workload=pod,
+        timeout=deadline.remaining(),
+    )
+    await _delete_cronjob(
+        kube,
+        identity=pod.identity,
+        timeout=deadline.remaining(),
+    )
+    await _ensure_deployment_network(
+        kube,
+        network=network,
+        workload=pod,
+        route_plan=route_plan,
+        timeout=deadline.remaining(),
+    )
+    return await Deployment.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=pod.name,
+        labels=pod.labels,
+        selector=pod.selector,
+        pod_template=pod.pod_template(
+            primary_args=primary_args,
+            interactive=interactive,
+            stdin_once=False,
+        ),
+        replicas=_replicas(config),
+        strategy=_rollout_strategy(config),
+        min_ready_seconds=rollout.min_ready if rollout is not None else None,
+        progress_deadline_seconds=rollout.timeout if rollout is not None else None,
+        revision_history_limit=rollout.history if rollout is not None else None,
+        paused=rollout.paused if rollout is not None else None,
+        timeout=deadline.remaining(),
+    )
+
+
+async def _ensure_cronjob_controller(
+    kube: Kube,
+    *,
+    config: BertrandModel | None,
+    workload: WorkloadInput,
+    deadline: Deadline,
+    primary_args: Sequence[str] | None,
+) -> CronJob:
+    pod = _require_workload_pod(workload, kind="cronjob")
+    schedule = _require_schedule(config)
+    execution = _WorkloadExecutionFields.from_config(config)
+    await ensure_workload_claim_templates(
+        kube,
+        workload=pod,
+        timeout=deadline.remaining(),
+    )
+    await _delete_network_stack(
+        kube,
+        identity=pod.identity,
+        timeout=deadline.remaining(),
+    )
+    await _delete_deployment(
+        kube,
+        identity=pod.identity,
+        timeout=deadline.remaining(),
+    )
+    return await CronJob.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=pod.name,
+        labels=pod.labels,
+        pod_template=pod.pod_template(primary_args=primary_args),
+        schedule=schedule.cron,
+        backoff_limit=execution.backoff_limit,
+        ttl_seconds_after_finished=execution.ttl_seconds_after_finished,
+        active_deadline_seconds=execution.active_deadline_seconds,
+        parallelism=execution.parallelism,
+        completions=execution.completions,
+        completion_mode=execution.completion_mode,
+        concurrency_policy=_concurrency_policy(schedule),
+        suspend=False if schedule.suspend is None else schedule.suspend,
+        starting_deadline_seconds=schedule.start_deadline,
+        successful_jobs_history_limit=schedule.history.success,
+        failed_jobs_history_limit=schedule.history.failure,
+        time_zone=schedule.timezone,
+        timeout=deadline.remaining(),
+    )
+
+
+async def _delete_stable_resources_if_present(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity | None,
+    deadline: Deadline,
+) -> None:
     if identity is not None:
         await _delete_stable_resources(
             kube,
             identity=identity,
             timeout=deadline.remaining(),
         )
-    return None
 
 
 async def create_workload_job_run(
     kube: Kube,
     *,
-    config: WorkloadConfig,
+    config: BertrandModel,
     workload: WorkloadPod,
     timeout: float,
     primary_args: Sequence[str] | None = None,
@@ -349,11 +427,31 @@ async def create_workload_job_run(
     message = "workload Job run creation timeout must be positive"
     if timeout <= 0:
         raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = _deadline(timeout, message=message)
     if _topology_kind(config) != "job":
         msg = "generated workload Job runs require Job topology"
         raise ValueError(msg)
 
+    return await _create_generated_workload_job(
+        kube,
+        config=config,
+        workload=workload,
+        deadline=deadline,
+        primary_args=primary_args,
+        interactive=interactive,
+    )
+
+
+async def _create_generated_workload_job(
+    kube: Kube,
+    *,
+    config: BertrandModel,
+    workload: WorkloadPod,
+    deadline: Deadline,
+    primary_args: Sequence[str] | None,
+    interactive: bool,
+) -> Job:
+    execution = _WorkloadExecutionFields.from_config(config)
     await _delete_stable_resources(
         kube,
         identity=workload.identity,
@@ -374,12 +472,12 @@ async def create_workload_job_run(
             interactive=interactive,
             stdin_once=interactive,
         ),
-        backoff_limit=_backoff_limit(config),
-        ttl_seconds_after_finished=_ttl_seconds_after_finished(config),
-        active_deadline_seconds=_active_deadline_seconds(config),
-        parallelism=_parallelism(config),
-        completions=_completions(config),
-        completion_mode=_completion_mode(config),
+        backoff_limit=execution.backoff_limit,
+        ttl_seconds_after_finished=execution.ttl_seconds_after_finished,
+        active_deadline_seconds=execution.active_deadline_seconds,
+        parallelism=execution.parallelism,
+        completions=execution.completions,
+        completion_mode=execution.completion_mode,
         timeout=deadline.remaining(),
     )
 
@@ -387,7 +485,7 @@ async def create_workload_job_run(
 async def scale_workload(
     kube: Kube,
     *,
-    config: WorkloadConfig | None,
+    config: BertrandModel | None,
     identity: WorkloadIdentity,
     replicas: int,
     grace_period_seconds: int,
@@ -427,7 +525,7 @@ async def scale_workload(
     message = "workload scale timeout must be positive"
     if timeout <= 0:
         raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = _deadline(timeout, message=message)
     if replicas < 0:
         msg = "workload scale replicas cannot be negative"
         raise ValueError(msg)
@@ -436,70 +534,150 @@ async def scale_workload(
         raise ValueError(msg)
 
     kind = _topology_kind(config)
-    deployment_replicas: int | None = None
-    cronjob_suspended: bool | None = None
-    jobs_deleted: tuple[str, ...] = ()
-    pods_deleted: tuple[str, ...] = ()
-
     if kind == "deployment":
-        deployment_replicas = await _scale_deployment(
+        changes = await _scale_deployment_topology(
             kube,
             identity=identity,
             replicas=replicas,
-            timeout=deadline.remaining(),
-        )
-        if replicas == 0:
-            jobs_deleted, pods_deleted = await _delete_active_execution(
-                kube,
-                identity=identity,
-                grace_period_seconds=grace_period_seconds,
-                timeout=deadline.remaining(),
-            )
-    elif kind == "cronjob":
-        if replicas > 1:
-            msg = (
-                "CronJob topology cannot scale above one logical replica; use "
-                "`bertrand run` for immediate generated Job runs"
-            )
-            raise ValueError(msg)
-        cronjob_suspended = await _set_cronjob_suspended(
-            kube,
-            identity=identity,
-            suspend=replicas == 0,
-            timeout=deadline.remaining(),
-        )
-        if replicas == 0:
-            jobs_deleted, pods_deleted = await _delete_active_execution(
-                kube,
-                identity=identity,
-                grace_period_seconds=grace_period_seconds,
-                timeout=deadline.remaining(),
-            )
-    elif kind == "job":
-        if replicas > 0:
-            msg = (
-                "Job topology does not have persistent replicas; use `bertrand run` "
-                "to create a generated Job run"
-            )
-            raise ValueError(msg)
-        jobs_deleted, pods_deleted = await _delete_active_execution(
-            kube,
-            identity=identity,
             grace_period_seconds=grace_period_seconds,
-            timeout=deadline.remaining(),
+            deadline=deadline,
+        )
+    elif kind == "cronjob":
+        changes = await _scale_cronjob_topology(
+            kube,
+            identity=identity,
+            replicas=replicas,
+            grace_period_seconds=grace_period_seconds,
+            deadline=deadline,
+        )
+    elif kind == "job":
+        changes = await _scale_job_topology(
+            kube,
+            identity=identity,
+            replicas=replicas,
+            grace_period_seconds=grace_period_seconds,
+            deadline=deadline,
         )
     else:
-        if replicas > 0:
-            msg = "cannot scale a project with no configured workload"
-            raise ValueError(msg)
+        changes = _scale_no_workload_topology(replicas=replicas)
 
     return WorkloadScaleResult(
         workload=identity.name,
         requested_replicas=replicas,
+        deployment_replicas=changes.deployment_replicas,
+        cronjob_suspended=changes.cronjob_suspended,
+        jobs_deleted=changes.jobs_deleted,
+        pods_deleted=changes.pods_deleted,
+    )
+
+
+async def _scale_deployment_topology(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    replicas: int,
+    grace_period_seconds: int,
+    deadline: Deadline,
+) -> _ScaleChanges:
+    deployment_replicas = await _scale_deployment(
+        kube,
+        identity=identity,
+        replicas=replicas,
+        timeout=deadline.remaining(),
+    )
+    jobs_deleted, pods_deleted = await _delete_active_execution_if_stopped(
+        kube,
+        identity=identity,
+        replicas=replicas,
+        grace_period_seconds=grace_period_seconds,
+        deadline=deadline,
+    )
+    return _ScaleChanges(
         deployment_replicas=deployment_replicas,
+        jobs_deleted=jobs_deleted,
+        pods_deleted=pods_deleted,
+    )
+
+
+async def _scale_cronjob_topology(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    replicas: int,
+    grace_period_seconds: int,
+    deadline: Deadline,
+) -> _ScaleChanges:
+    if replicas > 1:
+        msg = (
+            "CronJob topology cannot scale above one logical replica; use "
+            "`bertrand run` for immediate generated Job runs"
+        )
+        raise ValueError(msg)
+    cronjob_suspended = await _set_cronjob_suspended(
+        kube,
+        identity=identity,
+        suspend=replicas == 0,
+        timeout=deadline.remaining(),
+    )
+    jobs_deleted, pods_deleted = await _delete_active_execution_if_stopped(
+        kube,
+        identity=identity,
+        replicas=replicas,
+        grace_period_seconds=grace_period_seconds,
+        deadline=deadline,
+    )
+    return _ScaleChanges(
         cronjob_suspended=cronjob_suspended,
         jobs_deleted=jobs_deleted,
         pods_deleted=pods_deleted,
+    )
+
+
+async def _scale_job_topology(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    replicas: int,
+    grace_period_seconds: int,
+    deadline: Deadline,
+) -> _ScaleChanges:
+    if replicas > 0:
+        msg = (
+            "Job topology does not have persistent replicas; use `bertrand run` "
+            "to create a generated Job run"
+        )
+        raise ValueError(msg)
+    jobs_deleted, pods_deleted = await _delete_active_execution(
+        kube,
+        identity=identity,
+        grace_period_seconds=grace_period_seconds,
+        timeout=deadline.remaining(),
+    )
+    return _ScaleChanges(jobs_deleted=jobs_deleted, pods_deleted=pods_deleted)
+
+
+def _scale_no_workload_topology(*, replicas: int) -> _ScaleChanges:
+    if replicas > 0:
+        msg = "cannot scale a project with no configured workload"
+        raise ValueError(msg)
+    return _ScaleChanges()
+
+
+async def _delete_active_execution_if_stopped(
+    kube: Kube,
+    *,
+    identity: WorkloadIdentity,
+    replicas: int,
+    grace_period_seconds: int,
+    deadline: Deadline,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if replicas != 0:
+        return (), ()
+    return await _delete_active_execution(
+        kube,
+        identity=identity,
+        grace_period_seconds=grace_period_seconds,
+        timeout=deadline.remaining(),
     )
 
 
@@ -539,7 +717,7 @@ async def remove_workload(
     message = "workload removal timeout must be positive"
     if timeout <= 0:
         raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = _deadline(timeout, message=message)
     if grace_period_seconds < 0:
         msg = "workload removal grace period cannot be negative"
         raise ValueError(msg)
@@ -609,7 +787,7 @@ async def ensure_workload_claim_templates(
 async def _ensure_deployment_network(
     kube: Kube,
     *,
-    network: WorkloadNetworkConfig,
+    network: BertrandModel.Network,
     workload: WorkloadPod,
     route_plan: WorkloadHTTPRoutePlan,
     timeout: float,
@@ -955,7 +1133,7 @@ def _assert_managed(
     raise OSError(msg)
 
 
-def _topology_kind(config: WorkloadConfig | None) -> WorkloadControllerKind:
+def _topology_kind(config: BertrandModel | None) -> WorkloadControllerKind:
     if config is None:
         return "none"
     kind = config.topology.kind
@@ -978,79 +1156,51 @@ def _require_workload_pod(workload: WorkloadInput, *, kind: str) -> WorkloadPod:
     raise ValueError(msg)
 
 
-def _require_schedule(config: WorkloadConfig | None) -> WorkloadScheduleConfig:
+def _require_schedule(config: BertrandModel | None) -> BertrandModel.Schedule:
     if config is not None and config.schedule is not None:
         return config.schedule
     msg = "CronJob topology requires schedule config"
     raise ValueError(msg)
 
 
-def _require_network(config: WorkloadConfig | None) -> WorkloadNetworkConfig:
+def _require_network(config: BertrandModel | None) -> BertrandModel.Network:
     if config is not None:
         return config.network
     msg = "workload network convergence requires workload config"
     raise ValueError(msg)
 
 
-def _execution(config: WorkloadConfig | None) -> WorkloadExecutionConfig | None:
-    return config.execution if config is not None else None
-
-
-def _rollout(config: WorkloadConfig | None) -> WorkloadRolloutConfig | None:
+def _rollout(config: BertrandModel | None) -> BertrandModel.Rollout | None:
     return config.rollout if config is not None else None
 
 
-def _replicas(config: WorkloadConfig | None) -> int:
+def _replicas(config: BertrandModel | None) -> int:
     if config is None or config.scale is None:
         return 1
     return config.scale.replicas
 
 
-def _backoff_limit(config: WorkloadConfig | None) -> int:
-    execution = _execution(config)
-    return execution.retries if execution is not None else 0
-
-
-def _ttl_seconds_after_finished(config: WorkloadConfig | None) -> int | None:
-    execution = _execution(config)
-    return execution.ttl if execution is not None else None
-
-
-def _active_deadline_seconds(config: WorkloadConfig | None) -> int | None:
-    execution = _execution(config)
-    return execution.timeout if execution is not None else None
-
-
-def _parallelism(config: WorkloadConfig | None) -> int:
-    execution = _execution(config)
-    return execution.parallelism if execution is not None else 1
-
-
-def _completions(config: WorkloadConfig | None) -> int | None:
-    execution = _execution(config)
-    return execution.completions if execution is not None else None
-
-
-def _completion_mode(config: WorkloadConfig | None) -> JobCompletionMode:
-    execution = _execution(config)
-    value = execution.completion if execution is not None else "all"
-    return _COMPLETION_MODE[value]
-
-
-def _concurrency_policy(schedule: WorkloadScheduleConfig) -> CronJobConcurrencyPolicy:
+def _concurrency_policy(schedule: BertrandModel.Schedule) -> CronJobConcurrencyPolicy:
     return _SCHEDULE_CONCURRENCY[schedule.concurrency]
 
 
-def _rollout_strategy(config: WorkloadConfig | None) -> DeploymentStrategySpec | None:
+def _rollout_strategy(
+    config: BertrandModel | None,
+) -> DeploymentStrategyManifest | None:
     rollout = _rollout(config)
     if rollout is None:
         return None
     if rollout.strategy == "recreate":
-        return DeploymentStrategySpec.recreate()
-    return DeploymentStrategySpec.rolling_update(
-        max_surge=rollout.max_surge,
-        max_unavailable=rollout.max_unavailable,
-    )
+        return {"type": "Recreate", "rollingUpdate": None}
+    strategy: DeploymentStrategyManifest = {"type": "RollingUpdate"}
+    rolling_update: DeploymentRollingUpdateManifest = {}
+    if rollout.max_surge is not None:
+        rolling_update["maxSurge"] = rollout.max_surge
+    if rollout.max_unavailable is not None:
+        rolling_update["maxUnavailable"] = rollout.max_unavailable
+    if rolling_update:
+        strategy["rollingUpdate"] = rolling_update
+    return strategy
 
 
 def _job_run_name(identity: WorkloadIdentity) -> str:

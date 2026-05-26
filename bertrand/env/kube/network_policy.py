@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Self, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, Self, cast
 
 import kubernetes
 
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import NamespacedMutableResourceMixin, ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -23,7 +23,7 @@ _POLICY_TYPES = frozenset({"Ingress", "Egress"})
 
 @dataclass(frozen=True)
 class NetworkPolicy(
-    NamespacedMutableResourceMixin[kubernetes.client.V1NetworkPolicy],
+    BuiltinResourceObject[kubernetes.client.V1NetworkPolicy],
     NamespacedKubeMetadata[kubernetes.client.V1NetworkPolicy],
 ):
     """General-purpose wrapper around one Kubernetes NetworkPolicy object.
@@ -41,59 +41,18 @@ class NetworkPolicy(
 
     _obj: kubernetes.client.V1NetworkPolicy
 
-    @classmethod
-    def _client(cls) -> ResourceClient[kubernetes.client.V1NetworkPolicy, Self]:
-        return ResourceClient(
-            scope="namespaced",
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1NetworkPolicy]] = (
+        BuiltinResource.namespaced(
+            api="networking",
             kind="NetworkPolicy",
+            slug="network_policy",
             expected=kubernetes.client.V1NetworkPolicy,
             list_type=kubernetes.client.V1NetworkPolicyList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, namespace, name, request_timeout: (
-                kube.networking.read_namespaced_network_policy(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.networking.list_network_policy_for_all_namespaces(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_namespace=lambda kube, namespace, labels, fields, timeout: (
-                kube.networking.list_namespaced_network_policy(
-                    namespace=namespace,
-                    label_selector=labels,
-                    field_selector=fields,
-                    _request_timeout=timeout,
-                )
-            ),
-            create=lambda kube, namespace, _name, manifest, request_timeout: (
-                kube.networking.create_namespaced_network_policy(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            patch=lambda kube, namespace, name, manifest, request_timeout: (
-                kube.networking.patch_namespaced_network_policy(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            delete=lambda kube, namespace, name, request_timeout: (
-                kube.networking.delete_namespaced_network_policy(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
+            create=True,
+            patch=True,
+            delete=True,
         )
+    )
 
     @staticmethod
     def _manifest(
@@ -198,8 +157,9 @@ class NetworkPolicy(
             labels=labels,
             annotations=annotations,
         )
-        return await cls._client().upsert(
+        return await cls.resource.upsert(
             kube,
+            owner=cls,
             namespace=namespace,
             name=name,
             manifest=manifest,

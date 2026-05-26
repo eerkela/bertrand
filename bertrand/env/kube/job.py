@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 import kubernetes
 
@@ -14,62 +14,109 @@ from .api._helpers import (
     _delete_options,
     _validate_delete_status,
 )
-from .api._render import (
-    _pod_template_manifest,
-)
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import AsyncIterator, Collection, Mapping
+    from collections.abc import Mapping
     from datetime import datetime
 
     from .api.client import Kube
     from .api.spec import PodTemplateSpec
-    from .api.watch import WatchEvent
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type JobCompletionMode = Literal["NonIndexed", "Indexed"]
+
+
+@dataclass(frozen=True)
+class _JobExecutionFields:
+    """Validated execution fields shared by Jobs and CronJob job templates."""
+
+    backoff_limit: int
+    ttl_seconds_after_finished: int | None
+    active_deadline_seconds: int | None
+    parallelism: int | None
+    completions: int | None
+    completion_mode: JobCompletionMode | None
+
+    @classmethod
+    def validate(
+        cls,
+        *,
+        owner: Literal["Job", "CronJob"],
+        template_owner: Literal["Job", "CronJob Job"],
+        backoff_limit: int,
+        ttl_seconds_after_finished: int | None,
+        active_deadline_seconds: int | None,
+        parallelism: int | None,
+        completions: int | None,
+        completion_mode: JobCompletionMode | None,
+    ) -> Self:
+        if backoff_limit < 0:
+            msg = f"{owner} backoff limit cannot be negative"
+            raise ValueError(msg)
+        if ttl_seconds_after_finished is not None and ttl_seconds_after_finished < 0:
+            msg = f"{template_owner} TTL cannot be negative"
+            raise ValueError(msg)
+        if active_deadline_seconds is not None and active_deadline_seconds < 0:
+            msg = f"{template_owner} active deadline cannot be negative"
+            raise ValueError(msg)
+        if parallelism is not None and parallelism <= 0:
+            msg = f"{template_owner} parallelism must be positive"
+            raise ValueError(msg)
+        if completions is not None and completions <= 0:
+            msg = f"{template_owner} completions must be positive"
+            raise ValueError(msg)
+        if completion_mode is not None and completion_mode not in (
+            "NonIndexed",
+            "Indexed",
+        ):
+            msg = f"invalid {template_owner} completion mode: {completion_mode!r}"
+            raise ValueError(msg)
+        return cls(
+            backoff_limit=backoff_limit,
+            ttl_seconds_after_finished=ttl_seconds_after_finished,
+            active_deadline_seconds=active_deadline_seconds,
+            parallelism=parallelism,
+            completions=completions,
+            completion_mode=completion_mode,
+        )
 
 
 def _job_spec_manifest(
     *,
     labels: Mapping[str, str],
     pod_template: PodTemplateSpec,
-    backoff_limit: int,
-    ttl_seconds_after_finished: int | None,
-    active_deadline_seconds: int | None = None,
-    parallelism: int | None = None,
-    completions: int | None = None,
-    completion_mode: JobCompletionMode | None = None,
+    execution: _JobExecutionFields,
 ) -> dict[str, object]:
     template_labels = dict(labels)
     template_labels.update(pod_template.labels)
     if pod_template.restart_policy is None:
         pod_template = replace(pod_template, restart_policy="Never")
     spec: dict[str, object] = {
-        "backoffLimit": backoff_limit,
-        "template": _pod_template_manifest(
-            replace(pod_template, labels=template_labels),
-        ),
+        "backoffLimit": execution.backoff_limit,
+        "template": replace(pod_template, labels=template_labels)._manifest(),
     }
-    if ttl_seconds_after_finished is not None:
-        spec["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
-    if active_deadline_seconds is not None:
-        spec["activeDeadlineSeconds"] = active_deadline_seconds
-    if parallelism is not None:
-        spec["parallelism"] = parallelism
-    if completions is not None:
-        spec["completions"] = completions
-    if completion_mode is not None:
-        spec["completionMode"] = completion_mode
+    if execution.ttl_seconds_after_finished is not None:
+        spec["ttlSecondsAfterFinished"] = execution.ttl_seconds_after_finished
+    if execution.active_deadline_seconds is not None:
+        spec["activeDeadlineSeconds"] = execution.active_deadline_seconds
+    if execution.parallelism is not None:
+        spec["parallelism"] = execution.parallelism
+    if execution.completions is not None:
+        spec["completions"] = execution.completions
+    if execution.completion_mode is not None:
+        spec["completionMode"] = execution.completion_mode
     return spec
 
 
 @dataclass(frozen=True)
-class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
+class Job(
+    BuiltinResourceObject[kubernetes.client.V1Job],
+    NamespacedKubeMetadata[kubernetes.client.V1Job],
+):
     """General-purpose wrapper around one Kubernetes Job object.
 
     Parameters
@@ -86,151 +133,17 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
 
     _obj: kubernetes.client.V1Job
 
-    @classmethod
-    def _client(cls) -> ResourceClient[kubernetes.client.V1Job, Self]:
-        return ResourceClient(
-            scope="namespaced",
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1Job]] = (
+        BuiltinResource.namespaced(
+            api="batch",
             kind="Job",
+            slug="job",
             expected=kubernetes.client.V1Job,
             list_type=kubernetes.client.V1JobList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, namespace, name, request_timeout: (
-                kube.batch.read_namespaced_job(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.batch.list_job_for_all_namespaces(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_namespace=lambda kube, namespace, labels, fields, timeout: (
-                kube.batch.list_namespaced_job(
-                    namespace=namespace,
-                    label_selector=labels,
-                    field_selector=fields,
-                    _request_timeout=timeout,
-                )
-            ),
-            watch_all=lambda kube: kube.batch.list_job_for_all_namespaces,
-            watch_namespace=lambda kube: kube.batch.list_namespaced_job,
+            create=True,
+            watch=True,
         )
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        timeout: float,
-    ) -> Self | None:
-        """Read one Kubernetes Job by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Job.
-        name : str
-            Job name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Job | None
-            Wrapped Kubernetes Job, or `None` if it does not exist.
-        """
-        return await cls._client().get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes Jobs with optional namespace and label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters. `None` queries all namespaces. Otherwise,
-            entries are trimmed, deduplicated, and queried individually.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[Job]
-            Wrapped Kubernetes Jobs matching the requested filters.
-        """
-        return await cls._client().list(
-            kube,
-            timeout=timeout,
-            namespaces=namespaces,
-            labels=labels,
-        )
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
-        resource_version: str | None = None,
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Kubernetes Jobs.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum watch budget in seconds. If infinite, wait indefinitely.
-        namespace : str | None, optional
-            Namespace to watch. If omitted, watches Jobs across all namespaces.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-        field_selector : str | None, optional
-            Raw Kubernetes field selector.
-        resource_version : str | None, optional
-            Resource version to watch from.
-
-        Yields
-        ------
-        WatchEvent[Job]
-            Typed watch events containing wrapped Jobs.
-        """
-        async for event in cls._client().watch(
-            kube,
-            timeout=timeout,
-            namespace=namespace,
-            labels=labels,
-            field_selector=field_selector,
-            resource_version=resource_version,
-        ):
-            yield event
+    )
 
     @staticmethod
     def _manifest(
@@ -239,13 +152,8 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         name: str,
         labels: Mapping[str, str],
         pod_template: PodTemplateSpec,
-        backoff_limit: int,
-        ttl_seconds_after_finished: int | None,
         annotations: Mapping[str, str] | None,
-        active_deadline_seconds: int | None,
-        parallelism: int | None,
-        completions: int | None,
-        completion_mode: JobCompletionMode | None,
+        execution: _JobExecutionFields,
     ) -> dict[str, object]:
         return {
             "apiVersion": "batch/v1",
@@ -259,12 +167,7 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
             "spec": _job_spec_manifest(
                 labels=labels,
                 pod_template=pod_template,
-                backoff_limit=backoff_limit,
-                ttl_seconds_after_finished=ttl_seconds_after_finished,
-                active_deadline_seconds=active_deadline_seconds,
-                parallelism=parallelism,
-                completions=completions,
-                completion_mode=completion_mode,
+                execution=execution,
             ),
         }
 
@@ -324,8 +227,6 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
 
         Raises
         ------
-        ValueError
-            If retry or TTL settings are invalid.
         OSError
             If Kubernetes returns malformed data or the API call fails.
         """
@@ -334,54 +235,36 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         if not namespace or not name:
             msg = "Job create requires non-empty namespace and name"
             raise OSError(msg)
-        if backoff_limit < 0:
-            msg = "Job backoff limit cannot be negative"
-            raise ValueError(msg)
-        if ttl_seconds_after_finished is not None and ttl_seconds_after_finished < 0:
-            msg = "Job TTL cannot be negative"
-            raise ValueError(msg)
-        if active_deadline_seconds is not None and active_deadline_seconds < 0:
-            msg = "Job active deadline cannot be negative"
-            raise ValueError(msg)
-        if parallelism is not None and parallelism <= 0:
-            msg = "Job parallelism must be positive"
-            raise ValueError(msg)
-        if completions is not None and completions <= 0:
-            msg = "Job completions must be positive"
-            raise ValueError(msg)
-        if completion_mode is not None and completion_mode not in (
-            "NonIndexed",
-            "Indexed",
-        ):
-            msg = f"invalid Job completion mode: {completion_mode!r}"
-            raise ValueError(msg)
+        execution = _JobExecutionFields.validate(
+            owner="Job",
+            template_owner="Job",
+            backoff_limit=backoff_limit,
+            ttl_seconds_after_finished=ttl_seconds_after_finished,
+            active_deadline_seconds=active_deadline_seconds,
+            parallelism=parallelism,
+            completions=completions,
+            completion_mode=completion_mode,
+        )
 
         manifest = cls._manifest(
             namespace=namespace,
             name=name,
             labels=labels,
             pod_template=pod_template,
-            backoff_limit=backoff_limit,
-            ttl_seconds_after_finished=ttl_seconds_after_finished,
             annotations=annotations,
-            active_deadline_seconds=active_deadline_seconds,
-            parallelism=parallelism,
-            completions=completions,
-            completion_mode=completion_mode,
+            execution=execution,
         )
-        created = await kube.run(
-            lambda request_timeout: kube.batch.create_namespaced_job(
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
+        return await cls.resource.create_manifest(
+            kube,
+            owner=cls,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
             timeout=timeout,
-            context=f"failed to create Job {namespace}/{name}",
+            malformed_message=(
+                f"malformed Kubernetes Job payload while creating {name!r}"
+            ),
         )
-        if not isinstance(created, kubernetes.client.V1Job):
-            msg = f"malformed Kubernetes Job payload while creating {name!r}"
-            raise OSError(msg)
-        return cls(_obj=created)
 
     @property
     def active(self) -> int:
@@ -530,29 +413,6 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
             timeout=timeout,
         )
 
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this Job by its metadata namespace and name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Job | None
-            Fresh wrapper for the same Job, or `None` if it no longer exists.
-        """
-        namespace, name = self._require_namespace_name("refresh Job")
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
     async def delete(
         self,
         kube: Kube,
@@ -593,28 +453,6 @@ class Job(NamespacedKubeMetadata[kubernetes.client.V1Job]):
         )
         _validate_delete_status(
             payload, label=self._object_label(name=name, namespace=namespace)
-        )
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this Job is deleted from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum wait time in seconds. Must be positive.
-
-        """
-        namespace, name = self._require_namespace_name("wait for Job deletion")
-        await (
-            type(self)
-            ._client()
-            .wait_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
         )
 
     async def wait_complete(self, kube: Kube, *, timeout: float) -> Self:

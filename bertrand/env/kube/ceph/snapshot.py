@@ -27,9 +27,9 @@ from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
 
 from .volume import (
     REPO_VOLUME_ENV,
-    CephRepositoryVolumeRecord,
+    REPOSITORY_STATE_RESOURCE,
+    CephRepositoryStateRecord,
     RepoVolume,
-    list_repository_volume_records,
 )
 
 if TYPE_CHECKING:
@@ -57,7 +57,7 @@ REPOSITORY_BUILD_SOURCE_CLEANUP_TIMEOUT_SECONDS = 30.0
 @dataclass(frozen=True)
 class _RepositorySnapshotInventory:
     retained: list[VolumeSnapshot]
-    active_records: list[CephRepositoryVolumeRecord]
+    active_records: list[CephRepositoryStateRecord]
     by_repo: dict[str, list[VolumeSnapshot]]
 
 
@@ -596,8 +596,9 @@ async def _snapshot_inventory(
     retained = await _retained_snapshots(kube, timeout=deadline.remaining())
     active_records = [
         record
-        for record in await list_repository_volume_records(
+        for record in await REPOSITORY_STATE_RESOURCE.list(
             kube,
+            namespace=BERTRAND_NAMESPACE,
             timeout=deadline.remaining(),
         )
         if record.phase == "Ready"

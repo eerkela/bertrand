@@ -19,7 +19,7 @@ from bertrand.env.git.bertrand_git import (
     WORKTREE_ID_ENV,
     WORKTREE_MOUNT,
 )
-from bertrand.env.kube.api.spec import EnvVarSpec, VolumeMountSpec, VolumeSpec
+from bertrand.env.kube.api.spec import VolumeSpec
 from bertrand.env.kube.ceph.volume import RepoVolume
 from bertrand.env.kube.workload_refs import (
     WORKLOAD_ID_LABEL,
@@ -33,7 +33,11 @@ from bertrand.env.kube.workload_refs import (
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
+    from bertrand.env.kube.api.spec import (
+        ContainerSpec,
+        PodTemplateSpec,
+        VolumeMountManifest,
+    )
     from bertrand.env.kube.capability.device import DRAResourceClaimIntent
 
 WORKLOAD_REPOSITORY_VOLUME = "bertrand-repository"
@@ -397,11 +401,11 @@ class WorkloadPod:
         )
         runtime_args = _runtime_args(primary_args) if primary_args is not None else None
         rendered_containers: list[ContainerSpec] = []
-        repository_mount = VolumeMountSpec(
-            name=WORKLOAD_REPOSITORY_VOLUME,
-            mount_path=PROJECT_MOUNT.as_posix(),
-            read_only=self.repository.read_only,
-        )
+        repository_mount: VolumeMountManifest = {
+            "name": WORKLOAD_REPOSITORY_VOLUME,
+            "mountPath": PROJECT_MOUNT.as_posix(),
+            "readOnly": self.repository.read_only,
+        }
         repository_env = _repository_env(self.repository, self.runtime_env)
         bootstrap = _bootstrap_script(self.repository)
         for container in self.template.containers:
@@ -546,7 +550,7 @@ def _repository_volumes(
 def _bootstrap_container(
     container: ContainerSpec,
     *,
-    mount: VolumeMountSpec,
+    mount: Mapping[str, object],
     env: Mapping[str, str],
     script: str,
 ) -> ContainerSpec:
@@ -576,42 +580,35 @@ def _explicit_command(container: ContainerSpec) -> tuple[str, ...]:
 
 
 def _with_env(
-    existing: tuple[EnvVarSpec, ...],
+    existing: tuple[Mapping[str, object], ...],
     env: Mapping[str, str],
-) -> tuple[EnvVarSpec, ...]:
+) -> tuple[Mapping[str, object], ...]:
     out = list(existing)
     for key, value in env.items():
-        current = next((var for var in out if var.name == key), None)
+        current = next((var for var in out if var.get("name") == key), None)
         if current is None:
-            out.append(EnvVarSpec(name=key, value=value))
+            out.append({"name": key, "value": value})
         elif not _same_literal_env(current, value):
             msg = f"workload environment variable {key!r} is reserved by Bertrand"
             raise ValueError(msg)
     return tuple(out)
 
 
-def _same_literal_env(var: EnvVarSpec, value: str) -> bool:
-    return (
-        var.value == value
-        and var.field_path is None
-        and var.secret_name is None
-        and var.secret_key is None
-        and var.config_map_name is None
-        and var.config_map_key is None
-    )
+def _same_literal_env(var: Mapping[str, object], value: str) -> bool:
+    return var.get("value") == value and var.get("valueFrom") is None
 
 
 def _with_repository_mount(
-    existing: tuple[VolumeMountSpec, ...],
-    mount: VolumeMountSpec,
-) -> tuple[VolumeMountSpec, ...]:
+    existing: tuple[Mapping[str, object], ...],
+    mount: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
     out = list(existing)
     for current in out:
-        if current.mount_path == mount.mount_path:
+        if current.get("mountPath") == mount.get("mountPath"):
             if _same_mount(current, mount):
                 return tuple(out)
             msg = (
-                f"workload mount path {mount.mount_path!r} is reserved for the "
+                f"workload mount path {mount.get('mountPath')!r} is reserved for the "
                 "managed repository volume"
             )
             raise ValueError(msg)
@@ -619,12 +616,12 @@ def _with_repository_mount(
     return tuple(out)
 
 
-def _same_mount(left: VolumeMountSpec, right: VolumeMountSpec) -> bool:
+def _same_mount(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
     return (
-        left.name == right.name
-        and left.mount_path == right.mount_path
-        and bool(left.read_only) == bool(right.read_only)
-        and left.sub_path == right.sub_path
+        left.get("name") == right.get("name")
+        and left.get("mountPath") == right.get("mountPath")
+        and bool(left.get("readOnly")) == bool(right.get("readOnly"))
+        and left.get("subPath") == right.get("subPath")
     )
 
 

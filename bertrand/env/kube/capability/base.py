@@ -17,7 +17,6 @@ from bertrand.env.git import BERTRAND_NAMESPACE
 from bertrand.env.kube.secret import Secret
 
 if TYPE_CHECKING:
-    import builtins
     from collections.abc import Mapping
 
     from bertrand.env.config.core import KubeName
@@ -247,378 +246,238 @@ class CapabilityRef:
         return annotations
 
 
-@dataclass(frozen=True)
-class Capability:
-    """Managed Secret-backed Bertrand capability.
+def capability_ref_from_secret(
+    secret: Secret,
+    *,
+    expected: CapabilityRef | None = None,
+) -> CapabilityRef:
+    """Return and validate the Bertrand capability identity for a Secret.
 
     Parameters
     ----------
-    ref : CapabilityRef
-        Expected capability identity.
     secret : Secret
-        Wrapped Kubernetes Secret carrying the capability payload.
+        Kubernetes Secret to validate as a managed Bertrand capability.
+    expected : CapabilityRef | None, optional
+        Expected capability identity. When supplied, the Secret must match exactly.
+
+    Returns
+    -------
+    CapabilityRef
+        Validated capability identity read from Secret metadata.
+
+    Raises
+    ------
+    OSError
+        If the Secret is unmanaged, malformed, or does not match `expected`.
     """
+    try:
+        name = secret.name
+    except OSError:
+        if expected is None:
+            raise
+        name = expected.name
+    labels = secret.labels
+    annotations = secret.annotations
 
-    ref: CapabilityRef
-    secret: Secret
+    if labels.get(CAPABILITY_MANAGED_V1) != "true":
+        msg = (
+            f"cluster Secret {name!r} collides with a Bertrand capability "
+            "but is unmanaged"
+        )
+        raise OSError(msg)
 
-    @classmethod
-    def _from_secret(
-        cls,
-        *,
-        secret: Secret,
-        expected: CapabilityRef | None = None,
-    ) -> Self:
-        try:
-            name = secret.name
-        except OSError:
-            if expected is None:
-                raise
-            name = expected.name
-        labels = secret.labels
-        annotations = secret.annotations
+    kind = _label_value(labels, CAPABILITY_KIND_V1, name)
+    scope = _label_value(labels, CAPABILITY_SCOPE_V1, name)
+    capability_id = annotations.get(CAPABILITY_ID_V1)
+    if capability_id is None:
+        msg = f"cluster Secret {name!r} is missing annotation {CAPABILITY_ID_V1!r}"
+        raise OSError(msg)
 
-        if labels.get(CAPABILITY_MANAGED_V1) != "true":
+    if scope == "shared":
+        value = None
+    else:
+        value = labels.get(CAPABILITY_SCOPE_VALUE_V1) or annotations.get(
+            CAPABILITY_SCOPE_VALUE_V1
+        )
+        if value is None:
             msg = (
-                f"cluster Secret {name!r} collides with a Bertrand capability "
-                "but is unmanaged"
+                f"cluster Secret {name!r} is missing scope value "
+                f"{CAPABILITY_SCOPE_VALUE_V1!r}"
             )
             raise OSError(msg)
 
-        kind = _label_value(labels, CAPABILITY_KIND_V1, name)
-        scope = _label_value(labels, CAPABILITY_SCOPE_V1, name)
-        capability_id = annotations.get(CAPABILITY_ID_V1)
-        if capability_id is None:
-            msg = f"cluster Secret {name!r} is missing annotation {CAPABILITY_ID_V1!r}"
-            raise OSError(msg)
+    try:
+        ref = CapabilityRef(
+            kind=_check_kind(kind),
+            capability_id=_check_kube_name(capability_id),
+            scope=_check_scope(scope),
+            value=value,
+        )
+    except ValueError as err:
+        msg = f"cluster Secret {name!r} has invalid capability metadata: {err}"
+        raise OSError(msg) from err
+    if expected is not None and ref != expected:
+        msg = (
+            f"cluster Secret {name!r} has mismatched capability identity: "
+            f"expected {expected!r}, got {ref!r}"
+        )
+        raise OSError(msg)
+    return ref
 
+
+async def list_capability_secrets(
+    kube: Kube,
+    *,
+    kind: CapabilityKind | None = None,
+    scope: CapabilityScope | None = None,
+    capability_id: KubeName | None = None,
+    scope_value: str | None = None,
+    timeout: float,
+) -> list[tuple[CapabilityRef, Secret]]:
+    """List managed capability Secrets with optional identity filtering.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    kind : CapabilityKind | None, optional
+        Optional capability kind filter.
+    scope : CapabilityScope | None, optional
+        Optional capability scope filter.
+    capability_id : KubeName | None, optional
+        Optional host-agnostic capability ID filter.
+    scope_value : str | None, optional
+        Optional scope value filter for worktree, repository, or node scopes.
+    timeout : float
+        Maximum request budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    list[tuple[CapabilityRef, Secret]]
+        Validated capability identities paired with their backing Secrets.
+
+    Raises
+    ------
+    ValueError
+        If a scope-value filter is supplied without a compatible scope.
+    """
+    labels = {CAPABILITY_MANAGED_V1: "true"}
+    if kind is not None:
+        labels[CAPABILITY_KIND_V1] = _check_kind(kind)
+    if scope is not None:
+        labels[CAPABILITY_SCOPE_V1] = _check_scope(scope)
+    expected_scope_value: str | None = None
+    if scope_value is not None:
+        if scope is None:
+            msg = "capability scope_value filtering requires a scope"
+            raise ValueError(msg)
         if scope == "shared":
-            value = None
-        else:
-            value = labels.get(CAPABILITY_SCOPE_VALUE_V1) or annotations.get(
-                CAPABILITY_SCOPE_VALUE_V1
-            )
-            if value is None:
-                msg = (
-                    f"cluster Secret {name!r} is missing scope value "
-                    f"{CAPABILITY_SCOPE_VALUE_V1!r}"
-                )
-                raise OSError(msg)
-
-        try:
-            ref = CapabilityRef(
-                kind=_check_kind(kind),
-                capability_id=_check_kube_name(capability_id),
-                scope=_check_scope(scope),
-                value=value,
-            )
-        except ValueError as err:
-            msg = f"cluster Secret {name!r} has invalid capability metadata: {err}"
-            raise OSError(msg) from err
-        if expected is not None and ref != expected:
-            msg = (
-                f"cluster Secret {name!r} has mismatched capability identity: "
-                f"expected {expected!r}, got {ref!r}"
-            )
-            raise OSError(msg)
-        return cls(ref=ref, secret=secret)
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        ref: CapabilityRef,
-        timeout: float,
-    ) -> Self | None:
-        """Read one managed capability by reference.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        ref : CapabilityRef
-            Capability identity to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Capability | None
-            Managed capability wrapper, or `None` when the Secret does not exist.
-        """
-        secret = await Secret.get(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=ref.name,
-            timeout=timeout,
+            msg = "shared capability scope cannot define a scope value"
+            raise ValueError(msg)
+        expected_scope_value = (
+            _check_uuid(scope_value)
+            if scope in {"worktree", "repository", "node"}
+            else _check_kube_name(scope_value)
         )
-        if secret is None:
-            return None
-        return cls._from_secret(secret=secret, expected=ref)
+        labels[CAPABILITY_SCOPE_VALUE_V1] = expected_scope_value
+    expected_id = _check_kube_name(capability_id) if capability_id is not None else None
 
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        kind: CapabilityKind | None = None,
-        scope: CapabilityScope | None = None,
-        capability_id: KubeName | None = None,
-        scope_value: str | None = None,
-        timeout: float,
-    ) -> builtins.list[Self]:
-        """List managed capabilities with optional identity filtering.
+    secrets = await Secret.list(
+        kube,
+        namespaces=(BERTRAND_NAMESPACE,),
+        labels=labels,
+        timeout=timeout,
+    )
+    out: list[tuple[CapabilityRef, Secret]] = []
+    for secret in secrets:
+        ref = capability_ref_from_secret(secret)
+        if expected_id is not None and ref.capability_id != expected_id:
+            continue
+        if expected_scope_value is not None and ref.value != expected_scope_value:
+            continue
+        out.append((ref, secret))
+    return out
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        kind : CapabilityKind | None, optional
-            Optional capability kind filter.
-        scope : CapabilityScope | None, optional
-            Optional capability scope filter.
-        capability_id : KubeName | None, optional
-            Optional host-agnostic capability ID filter.
-        scope_value : str | None, optional
-            Optional scope value filter for worktree, repository, or node scopes.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
 
-        Returns
-        -------
-        builtins.list[Capability]
-            Managed capabilities matching the requested filters.
+async def resolve_capability_secret(
+    kube: Kube,
+    *,
+    kind: CapabilityKind,
+    capability_id: KubeName,
+    worktree_id: str | None = None,
+    repo_id: str | None = None,
+    host_id: str | None = None,
+    required: bool = True,
+    timeout: float,
+) -> Secret | None:
+    """Resolve a capability Secret using Bertrand's four-tier scope precedence.
 
-        Raises
-        ------
-        ValueError
-            If a scope-value filter is supplied without a compatible scope.
-        """
-        labels = {CAPABILITY_MANAGED_V1: "true"}
-        if kind is not None:
-            labels[CAPABILITY_KIND_V1] = _check_kind(kind)
-        if scope is not None:
-            labels[CAPABILITY_SCOPE_V1] = _check_scope(scope)
-        expected_scope_value: str | None = None
-        if scope_value is not None:
-            if scope is None:
-                msg = "capability scope_value filtering requires a scope"
-                raise ValueError(msg)
-            if scope == "shared":
-                msg = "shared capability scope cannot define a scope value"
-                raise ValueError(msg)
-            expected_scope_value = (
-                _check_uuid(scope_value)
-                if scope in {"worktree", "repository", "node"}
-                else _check_kube_name(scope_value)
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    kind : CapabilityKind
+        Capability category to resolve.
+    capability_id : KubeName
+        Host-agnostic capability ID.
+    worktree_id : str | None, optional
+        Optional persistent worktree UUID for the first lookup tier.
+    repo_id : str | None, optional
+        Optional stable repository UUID for the second lookup tier.
+    host_id : str | None, optional
+        Optional Bertrand host UUID for the third lookup tier.
+    required : bool, default=True
+        If true, raise when no capability is found. If false, return `None`.
+    timeout : float
+        Maximum request budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    Secret | None
+        Resolved capability Secret, or `None` for missing optional capabilities.
+
+    Raises
+    ------
+    OSError
+        If a required capability is missing.
+    """
+    refs: list[CapabilityRef] = []
+    if worktree_id is not None:
+        refs.append(
+            CapabilityRef.worktree(
+                kind=kind,
+                capability_id=capability_id,
+                worktree_id=worktree_id,
             )
-            labels[CAPABILITY_SCOPE_VALUE_V1] = expected_scope_value
-        expected_id = (
-            _check_kube_name(capability_id) if capability_id is not None else None
         )
-
-        secrets = await Secret.list(
-            kube,
-            namespaces=(BERTRAND_NAMESPACE,),
-            labels=labels,
-            timeout=timeout,
+    if repo_id is not None:
+        refs.append(
+            CapabilityRef.repository(
+                kind=kind,
+                capability_id=capability_id,
+                repo_id=repo_id,
+            )
         )
-        out: builtins.list[Self] = []
-        for secret in secrets:
-            capability = cls._from_secret(secret=secret)
-            if expected_id is not None and capability.ref.capability_id != expected_id:
-                continue
-            if (
-                expected_scope_value is not None
-                and capability.ref.value != expected_scope_value
-            ):
-                continue
-            out.append(capability)
-        return out
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        ref: CapabilityRef,
-        payload: bytes,
-        timeout: float,
-    ) -> Self:
-        """Create or patch a managed capability payload.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        ref : CapabilityRef
-            Capability identity to converge.
-        payload : bytes
-            Raw payload bytes stored in `data.value`.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Capability
-            Wrapped created or patched capability.
-        """
-        secret = await Secret.upsert(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=ref.name,
-            labels=ref.labels,
-            annotations=ref.annotations,
-            payload=payload,
-            timeout=timeout,
+    if host_id is not None:
+        refs.append(
+            CapabilityRef.node(
+                kind=kind,
+                capability_id=capability_id,
+                host_id=host_id,
+            )
         )
-        return cls._from_secret(secret=secret, expected=ref)
+    refs.append(CapabilityRef.shared(kind=kind, capability_id=capability_id))
 
-    @classmethod
-    async def resolve(
-        cls,
-        kube: Kube,
-        *,
-        kind: CapabilityKind,
-        capability_id: KubeName,
-        worktree_id: str | None = None,
-        repo_id: str | None = None,
-        host_id: str | None = None,
-        required: bool = True,
-        timeout: float,
-    ) -> Self | None:
-        """Resolve a capability using Bertrand's four-tier scope precedence.
+    for ref in refs:
+        secret = await _get_capability_secret(kube, ref=ref, timeout=timeout)
+        if secret is not None:
+            return secret
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        kind : CapabilityKind
-            Capability category to resolve.
-        capability_id : KubeName
-            Host-agnostic capability ID.
-        worktree_id : str | None, optional
-            Optional persistent worktree UUID for the first lookup tier.
-        repo_id : str | None, optional
-            Optional stable repository UUID for the second lookup tier.
-        host_id : str | None, optional
-            Optional Bertrand host UUID for the third lookup tier.
-        required : bool, default=True
-            If true, raise when no capability is found. If false, return `None`.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Capability | None
-            Resolved capability, or `None` for missing optional capabilities.
-
-        Raises
-        ------
-        OSError
-            If a required capability is missing.
-        """
-        refs: list[CapabilityRef] = []
-        if worktree_id is not None:
-            refs.append(
-                CapabilityRef.worktree(
-                    kind=kind,
-                    capability_id=capability_id,
-                    worktree_id=worktree_id,
-                )
-            )
-        if repo_id is not None:
-            refs.append(
-                CapabilityRef.repository(
-                    kind=kind,
-                    capability_id=capability_id,
-                    repo_id=repo_id,
-                )
-            )
-        if host_id is not None:
-            refs.append(
-                CapabilityRef.node(
-                    kind=kind,
-                    capability_id=capability_id,
-                    host_id=host_id,
-                )
-            )
-        refs.append(CapabilityRef.shared(kind=kind, capability_id=capability_id))
-
-        for ref in refs:
-            capability = await cls.get(kube, ref=ref, timeout=timeout)
-            if capability is not None:
-                return capability
-
-        if required:
-            label = "ssh credential" if kind == "ssh" else "secret"
-            msg = f"missing required {label}: {capability_id!r}"
-            raise OSError(msg)
-        return None
-
-    @property
-    def payload(self) -> bytes:
-        """Return the raw capability payload bytes.
-
-        Returns
-        -------
-        bytes
-            Decoded bytes stored in the underlying Secret's `data.value`.
-        """
-        return self.secret.value
-
-    @property
-    def text(self) -> str:
-        """Return the capability payload as UTF-8 text.
-
-        Returns
-        -------
-        str
-            UTF-8 decoded payload text.
-
-        Raises
-        ------
-        OSError
-            If the payload is not valid UTF-8.
-        """
-        try:
-            return self.payload.decode("utf-8")
-        except UnicodeDecodeError as err:
-            msg = (
-                f"cluster capability {self.ref.capability_id!r} payload must decode "
-                "as UTF-8 text"
-            )
-            raise OSError(msg) from err
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this capability by reference.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Capability | None
-            Latest managed capability, or `None` when it no longer exists.
-        """
-        return await type(self).get(kube, ref=self.ref, timeout=timeout)
-
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this capability from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        await self.secret.delete(kube, timeout=timeout)
+    if required:
+        label = "ssh credential" if kind == "ssh" else "secret"
+        msg = f"missing required {label}: {capability_id!r}"
+        raise OSError(msg)
+    return None
 
 
 async def delete_capabilities_for_scope(
@@ -627,7 +486,7 @@ async def delete_capabilities_for_scope(
     scope: CapabilityScope,
     scope_value: str | None,
     timeout: float,
-) -> list[Capability]:
+) -> None:
     """Delete managed capabilities for one exact parent scope.
 
     Parameters
@@ -642,11 +501,6 @@ async def delete_capabilities_for_scope(
     timeout : float
         Maximum deletion budget.
 
-    Returns
-    -------
-    list[Capability]
-        Capabilities deleted from the cluster.
-
     Raises
     ------
     ValueError
@@ -659,15 +513,32 @@ async def delete_capabilities_for_scope(
     elif scope_value is None:
         msg = f"{scope!r} capability cleanup requires a scope value"
         raise ValueError(msg)
-    capabilities = await Capability.list(
+    capabilities = await list_capability_secrets(
         kube,
         scope=scope,
         scope_value=scope_value,
         timeout=timeout,
     )
-    for capability in capabilities:
-        await capability.delete(kube, timeout=timeout)
-    return capabilities
+    for _, secret in capabilities:
+        await secret.delete(kube, timeout=timeout)
+
+
+async def _get_capability_secret(
+    kube: Kube,
+    *,
+    ref: CapabilityRef,
+    timeout: float,
+) -> Secret | None:
+    secret = await Secret.get(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=ref.name,
+        timeout=timeout,
+    )
+    if secret is None:
+        return None
+    capability_ref_from_secret(secret, expected=ref)
+    return secret
 
 
 def _check_kind(kind: str) -> CapabilityKind:

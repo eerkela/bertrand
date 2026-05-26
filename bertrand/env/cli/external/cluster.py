@@ -17,11 +17,9 @@ from bertrand.env.cli.external._device import (
 )
 from bertrand.env.cli.external._runtime import emit_json
 from bertrand.env.cli.external._storage import (
-    print_storage_csi_line,
-    print_storage_status_fields,
+    print_cluster_storage_doctor,
+    print_cluster_storage_status,
     storage_cli_snapshot,
-    storage_csi_ready,
-    storage_osd_line,
 )
 from bertrand.env.cli.external.init import (
     _converge_host_cluster_runtime,
@@ -44,10 +42,7 @@ from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.daemon import BUILDKIT_POOL
 from bertrand.env.kube.build.repository import IMAGES
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
-from bertrand.env.kube.ceph.capacity import (
-    STORAGE_NODE_REPORT_MAX_AGE_SECONDS,
-    read_storage_policy,
-)
+from bertrand.env.kube.ceph.capacity import read_storage_state
 from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.dev.mailbox import CODE_OPEN_PLURAL, DEV_GROUP
@@ -367,124 +362,9 @@ async def bertrand_cluster_storage_status(
     if json_output:
         emit_json(payload)
         return
-
-    print("storage:")
-    status = payload["status"]
-    print_storage_status_fields(status, local=False)
-    print(f"  node reports: {len(snapshot.reports)}")
-    print(f"  managed OSD records: {len(snapshot.osds)}")
-    print_storage_csi_line(payload["csi"])
-    for osd in snapshot.osds:
-        print(storage_osd_line(osd, include_ceph_id=True))
-    print("  actions:")
-    action_counts = cast("Mapping[str, object]", payload["action_counts"])
-    for phase, count in action_counts.items():
-        print(f"    {phase}: {count}")
-    active_reservations = snapshot.active_reservations()
-    print(f"  active reservations: {len(active_reservations)}")
+    print_cluster_storage_status(snapshot)
     if doctor:
-        print("doctor:")
-        if not snapshot.reports:
-            print("  no storage-agent node reports are available")
-        now = datetime.now(UTC)
-        stale_reports = [
-            report
-            for report in snapshot.reports
-            if report.status is None
-            or report.status.heartbeat_at is None
-            or (
-                now
-                - (
-                    report.status.heartbeat_at.replace(tzinfo=UTC)
-                    if report.status.heartbeat_at.tzinfo is None
-                    else report.status.heartbeat_at.astimezone(UTC)
-                )
-            ).total_seconds()
-            > STORAGE_NODE_REPORT_MAX_AGE_SECONDS
-        ]
-        for report in stale_reports[:5]:
-            print(
-                f"  storage report {report.metadata.name} is stale "
-                f"(host={report.spec.host_id}, kube={report.spec.node_name})"
-            )
-        if not any(
-            (report.status and report.status.lvm_pvs) for report in snapshot.reports
-        ):
-            print("  no node reports a 'bertrand' LVM volume group with free PVs")
-            print(
-                "  create a host LVM volume group named 'bertrand' for preferred OSDs"
-            )
-        else:
-            total_lvm_free = sum(
-                report.status.lvm_free_bytes
-                for report in snapshot.reports
-                if report.status is not None
-            )
-            print(f"  reported free LVM bytes in 'bertrand' VG: {total_lvm_free}")
-        if not storage_csi_ready(snapshot.csi):
-            print(
-                "  Bertrand OSD CSI is not fully ready; PVC-backed OSD growth may "
-                "be blocked"
-            )
-        stuck = [
-            osd
-            for osd in snapshot.osds
-            if osd.status.phase in {"HostPrepared", "Binding", "Expanding", "Shrinking"}
-        ]
-        for osd in stuck[:5]:
-            changed_at = (
-                osd.status.phase_changed_at.isoformat()
-                if osd.status.phase_changed_at is not None
-                else "unknown"
-            )
-            print(
-                f"  OSD {osd.metadata.name} is {osd.status.phase}; "
-                "Rook/CSI may still be reconciling the PVC-backed OSD "
-                f"since {changed_at}"
-            )
-        active_loop = any(
-            osd.spec.origin == "loop-fallback"
-            and osd.status.phase not in {"Retired", "Failed"}
-            for osd in snapshot.osds
-        )
-        lvm_available = any(
-            report.status is not None and report.status.lvm_free_bytes > 0
-            for report in snapshot.reports
-        )
-        if active_loop and lvm_available:
-            print(
-                "  loop fallback is active while LVM space is available; "
-                "Bertrand will grow LVM capacity and retire the loop OSD once "
-                "Ceph reports it is safe"
-            )
-        if isinstance(status, dict):
-            status_map = cast("dict[str, object]", status)
-            missing_lvm_osds = status_map.get("missing_lvm_osd_pvs")
-            if isinstance(missing_lvm_osds, int) and missing_lvm_osds > 0:
-                print(
-                    "  one or more usable LVM PVs do not yet have managed OSD "
-                    "coverage; Bertrand will create minimum-size OSDs first"
-                )
-            if status_map.get("lvm_shrink_candidate"):
-                print(
-                    "  LVM shrink candidate selected: "
-                    f"{status_map.get('lvm_shrink_candidate')} -> "
-                    f"{status_map.get('lvm_shrink_target_bytes')} bytes"
-                )
-        for reservation in active_reservations[:5]:
-            if reservation.status.phase == "Pending":
-                print(
-                    f"  reservation {reservation.metadata.name} is pending: "
-                    f"{reservation.status.last_error or 'waiting for headroom'}"
-                )
-        for osd in snapshot.osds:
-            if osd.status.last_error:
-                print(f"  OSD {osd.metadata.name} error: {osd.status.last_error}")
-        failed = [
-            action for action in snapshot.actions if action.status.phase == "Failed"
-        ]
-        for action in failed[:5]:
-            print(f"  failed {action.metadata.name}: {action.status.message}")
+        print_cluster_storage_doctor(snapshot)
 
 
 async def _bertrand_cluster_network(args: argparse.Namespace) -> None:
@@ -1087,8 +967,8 @@ async def _ceph_csi_status(kube: Kube) -> dict[str, object]:
 
 
 async def _storage_status(kube: Kube) -> dict[str, object]:
-    policy = await read_storage_policy(kube, timeout=INFINITY)
-    status = policy.status
+    storage = await read_storage_state(kube, timeout=INFINITY)
+    status = storage.policy_status
     ready = status is not None and not status.last_error
     return {
         "ready": ready,

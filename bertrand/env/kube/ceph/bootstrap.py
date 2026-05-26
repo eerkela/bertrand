@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_ENV, Deadline, until
 from bertrand.env.kube.api.bootstrap import kubectl
 from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
 from bertrand.env.kube.crd import CustomResourceDefinition
+from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.namespace import Namespace
 from bertrand.env.kube.volume import StorageClass
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from bertrand.env.kube.api.client import Kube
 
 ROOK_VERSION = "v1.17.9"
@@ -47,6 +47,13 @@ ROOK_LABELS = {
     BERTRAND_ENV: "1",
     ROOK_MANAGED_LABEL: ROOK_MANAGED_VALUE,
 }
+ROOK_CEPH_CLUSTER_RESOURCE: CustomObjectResource[CustomObject] = CustomObjectResource(
+    group="ceph.rook.io",
+    version="v1",
+    kind="CephCluster",
+    plural="cephclusters",
+    default_namespace=ROOK_NAMESPACE,
+)
 
 
 async def ensure_rook_ceph_base(kube: Kube, *, timeout: float) -> None:
@@ -352,29 +359,23 @@ async def _ensure_rook_cluster(*, timeout: float) -> None:
 
 async def _wait_ceph_cluster_ready(kube: Kube, *, timeout: float) -> None:
     async def ready(remaining: float) -> None:
-        obj = await kube.run(
-            lambda request_timeout: kube.custom.get_namespaced_custom_object(
-                group="ceph.rook.io",
-                version="v1",
-                namespace=ROOK_NAMESPACE,
-                plural="cephclusters",
-                name=ROOK_CLUSTER_NAME,
-                _request_timeout=request_timeout,
-            ),
+        obj = await ROOK_CEPH_CLUSTER_RESOURCE.get(
+            kube,
+            name=ROOK_CLUSTER_NAME,
             timeout=remaining,
             context=f"failed to read Rook CephCluster {ROOK_NAMESPACE}/"
             f"{ROOK_CLUSTER_NAME}",
         )
-        if not isinstance(obj, dict):
+        if obj is None:
             msg = "Rook CephCluster payload is malformed"
             raise TimeoutError(msg)
-        status = obj.get("status")
+        status = obj.status
         phase = ""
         health = ""
-        if isinstance(status, dict):
+        if isinstance(status, Mapping):
             phase = str(status.get("phase") or "").strip()
             ceph = status.get("ceph")
-            if isinstance(ceph, dict):
+            if isinstance(ceph, Mapping):
                 health = str(ceph.get("health") or "").strip()
         if (
             phase.lower() not in {"ready", "connected"}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import kubernetes
 
@@ -15,25 +15,23 @@ from .api._helpers import (
     _delete_options,
     _validate_delete_status,
 )
-from .api._render import (
-    _pod_template_manifest,
-)
 from .api.metadata import NamespacedKubeMetadata
-from .api.resource import ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 
 DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
-    import builtins
-    from collections.abc import AsyncIterator, Collection, Mapping
+    from collections.abc import Mapping
 
     from .api.client import Kube
-    from .api.spec import DeploymentStrategySpec, PodTemplateSpec
-    from .api.watch import WatchEvent
+    from .api.spec import DeploymentStrategyManifest, PodTemplateSpec
 
 
 @dataclass(frozen=True)
-class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
+class Deployment(
+    BuiltinResourceObject[kubernetes.client.V1Deployment],
+    NamespacedKubeMetadata[kubernetes.client.V1Deployment],
+):
     """General-purpose wrapper around one Kubernetes Deployment object.
 
     Parameters
@@ -49,176 +47,19 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
 
     _obj: kubernetes.client.V1Deployment
 
-    @classmethod
-    def _client(
-        cls,
-    ) -> ResourceClient[kubernetes.client.V1Deployment, Self]:
-        return ResourceClient(
-            scope="namespaced",
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1Deployment]] = (
+        BuiltinResource.namespaced(
+            api="apps",
             kind="Deployment",
+            slug="deployment",
             expected=kubernetes.client.V1Deployment,
             list_type=kubernetes.client.V1DeploymentList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, namespace, name, request_timeout: (
-                kube.apps.read_namespaced_deployment(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.apps.list_deployment_for_all_namespaces(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            list_namespace=lambda kube, namespace, labels, fields, timeout: (
-                kube.apps.list_namespaced_deployment(
-                    namespace=namespace,
-                    label_selector=labels,
-                    field_selector=fields,
-                    _request_timeout=timeout,
-                )
-            ),
-            create=lambda kube, namespace, _name, manifest, request_timeout: (
-                kube.apps.create_namespaced_deployment(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            patch=lambda kube, namespace, name, manifest, request_timeout: (
-                kube.apps.patch_namespaced_deployment(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            delete=lambda kube, namespace, name, request_timeout: (
-                kube.apps.delete_namespaced_deployment(
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            watch_all=lambda kube: kube.apps.list_deployment_for_all_namespaces,
-            watch_namespace=lambda kube: kube.apps.list_namespaced_deployment,
+            create=True,
+            patch=True,
+            delete=True,
+            watch=True,
         )
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        name: str,
-    ) -> Self | None:
-        """Read one Kubernetes Deployment by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Deployment.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        name : str
-            Deployment name to read.
-
-        Returns
-        -------
-        Deployment | None
-            Wrapped Kubernetes Deployment, or `None` if it does not exist.
-        """
-        return await cls._client().get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes Deployments with optional namespace and label filtering.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters. `None` queries all namespaces. Otherwise,
-            entries are trimmed, deduplicated, and queried individually.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-
-        Returns
-        -------
-        list[Deployment]
-            Wrapped Kubernetes Deployments matching the requested filters.
-        """
-        return await cls._client().list(
-            kube,
-            timeout=timeout,
-            namespaces=namespaces,
-            labels=labels,
-        )
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
-        resource_version: str | None = None,
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Kubernetes Deployments.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum watch budget in seconds. If infinite, wait indefinitely.
-        namespace : str | None, optional
-            Namespace to watch. If omitted, watches Deployments across all
-            namespaces.
-        labels : Mapping[str, str] | None, optional
-            Optional label selector key/value pairs.
-        field_selector : str | None, optional
-            Raw Kubernetes field selector.
-        resource_version : str | None, optional
-            Resource version to watch from.
-
-        Yields
-        ------
-        WatchEvent[Deployment]
-            Typed watch events containing wrapped Deployments.
-        """
-        async for event in cls._client().watch(
-            kube,
-            timeout=timeout,
-            namespace=namespace,
-            labels=labels,
-            field_selector=field_selector,
-            resource_version=resource_version,
-        ):
-            yield event
+    )
 
     @staticmethod
     def _manifest(
@@ -230,7 +71,7 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         pod_template: PodTemplateSpec,
         replicas: int,
         annotations: Mapping[str, str] | None,
-        strategy: DeploymentStrategySpec | None,
+        strategy: DeploymentStrategyManifest | None,
         min_ready_seconds: int | None,
         progress_deadline_seconds: int | None,
         revision_history_limit: int | None,
@@ -242,25 +83,10 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         spec: dict[str, object] = {
             "replicas": replicas,
             "selector": {"matchLabels": dict(selector)},
-            "template": _pod_template_manifest(
-                replace(pod_template, labels=template_labels)
-            ),
+            "template": replace(pod_template, labels=template_labels)._manifest(),
         }
         if strategy is not None:
-            strategy_type = strategy.kind.strip()
-            if strategy_type:
-                payload: dict[str, object] = {"type": strategy_type}
-                if strategy_type == "Recreate":
-                    payload["rollingUpdate"] = None
-                else:
-                    rolling_update: dict[str, object] = {}
-                    if strategy.max_surge is not None:
-                        rolling_update["maxSurge"] = strategy.max_surge
-                    if strategy.max_unavailable is not None:
-                        rolling_update["maxUnavailable"] = strategy.max_unavailable
-                    if rolling_update:
-                        payload["rollingUpdate"] = rolling_update
-                spec["strategy"] = payload
+            spec["strategy"] = dict(strategy)
         optional: dict[str, object | None] = {
             "minReadySeconds": min_ready_seconds,
             "progressDeadlineSeconds": progress_deadline_seconds,
@@ -295,7 +121,7 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         timeout: float,
         replicas: int = 1,
         annotations: Mapping[str, str] | None = None,
-        strategy: DeploymentStrategySpec | None = None,
+        strategy: DeploymentStrategyManifest | None = None,
         min_ready_seconds: int | None = None,
         progress_deadline_seconds: int | None = None,
         revision_history_limit: int | None = None,
@@ -323,7 +149,7 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             Desired replica count.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
-        strategy : DeploymentStrategySpec | None, optional
+        strategy : DeploymentStrategyManifest | None, optional
             Optional Deployment rollout strategy.
         min_ready_seconds : int | None, optional
             Optional number of seconds a Pod must stay ready before availability.
@@ -378,8 +204,9 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             paused=paused,
         )
 
-        return await cls._client().upsert(
+        return await cls.resource.upsert(
             kube,
+            owner=cls,
             namespace=namespace,
             name=name,
             manifest=manifest,
@@ -589,29 +416,6 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
             and self.available_replicas >= minimum
         )
 
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this Deployment by its metadata namespace and name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Deployment | None
-            Fresh wrapper for the same Deployment, or `None` if it no longer exists.
-        """
-        namespace, name = self._require_namespace_name("refresh Deployment")
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            timeout=timeout,
-            name=name,
-        )
-
     async def delete(
         self,
         kube: Kube,
@@ -653,28 +457,6 @@ class Deployment(NamespacedKubeMetadata[kubernetes.client.V1Deployment]):
         _validate_delete_status(
             payload,
             label=self._object_label(name=name, namespace=namespace),
-        )
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this Deployment is deleted from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum wait time in seconds. Must be positive.
-
-        """
-        namespace, name = self._require_namespace_name("wait for Deployment deletion")
-        await (
-            type(self)
-            ._client()
-            .wait_deleted(
-                label=self._object_label(name=name, namespace=namespace),
-                timeout=timeout,
-                refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-            )
         )
 
     async def wait_available(

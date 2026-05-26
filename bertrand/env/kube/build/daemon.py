@@ -7,16 +7,7 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
 from bertrand.env.host import CACHE_DIR
-from bertrand.env.kube.api.spec import (
-    ContainerPortSpec,
-    ContainerSpec,
-    PodTemplateSpec,
-    ProbeSpec,
-    SecurityContextSpec,
-    TolerationSpec,
-    VolumeMountSpec,
-    VolumeSpec,
-)
+from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.pod import Pod
@@ -59,16 +50,16 @@ BUILDKIT_LABEL = "bertrand.dev/buildkit"
 BUILDKIT_LABEL_VALUE = "v1"
 BUILDKIT_NODE_SELECTOR = {"kubernetes.io/os": "linux"}
 BUILDKIT_CONTROL_PLANE_TOLERATIONS = (
-    TolerationSpec(
-        key="node-role.kubernetes.io/control-plane",
-        operator="Exists",
-        effect="NoSchedule",
-    ),
-    TolerationSpec(
-        key="node-role.kubernetes.io/master",
-        operator="Exists",
-        effect="NoSchedule",
-    ),
+    {
+        "key": "node-role.kubernetes.io/control-plane",
+        "operator": "Exists",
+        "effect": "NoSchedule",
+    },
+    {
+        "key": "node-role.kubernetes.io/master",
+        "operator": "Exists",
+        "effect": "NoSchedule",
+    },
 )
 BUILDKIT_ROLLOUT_DIAGNOSTIC_TIMEOUT_SECONDS = 10.0
 
@@ -241,6 +232,18 @@ class BuildKitPool:
             BUILDKIT_LABEL: BUILDKIT_LABEL_VALUE,
         }
 
+    async def _require_eligible_nodes(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+    ) -> None:
+        eligible = await self._eligible_nodes(kube, timeout=timeout)
+        if eligible:
+            return
+        msg = "BuildKit pool requires at least one ready schedulable Linux node"
+        raise OSError(msg)
+
     async def ensure(
         self,
         kube: Kube,
@@ -271,16 +274,22 @@ class BuildKitPool:
         if timeout <= 0:
             raise TimeoutError(msg)
         deadline = Deadline.from_timeout(timeout, message=msg)
-        eligible = await self._eligible_nodes(kube, timeout=deadline.remaining())
-        if not eligible:
-            msg = "BuildKit pool requires at least one ready schedulable Linux node"
-            raise OSError(msg)
-        pod_annotations = (
-            {BUILDKIT_CONFIG_HASH_ANNOTATION: config_hash}
-            if config_hash is not None
-            else None
+        await self._require_eligible_nodes(kube, timeout=deadline.remaining())
+        daemonset = await self._upsert_daemonset(
+            kube,
+            config_hash=config_hash,
+            timeout=deadline.remaining(),
         )
-        buildkitd_flags = " ".join(
+        try:
+            await daemonset.wait_rollout(kube, timeout=deadline.remaining())
+        except (OSError, TimeoutError) as err:
+            msg = await self._rollout_error(kube, config_hash=config_hash)
+            if isinstance(err, TimeoutError):
+                raise TimeoutError(msg) from err
+            raise OSError(msg) from err
+
+    def _buildkitd_flags(self) -> str:
+        return " ".join(
             (
                 f"--addr {BUILDKIT_LISTEN_ADDR!r}",
                 f"--addr {BUILDKIT_SOCKET_ADDR!r}",
@@ -290,126 +299,131 @@ class BuildKitPool:
                 ),
             )
         )
-        daemonset = await DaemonSet.upsert(
+
+    def _pod_annotations(self, config_hash: str | None) -> dict[str, str] | None:
+        if config_hash is None:
+            return None
+        return {BUILDKIT_CONFIG_HASH_ANNOTATION: config_hash}
+
+    def _pod_template(self, *, config_hash: str | None) -> PodTemplateSpec:
+        buildkitd_flags = self._buildkitd_flags()
+        return PodTemplateSpec(
+            containers=[
+                ContainerSpec(
+                    name="buildkitd",
+                    image=BUILDKIT_IMAGE,
+                    image_pull_policy="IfNotPresent",
+                    command=["/bin/sh", "-ec"],
+                    args=[
+                        (
+                            f"if [ -s {BUILDKIT_CONFIG_FILE!r} ]; then "
+                            f"exec buildkitd {buildkitd_flags} "
+                            f"--config {BUILDKIT_CONFIG_FILE!r}; "
+                            "fi; "
+                            f"exec buildkitd {buildkitd_flags}"
+                        )
+                    ],
+                    ports=[
+                        {"name": "grpc", "containerPort": self.port, "protocol": "TCP"}
+                    ],
+                    security_context={"privileged": True, "runAsUser": 0},
+                    readiness_probe={
+                        "tcpSocket": {"port": self.port},
+                        "periodSeconds": 2,
+                        "failureThreshold": 30,
+                    },
+                    liveness_probe={
+                        "tcpSocket": {"port": self.port},
+                        "initialDelaySeconds": 10,
+                        "periodSeconds": 10,
+                        "failureThreshold": 3,
+                    },
+                    volume_mounts=[
+                        {
+                            "name": BUILDKIT_CACHE_VOLUME,
+                            "mountPath": BUILDKIT_CACHE_MOUNT,
+                        },
+                        {
+                            "name": BUILDKIT_CONFIG_VOLUME,
+                            "mountPath": BUILDKIT_CONFIG_DIR,
+                            "readOnly": True,
+                        },
+                        {
+                            "name": BUILDKIT_SOCKET_VOLUME,
+                            "mountPath": BUILDKIT_SOCKET_DIR,
+                        },
+                        *(
+                            {"name": name, "mountPath": path, "readOnly": True}
+                            for name, path in BUILDKIT_CDI_SPEC_MOUNTS
+                        ),
+                    ],
+                )
+            ],
+            volumes=[
+                VolumeSpec.host_path(
+                    BUILDKIT_CACHE_VOLUME,
+                    path=self.cache_path,
+                    host_path_type="DirectoryOrCreate",
+                ),
+                VolumeSpec.config_map(
+                    BUILDKIT_CONFIG_VOLUME,
+                    config_map_name=BUILDKIT_CONFIG_NAME,
+                    optional=True,
+                ),
+                VolumeSpec.host_path(
+                    BUILDKIT_SOCKET_VOLUME,
+                    path=BUILDKIT_SOCKET_DIR,
+                    host_path_type="DirectoryOrCreate",
+                ),
+                *(
+                    VolumeSpec.host_path(
+                        name,
+                        path=path,
+                        host_path_type="DirectoryOrCreate",
+                    )
+                    for name, path in BUILDKIT_CDI_SPEC_MOUNTS
+                ),
+            ],
+            annotations=self._pod_annotations(config_hash),
+            node_selector=BUILDKIT_NODE_SELECTOR,
+            tolerations=BUILDKIT_CONTROL_PLANE_TOLERATIONS,
+        )
+
+    async def _upsert_daemonset(
+        self,
+        kube: Kube,
+        *,
+        config_hash: str | None,
+        timeout: float,
+    ) -> DaemonSet:
+        return await DaemonSet.upsert(
             kube,
             namespace=self.namespace,
             name=self.name,
             labels=self.labels,
             selector=self.selector,
-            pod_template=PodTemplateSpec(
-                containers=[
-                    ContainerSpec(
-                        name="buildkitd",
-                        image=BUILDKIT_IMAGE,
-                        image_pull_policy="IfNotPresent",
-                        command=["/bin/sh", "-ec"],
-                        args=[
-                            (
-                                f"if [ -s {BUILDKIT_CONFIG_FILE!r} ]; then "
-                                f"exec buildkitd {buildkitd_flags} "
-                                f"--config {BUILDKIT_CONFIG_FILE!r}; "
-                                "fi; "
-                                f"exec buildkitd {buildkitd_flags}"
-                            )
-                        ],
-                        ports=[
-                            ContainerPortSpec(
-                                name="grpc",
-                                container_port=self.port,
-                            )
-                        ],
-                        security_context=SecurityContextSpec(
-                            privileged=True,
-                            run_as_user=0,
-                        ),
-                        readiness_probe=ProbeSpec.tcp(
-                            port=self.port,
-                            period_seconds=2,
-                            failure_threshold=30,
-                        ),
-                        liveness_probe=ProbeSpec.tcp(
-                            port=self.port,
-                            initial_delay_seconds=10,
-                            period_seconds=10,
-                            failure_threshold=3,
-                        ),
-                        volume_mounts=[
-                            VolumeMountSpec(
-                                name=BUILDKIT_CACHE_VOLUME,
-                                mount_path=BUILDKIT_CACHE_MOUNT,
-                            ),
-                            VolumeMountSpec(
-                                name=BUILDKIT_CONFIG_VOLUME,
-                                mount_path=BUILDKIT_CONFIG_DIR,
-                                read_only=True,
-                            ),
-                            VolumeMountSpec(
-                                name=BUILDKIT_SOCKET_VOLUME,
-                                mount_path=BUILDKIT_SOCKET_DIR,
-                            ),
-                            *(
-                                VolumeMountSpec(
-                                    name=name,
-                                    mount_path=path,
-                                    read_only=True,
-                                )
-                                for name, path in BUILDKIT_CDI_SPEC_MOUNTS
-                            ),
-                        ],
-                    )
-                ],
-                volumes=[
-                    VolumeSpec.host_path(
-                        BUILDKIT_CACHE_VOLUME,
-                        path=self.cache_path,
-                        host_path_type="DirectoryOrCreate",
-                    ),
-                    VolumeSpec.config_map(
-                        BUILDKIT_CONFIG_VOLUME,
-                        config_map_name=BUILDKIT_CONFIG_NAME,
-                        optional=True,
-                    ),
-                    VolumeSpec.host_path(
-                        BUILDKIT_SOCKET_VOLUME,
-                        path=BUILDKIT_SOCKET_DIR,
-                        host_path_type="DirectoryOrCreate",
-                    ),
-                    *(
-                        VolumeSpec.host_path(
-                            name,
-                            path=path,
-                            host_path_type="DirectoryOrCreate",
-                        )
-                        for name, path in BUILDKIT_CDI_SPEC_MOUNTS
-                    ),
-                ],
-                annotations=pod_annotations,
-                node_selector=BUILDKIT_NODE_SELECTOR,
-                tolerations=BUILDKIT_CONTROL_PLANE_TOLERATIONS,
-            ),
-            timeout=deadline.remaining(),
+            pod_template=self._pod_template(config_hash=config_hash),
+            timeout=timeout,
         )
+
+    async def _rollout_error(
+        self,
+        kube: Kube,
+        *,
+        config_hash: str | None,
+    ) -> str:
+        msg = f"BuildKit DaemonSet {self.namespace}/{self.name} did not become ready"
         try:
-            await daemonset.wait_rollout(kube, timeout=deadline.remaining())
-        except (OSError, TimeoutError) as err:
-            msg = (
-                f"BuildKit DaemonSet {self.namespace}/{self.name} did not become ready"
+            status = await self.status(
+                kube,
+                timeout=BUILDKIT_ROLLOUT_DIAGNOSTIC_TIMEOUT_SECONDS,
+                config_hash=config_hash,
             )
-            try:
-                status = await self.status(
-                    kube,
-                    timeout=BUILDKIT_ROLLOUT_DIAGNOSTIC_TIMEOUT_SECONDS,
-                    config_hash=config_hash,
-                )
-            except (OSError, TimeoutError) as diagnostic_err:
-                msg = f"{msg}; failed to collect pod diagnostics: {diagnostic_err}"
-            else:
-                failures = status.failures or ("rollout did not become ready",)
-                detail = "\n".join(f"- {failure}" for failure in failures)
-                msg = f"{msg}:\n{detail}"
-            if isinstance(err, TimeoutError):
-                raise TimeoutError(msg) from err
-            raise OSError(msg) from err
+        except (OSError, TimeoutError) as diagnostic_err:
+            return f"{msg}; failed to collect pod diagnostics: {diagnostic_err}"
+        failures = status.failures or ("rollout did not become ready",)
+        detail = "\n".join(f"- {failure}" for failure in failures)
+        return f"{msg}:\n{detail}"
 
     async def status(
         self,
@@ -453,47 +467,30 @@ class BuildKitPool:
                 config_hash=config_hash,
                 include_daemonset=True,
             )
-            daemonset = snapshot.daemonset
-            installed_hash = (
-                daemonset.pod_annotations.get(BUILDKIT_CONFIG_HASH_ANNOTATION, "")
-                if daemonset is not None
-                else ""
-            )
-            config_current = config_hash is None or installed_hash == config_hash
-            rollout_ready = (
-                daemonset.rollout_ready(minimum=1) if daemonset is not None else False
-            )
-            failures: list[str] = []
-            if daemonset is None:
-                failures.append("BuildKit DaemonSet is missing")
-            if not rollout_ready:
-                failures.append("BuildKit DaemonSet rollout is not ready")
-            if not config_current:
-                failures.append("BuildKit DaemonSet has stale registry config")
-            if not snapshot.builders:
-                failures.append("BuildKit has no ready builder pods")
-            if snapshot.missing_platforms:
-                platforms = ", ".join(snapshot.missing_platforms)
-                failures.append(
-                    f"BuildKit has no ready builder for platform(s): {platforms}"
-                )
-            if failures and snapshot.pod_diagnostics:
-                failures.extend(snapshot.pod_diagnostics)
-            return BuildKitPoolStatus(
-                namespace=self.namespace,
-                name=self.name,
-                desired_builders=len(snapshot.eligible_nodes),
-                ready_builders=len(snapshot.builders),
-                expected_platforms=snapshot.expected_platforms,
-                ready_platforms=snapshot.ready_platforms,
-                missing_platforms=snapshot.missing_platforms,
-                ready=not failures,
-                failures=tuple(failures),
-                pod_diagnostics=snapshot.pod_diagnostics,
-            )
+            return self._status_from_snapshot(snapshot, config_hash=config_hash)
         except OSError as err:
             msg = f"failed to inspect BuildKit pool {self.namespace}/{self.name}: {err}"
             raise OSError(msg) from err
+
+    def _status_from_snapshot(
+        self,
+        snapshot: _BuildKitPoolSnapshot,
+        *,
+        config_hash: str | None,
+    ) -> BuildKitPoolStatus:
+        failures = _status_failures(snapshot, config_hash=config_hash)
+        return BuildKitPoolStatus(
+            namespace=self.namespace,
+            name=self.name,
+            desired_builders=len(snapshot.eligible_nodes),
+            ready_builders=len(snapshot.builders),
+            expected_platforms=snapshot.expected_platforms,
+            ready_platforms=snapshot.ready_platforms,
+            missing_platforms=snapshot.missing_platforms,
+            ready=not failures,
+            failures=failures,
+            pod_diagnostics=snapshot.pod_diagnostics,
+        )
 
     async def _snapshot(
         self,
@@ -652,6 +649,38 @@ class BuildKitPool:
 
 def _builder_sort_key(builder: _BuildKitBuilder) -> tuple[str, str]:
     return (builder.platform, builder.node)
+
+
+def _status_failures(
+    snapshot: _BuildKitPoolSnapshot,
+    *,
+    config_hash: str | None,
+) -> tuple[str, ...]:
+    daemonset = snapshot.daemonset
+    installed_hash = (
+        daemonset.pod_annotations.get(BUILDKIT_CONFIG_HASH_ANNOTATION, "")
+        if daemonset is not None
+        else ""
+    )
+    config_current = config_hash is None or installed_hash == config_hash
+    rollout_ready = (
+        daemonset.rollout_ready(minimum=1) if daemonset is not None else False
+    )
+    failures: list[str] = []
+    if daemonset is None:
+        failures.append("BuildKit DaemonSet is missing")
+    if not rollout_ready:
+        failures.append("BuildKit DaemonSet rollout is not ready")
+    if not config_current:
+        failures.append("BuildKit DaemonSet has stale registry config")
+    if not snapshot.builders:
+        failures.append("BuildKit has no ready builder pods")
+    if snapshot.missing_platforms:
+        platforms = ", ".join(snapshot.missing_platforms)
+        failures.append(f"BuildKit has no ready builder for platform(s): {platforms}")
+    if failures and snapshot.pod_diagnostics:
+        failures.extend(snapshot.pod_diagnostics)
+    return tuple(failures)
 
 
 def _pod_diagnostics(pods: Iterable[Pod]) -> tuple[str, ...]:

@@ -6,14 +6,15 @@ import asyncio
 import os
 import platform
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 import kubernetes
 
 from bertrand.env.git import Deadline
 
+from .api._helpers import _is_too_many_requests
 from .api.metadata import KubeMetadata
-from .api.resource import ClusterResourceMixin, ClusterWatchMixin, ResourceClient
+from .api.resource import BuiltinResource, BuiltinResourceObject
 from .api.view import TaintView
 from .pod import Pod
 
@@ -49,8 +50,7 @@ type TaintEffect = Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
 
 @dataclass(frozen=True)
 class Node(
-    ClusterWatchMixin[kubernetes.client.V1Node],
-    ClusterResourceMixin[kubernetes.client.V1Node],
+    BuiltinResourceObject[kubernetes.client.V1Node],
     KubeMetadata[kubernetes.client.V1Node],
 ):
     """General-purpose wrapper around one Kubernetes Node object.
@@ -69,27 +69,16 @@ class Node(
 
     _obj: kubernetes.client.V1Node
 
-    @classmethod
-    def _client(cls) -> ResourceClient[kubernetes.client.V1Node, Self]:
-        return ResourceClient(
-            scope="cluster",
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1Node]] = (
+        BuiltinResource.cluster(
+            api="core",
             kind="Node",
+            slug="node",
             expected=kubernetes.client.V1Node,
             list_type=kubernetes.client.V1NodeList,
-            wrapper=lambda payload: cls(_obj=payload),
-            read=lambda kube, _namespace, name, request_timeout: kube.core.read_node(
-                name=name,
-                _request_timeout=request_timeout,
-            ),
-            list_all=lambda kube, label_selector, field_selector, request_timeout: (
-                kube.core.list_node(
-                    label_selector=label_selector,
-                    field_selector=field_selector,
-                    _request_timeout=request_timeout,
-                )
-            ),
-            watch_all=lambda kube: kube.core.list_node,
+            watch=True,
         )
+    )
 
     @classmethod
     async def local(cls, kube: Kube, *, timeout: float) -> Self:
@@ -751,102 +740,125 @@ class Node(
         if timeout <= 0:
             msg = "node drain timeout must be non-negative"
             raise TimeoutError(msg)
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="node drain timeout must be non-negative",
-        )
+        deadline = _node_drain_deadline(timeout)
 
-        # cordon first to stop new placements while eviction converges
         await self.cordon(kube=kube, timeout=deadline.remaining())
         pods = await self.pods(kube=kube, timeout=deadline.remaining())
-
-        # classification is explicit so refusal reasons are user-actionable before any
-        # disruptive eviction requests are submitted
-        candidates: builtins.list[Pod] = []
-        blocked: builtins.list[str] = []
-        for pod in pods:
-            namespace = pod.namespace
-            name = pod.name
-            if not namespace or not name or not pod.is_active or pod.is_mirror:
-                continue
-
-            # DaemonSet pods are always skipped because they are managed to run
-            # per-node; drain should not treat them as evictable workload pods
-            if pod.is_daemonset_controlled or (
-                namespace in NODE_SYSTEM_NAMESPACES and not force
-            ):
-                continue
-            if pod.uses_emptydir and not force:
-                blocked.append(
-                    f"{namespace}/{name}: uses emptyDir volume "
-                    "(set force=True to allow)"
-                )
-                continue
-            if not pod.has_supported_controller() and not force:
-                blocked.append(
-                    f"{namespace}/{name}: unmanaged pod (set force=True to allow)"
-                )
-                continue
-            candidates.append(pod)
+        candidates, blocked = _classify_node_drain_pods(pods, force=force)
         if blocked:
-            details = "\n".join(f"  - {line}" for line in sorted(blocked))
-            msg = (
-                f"refusing to drain Kubernetes node {self.name!r} due to non-evictable "
-                f"pods:\n{details}"
+            raise OSError(_node_drain_blocked_message(self, blocked))
+
+        pending = _node_drain_pending(candidates)
+        await _evict_node_drain_candidates(self, kube, candidates, deadline=deadline)
+        await _wait_node_drain_convergence(self, kube, pending, deadline=deadline)
+
+
+def _node_drain_deadline(timeout: float) -> Deadline:
+    return Deadline.from_timeout(
+        timeout,
+        message="node drain timeout must be non-negative",
+    )
+
+
+def _classify_node_drain_pods(
+    pods: Collection[Pod],
+    *,
+    force: bool,
+) -> tuple[list[Pod], list[str]]:
+    candidates: list[Pod] = []
+    blocked: list[str] = []
+    for pod in pods:
+        namespace = pod.namespace
+        name = pod.name
+        if not namespace or not name or not pod.is_active or pod.is_mirror:
+            continue
+        if pod.is_daemonset_controlled or (
+            namespace in NODE_SYSTEM_NAMESPACES and not force
+        ):
+            continue
+        if pod.uses_emptydir and not force:
+            blocked.append(
+                f"{namespace}/{name}: uses emptyDir volume "
+                "(set force=True to allow)"
             )
-            raise OSError(msg)
+            continue
+        if not pod.has_supported_controller() and not force:
+            blocked.append(
+                f"{namespace}/{name}: unmanaged pod (set force=True to allow)"
+            )
+            continue
+        candidates.append(pod)
+    return candidates, blocked
 
-        # submit evictions first, then track completion separately so PDB retries and
-        # convergence polling stay decoupled and predictable
-        pending: set[tuple[str, str]] = set()
-        for pod in candidates:
-            namespace = pod.namespace
-            name = pod.name
-            if namespace and name:
-                pending.add((namespace, name))
-        for pod in candidates:
-            while True:
-                try:
-                    # we intentionally pass no grace override so each individual
-                    # workload's terminationGracePeriodSeconds remains authoritative
-                    await pod.evict(kube, timeout=deadline.remaining())
-                    break
-                except OSError as err:
-                    detail = str(err).lower()
-                    if "status 429" not in detail and "too many requests" not in detail:
-                        raise
-                    remaining = deadline.remaining()
-                    if remaining <= 0:
-                        msg = (
-                            f"timed out waiting for PDB eviction budget while draining "
-                            f"node {self.name!r}"
-                        )
-                        raise TimeoutError(msg) from err
-                    await asyncio.sleep(
-                        deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS)
+
+def _node_drain_blocked_message(node: Node, blocked: list[str]) -> str:
+    details = "\n".join(f"  - {line}" for line in sorted(blocked))
+    return (
+        f"refusing to drain Kubernetes node {node.name!r} due to non-evictable "
+        f"pods:\n{details}"
+    )
+
+
+def _node_drain_pending(candidates: Collection[Pod]) -> set[tuple[str, str]]:
+    pending: set[tuple[str, str]] = set()
+    for pod in candidates:
+        namespace = pod.namespace
+        name = pod.name
+        if namespace and name:
+            pending.add((namespace, name))
+    return pending
+
+
+async def _evict_node_drain_candidates(
+    node: Node,
+    kube: Kube,
+    candidates: Collection[Pod],
+    *,
+    deadline: Deadline,
+) -> None:
+    for pod in candidates:
+        while True:
+            try:
+                await pod.evict(kube, timeout=deadline.remaining())
+                break
+            except OSError as err:
+                if not _is_too_many_requests(err):
+                    raise
+                remaining = deadline.remaining()
+                if remaining <= 0:
+                    msg = (
+                        f"timed out waiting for PDB eviction budget while draining "
+                        f"node {node.name!r}"
                     )
+                    raise TimeoutError(msg) from err
+                await asyncio.sleep(
+                    deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS)
+                )
 
-        # eviction admission does not guarantee immediate termination, so we poll
-        # node-local pod state until every targeted pod disappears
-        while pending:
-            remaining = deadline.remaining()
-            if remaining <= 0:
-                remaining_pods = ", ".join(
-                    f"{namespace}/{name}" for namespace, name in sorted(pending)
-                )
-                msg = (
-                    f"timed out waiting for pod eviction convergence on node "
-                    f"{self.name!r}; remaining: {remaining_pods}"
-                )
-                raise TimeoutError(msg)
-            live: set[tuple[str, str]] = set()
-            for pod in await self.pods(kube=kube, timeout=remaining):
-                namespace = pod.namespace
-                name = pod.name
-                if namespace and name:
-                    live.add((namespace, name))
-            pending.intersection_update(live)
-            if pending:
-                # eviction admission is asynchronous, so we poll until all targeted
-                # pods terminate or timeout
-                await asyncio.sleep(deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS))
+
+async def _wait_node_drain_convergence(
+    node: Node,
+    kube: Kube,
+    pending: set[tuple[str, str]],
+    *,
+    deadline: Deadline,
+) -> None:
+    while pending:
+        remaining = deadline.remaining()
+        if remaining <= 0:
+            remaining_pods = ", ".join(
+                f"{namespace}/{name}" for namespace, name in sorted(pending)
+            )
+            msg = (
+                f"timed out waiting for pod eviction convergence on node "
+                f"{node.name!r}; remaining: {remaining_pods}"
+            )
+            raise TimeoutError(msg)
+        live = {
+            (pod.namespace, pod.name)
+            for pod in await node.pods(kube=kube, timeout=remaining)
+            if pod.namespace and pod.name
+        }
+        pending.intersection_update(live)
+        if pending:
+            await asyncio.sleep(deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS))

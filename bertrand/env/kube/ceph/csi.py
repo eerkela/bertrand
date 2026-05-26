@@ -21,9 +21,9 @@ from bertrand.env.kube.ceph.api import (
 )
 from bertrand.env.kube.ceph.capacity import (
     STORAGE_OSD_NAME_LABEL,
-    CephStorageOSDRecord,
-    list_storage_osds,
+    CephStorageOSD,
     patch_storage_osd_status,
+    read_storage_state,
     upsert_storage_osd,
 )
 from bertrand.env.kube.volume import PersistentVolumeClaim
@@ -178,17 +178,17 @@ def _topology(node_name: str) -> bytes:
     return _field_map(1, segments)
 
 
-def _volume(record: CephStorageOSDRecord, *, volume_id: str) -> bytes:
+def _volume(record: CephStorageOSD, *, volume_id: str) -> bytes:
     context = {
-        "block_path": record.spec.block_path,
-        "osd_name": record.metadata.name,
-        "origin": record.spec.origin,
+        "block_path": record.block_path,
+        "osd_name": record.name,
+        "origin": record.origin,
     }
     return _message(
         _field_string(1, volume_id),
-        _field_varint(2, record.spec.target_bytes),
+        _field_varint(2, record.target_bytes),
         _field_map(3, context),
-        _field_bytes(5, _topology(record.spec.node_name)),
+        _field_bytes(5, _topology(record.node_name)),
     )
 
 
@@ -267,13 +267,10 @@ class BertrandOSDCSIDriver:
         self,
         kube: Kube,
         volume_id: str,
-    ) -> CephStorageOSDRecord:
-        records = await list_storage_osds(
-            kube,
-            timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-        )
-        for record in records:
-            if volume_id in {record.metadata.name, record.spec.csi_volume_id}:
+    ) -> CephStorageOSD:
+        storage = await read_storage_state(kube, timeout=CSI_REQUEST_TIMEOUT_SECONDS)
+        for record in storage.status.osds.values():
+            if volume_id in {record.name, record.csi_volume_id}:
                 return record
         msg = f"unknown Bertrand OSD CSI volume {volume_id!r}"
         raise KeyError(msg)
@@ -284,7 +281,7 @@ class BertrandOSDCSIDriver:
         *,
         namespace: str,
         name: str,
-    ) -> tuple[CephStorageOSDRecord, PersistentVolumeClaim]:
+    ) -> tuple[CephStorageOSD, PersistentVolumeClaim]:
         claim = await PersistentVolumeClaim.get(
             kube,
             namespace=namespace,
@@ -298,12 +295,9 @@ class BertrandOSDCSIDriver:
         if not osd_name:
             msg = f"PVC {namespace}/{name} is not a Bertrand-managed OSD claim"
             raise PermissionError(msg)
-        records = await list_storage_osds(
-            kube,
-            timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-        )
-        for record in records:
-            if record.metadata.name == osd_name:
+        storage = await read_storage_state(kube, timeout=CSI_REQUEST_TIMEOUT_SECONDS)
+        for record in storage.status.osds.values():
+            if record.name == osd_name:
                 return record, claim
         msg = f"PVC {namespace}/{name} references missing OSD record {osd_name!r}"
         raise KeyError(msg)
@@ -312,12 +306,12 @@ class BertrandOSDCSIDriver:
         self,
         kube: Kube,
         *,
-        record: CephStorageOSDRecord,
+        record: CephStorageOSD,
         claim: PersistentVolumeClaim,
         volume_id: str,
         pv_name: str,
-    ) -> CephStorageOSDRecord:
-        spec = record.spec.model_dump(mode="json")
+    ) -> CephStorageOSD:
+        spec = record.spec_payload()
         spec.update(
             {
                 "csi_volume_id": volume_id,
@@ -326,12 +320,12 @@ class BertrandOSDCSIDriver:
                 "persistent_volume_claim_name": claim.name,
             }
         )
-        phase = record.status.phase
+        phase = record.phase
         if phase not in {"Ready", "Expanding"}:
             phase = "Binding"
         return await upsert_storage_osd(
             kube,
-            name=record.metadata.name,
+            name=record.name,
             spec=spec,
             phase=phase,
             timeout=CSI_REQUEST_TIMEOUT_SECONDS,
@@ -351,11 +345,11 @@ class BertrandOSDCSIDriver:
             namespace=pvc_namespace,
             name=pvc_name,
         )
-        if requested > record.spec.target_bytes:
+        if requested > record.target_bytes:
             msg = (
                 f"PVC requests {requested} bytes but OSD "
-                f"{record.metadata.name} is prepared for "
-                f"{record.spec.target_bytes} bytes"
+                f"{record.name} is prepared for "
+                f"{record.target_bytes} bytes"
             )
             raise ValueError(msg)
         fresh = await self._upsert_claim_binding(
@@ -370,14 +364,14 @@ class BertrandOSDCSIDriver:
     async def _delete_volume_payload(self, kube: Kube, volume_id: str) -> bytes:
         with suppress(KeyError):
             record = await self._record_for_volume(kube, volume_id)
-            if record.status.phase not in {"Shrinking", "Retiring", "Retired"}:
+            if record.phase not in {"Shrinking", "Retiring", "Retired"}:
                 await patch_storage_osd_status(
                     kube,
                     osd=record,
                     status={
                         "last_error": (
                             "CSI DeleteVolume was requested while the OSD was "
-                            f"{record.status.phase}; preserving host substrate "
+                            f"{record.phase}; preserving host substrate "
                             "because Bertrand has not started shrink/retirement"
                         )
                     },
@@ -399,14 +393,14 @@ class BertrandOSDCSIDriver:
         requested: int,
     ) -> bytes:
         record = await self._record_for_volume(kube, volume_id)
-        if requested > record.spec.target_bytes:
+        if requested > record.target_bytes:
             msg = (
                 f"expansion requested {requested} bytes but OSD "
-                f"{record.metadata.name} target is {record.spec.target_bytes} bytes"
+                f"{record.name} target is {record.target_bytes} bytes"
             )
             raise ValueError(msg)
         return _message(
-            _field_varint(1, record.spec.target_bytes),
+            _field_varint(1, record.target_bytes),
             _field_varint(2, 1),
         )
 
@@ -417,28 +411,28 @@ class BertrandOSDCSIDriver:
         target_path: str,
     ) -> bytes:
         record = await self._record_for_volume(kube, volume_id)
-        if record.spec.host_id != self.host_id:
+        if record.host_id != self.host_id:
             msg = (
-                f"volume {volume_id!r} belongs to host {record.spec.host_id}, "
+                f"volume {volume_id!r} belongs to host {record.host_id}, "
                 f"not this host {self.host_id}"
             )
             raise PermissionError(msg)
-        if record.spec.origin == "loop-fallback":
+        if record.origin == "loop-fallback":
             prepared = await prepare_loop_fallback_osd(
-                name=record.metadata.name,
-                target_bytes=record.spec.target_bytes,
+                name=record.name,
+                target_bytes=record.target_bytes,
                 timeout=CSI_REQUEST_TIMEOUT_SECONDS,
             )
         else:
             prepared = await prepare_lvm_osd(
-                name=record.metadata.name,
-                target_bytes=record.spec.target_bytes,
-                pv_name=record.spec.pv_name,
-                lv_name=record.spec.lv_name,
+                name=record.name,
+                target_bytes=record.target_bytes,
+                pv_name=record.pv_name,
+                lv_name=record.lv_name,
                 timeout=CSI_REQUEST_TIMEOUT_SECONDS,
             )
         await bind_block_device(
-            block_path=record.spec.block_path,
+            block_path=record.block_path,
             target_path=target_path,
             timeout=CSI_REQUEST_TIMEOUT_SECONDS,
         )
@@ -446,7 +440,7 @@ class BertrandOSDCSIDriver:
             kube,
             osd=record,
             status={
-                "phase": ("Ready" if record.status.phase == "Ready" else "Binding"),
+                "phase": ("Ready" if record.phase == "Ready" else "Binding"),
                 "observed_bytes": prepared.observed_bytes,
                 "last_error": "",
             },
@@ -456,7 +450,7 @@ class BertrandOSDCSIDriver:
 
     async def _node_expand_volume_payload(self, kube: Kube, volume_id: str) -> bytes:
         record = await self._record_for_volume(kube, volume_id)
-        return _field_varint(1, record.spec.target_bytes)
+        return _field_varint(1, record.target_bytes)
 
     def _get_plugin_info(self, _request: bytes, _context: Any) -> bytes:
         return _message(

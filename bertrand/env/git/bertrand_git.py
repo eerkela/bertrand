@@ -19,7 +19,6 @@ import asyncio
 import contextlib
 import errno
 import grp
-import hashlib
 import os
 import pwd
 import shlex
@@ -310,19 +309,6 @@ def abspath(path: Path) -> Path:
     return Path(os.path.abspath(path.expanduser()))  # noqa: PTH100
 
 
-def mkdir_private(path: Path) -> None:
-    """Create a directory with private permissions (0700) if it does not already exist.
-
-    Parameters
-    ----------
-    path : Path
-        The path to create.
-    """
-    path.mkdir(parents=True, exist_ok=True)
-    with contextlib.suppress(OSError):
-        path.chmod(0o700)
-
-
 def symlink_points_to(path: Path, target: Path) -> bool:
     """Return whether `path` is a symlink to `target`.
 
@@ -367,29 +353,6 @@ def atomic_symlink(source: Path, target: Path, *, private: bool = False) -> None
     if private:
         tmp.chmod(0o600)
     tmp.replace(target)
-
-
-def atomic_write_bytes(path: Path, data: bytes, *, private: bool = False) -> None:
-    """Atomically write bytes to a file, avoiding race conditions and partial writes.
-
-    Parameters
-    ----------
-    path : Path
-        The path to write to.
-    data : bytes
-        The bytes to write.
-    private : bool, optional
-        Whether to set private permissions (0600) on the written file, by default False.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
-    tmp.write_bytes(data)
-    with tmp.open("r+b") as f:
-        f.flush()
-        os.fsync(f.fileno())
-    if private:
-        tmp.chmod(0o600)
-    tmp.replace(path)
 
 
 def atomic_write_text(
@@ -490,55 +453,6 @@ def _check_worktree_metadata_root(worktree: Path) -> None:
     if not worktree.is_dir():
         msg = f"worktree path is not a directory: {worktree}"
         raise NotADirectoryError(msg)
-
-
-def file_digest(path: Path) -> str:
-    """Compute a SHA-256 hex digest for a file.
-
-    Parameters
-    ----------
-    path : Path
-        The path to the file to compute the digest of.
-
-    Returns
-    -------
-    str
-        The SHA-256 hex digest of the file's raw binary contents.
-    """
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(1024 * 1024)  # 1 MiB chunks
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def tail_lines(path: Path, *, count: int = 40) -> str:
-    r"""Return the last `count` lines of a text file.
-
-    Parameters
-    ----------
-    path : Path
-        The path to the text file to read.
-    count : int, optional
-        The number of lines to return from the end of the file.  Default is 40.  If
-        less than 1, then an empty string will be returned.
-
-    Returns
-    -------
-    str
-        The last `count` lines of the file, with newlines normalized to '\n'.
-    """
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return ""
-    if count < 1:
-        return ""
-    tail = lines[-count:]
-    return "\n".join(tail)
 
 
 class CompletedProcess(subprocess.CompletedProcess[str]):
@@ -1050,30 +964,6 @@ async def until[T](
         await asyncio.sleep(deadline.bounded(interval))
 
 
-def pid_alive(pid: int) -> bool:
-    """Check whether a process with the given PID is currently alive on the host system.
-
-    Parameters
-    ----------
-    pid : int
-        The process ID to check.
-
-    Returns
-    -------
-    bool
-        True if a process with the given PID is currently alive, False otherwise.
-    """
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
 @dataclass(frozen=True)
 class _PackageSpec:
     install: list[str]
@@ -1227,49 +1117,6 @@ async def install_packages(
         env=env,
         timeout=deadline.remaining(),
     )
-
-
-async def download_file(url: str, target: Path, *, retries: int = 3) -> None:
-    """Download a file from a URL to a target path, using curl or wget if available.
-
-    Parameters
-    ----------
-    url : str
-        The URL to download from.
-    target : Path
-        The target path to save the downloaded file to.
-
-    Raises
-    ------
-    OSError
-        If neither curl nor wget is available on the system.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if shutil.which("curl"):
-        await run(
-            [
-                "curl",
-                "-fL",
-                "--retry",
-                str(retries),
-                "--output",
-                str(target),
-                url,
-            ]
-        )
-    elif shutil.which("wget"):
-        await run(
-            [
-                "wget",
-                f"--tries={retries}",
-                "--output-document",
-                str(target),
-                url,
-            ]
-        )
-    else:
-        msg = "No download tool available (expected curl or wget)."
-        raise OSError(msg)
 
 
 @dataclass(frozen=True)
