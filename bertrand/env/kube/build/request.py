@@ -6,10 +6,10 @@ import asyncio
 import hashlib
 import json
 import uuid
-from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import datetime  # noqa: TC003
+from collections.abc import Collection, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import (
@@ -18,6 +18,7 @@ from pydantic import (
     Field,
     ValidationInfo,
     field_validator,
+    model_validator,
 )
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
@@ -30,10 +31,13 @@ from bertrand.env.git import (
     Deadline,
 )
 from bertrand.env.kube.api._helpers import _is_missing_api_resource
+from bertrand.env.kube.build.refs import DIGEST_REF_RE, digest_from_ref, digest_ref
+from bertrand.env.kube.build.repository import delete_image_manifest
 from bertrand.env.kube.custom_object import (
     CustomObjectMetadata,
     CustomObjectResource,
 )
+from bertrand.env.kube.pod import Pod
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -49,7 +53,10 @@ BUILDKIT_BUILD_PLURAL = "buildkitbuilds"
 BUILDKIT_BUILD_REPO_LABEL = "bertrand.dev/buildkit-build-repo"
 BUILDKIT_BUILD_WORKTREE_LABEL = "bertrand.dev/buildkit-build-worktree"
 BUILDKIT_BUILD_CONFIG_LABEL = "bertrand.dev/buildkit-build-config"
+BUILDKIT_BUILD_IMAGE_PHASE_LABEL = "bertrand.dev/buildkit-image-phase"
 BUILDKIT_BUILD_WAIT_POLL_SECONDS = 2.0
+BUILDKIT_IMAGE_GC_GRACE_SECONDS = 86_400
+BUILDKIT_IMAGE_GC_LIMIT = 16
 BUILDKIT_BUILD_LABELS = {
     BERTRAND_ENV: "1",
     BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE,
@@ -58,32 +65,8 @@ PROJECT_IMAGE_CONFIG_ID = "BERTRAND_IMAGE_CONFIG_ID"
 
 type BuildPullPolicy = Literal["missing", "always", "never"]
 type BuildKitBuildPhase = Literal["Pending", "Running", "Succeeded", "Failed"]
+type BuildKitImagePhase = Literal["Pending", "Active", "Retired", "Collected"]
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
-
-
-@dataclass(frozen=True)
-class ProjectImageIdentity:
-    """Stable project image identity shared by build and lifecycle layers.
-
-    Parameters
-    ----------
-    repo_id : str
-        Stable repository UUID containing the project source.
-    worktree : str
-        Repository-volume subpath for this worktree.
-    worktree_id : str
-        Persistent UUID for this concrete checkout instance.
-    config_id : str
-        Deterministic project image configuration fingerprint.
-    image : str
-        Internal mutable image reference.
-    """
-
-    repo_id: str
-    worktree: str
-    worktree_id: str
-    config_id: str
-    image: str
 
 
 class BuildKitBuildSpec(BaseModel):
@@ -219,115 +202,6 @@ class BuildKitBuildSpec(BaseModel):
             normalized[checked] = required
         return dict(sorted(normalized.items()))
 
-    @classmethod
-    def from_identity(
-        cls,
-        *,
-        identity: ProjectImageIdentity,
-        dockerfile: str,
-        build_args: Mapping[str, str],
-        target: str | None,
-        pull: BuildPullPolicy,
-        secrets: Mapping[str, bool],
-        ssh: Mapping[str, bool],
-        devices: Mapping[str, bool],
-        external_image: str | None = None,
-        auth_id: str | None = None,
-    ) -> BuildKitBuildSpec:
-        """Create a request spec from one project image identity.
-
-        Parameters
-        ----------
-        identity : ProjectImageIdentity
-            Stable project image identity to build and publish.
-        dockerfile : str
-            Rendered Containerfile text.
-        build_args : Mapping[str, str]
-            Dockerfile build arguments.
-        target : str | None
-            Optional target stage in a multi-stage Containerfile.
-        pull : {'missing', 'always', 'never'}
-            BuildKit base-image resolution policy.
-        secrets : Mapping[str, bool]
-            Secret capability requests exposed to the build.
-        ssh : Mapping[str, bool]
-            SSH capability requests exposed to the build.
-        devices : Mapping[str, bool]
-            DRA device capability requests exposed to the build.
-        external_image : str | None, optional
-            Optional external manifest destination.
-        auth_id : str | None, optional
-            Secret capability ID containing Docker auth JSON for external publishing.
-
-        Returns
-        -------
-        BuildKitBuildSpec
-            Validated request spec.
-        """
-        return cls(
-            repo_id=identity.repo_id,
-            worktree=identity.worktree,
-            worktree_id=identity.worktree_id,
-            config_id=identity.config_id,
-            image=identity.image,
-            dockerfile=dockerfile,
-            build_args=dict(sorted(build_args.items())),
-            target=target,
-            pull=pull,
-            secrets=dict(sorted(secrets.items())),
-            ssh=dict(sorted(ssh.items())),
-            devices=dict(sorted(devices.items())),
-            external_image=external_image,
-            auth_id=auth_id,
-        )
-
-    def with_external_publication(
-        self,
-        *,
-        external_image: str | None,
-        auth_id: str | None,
-    ) -> BuildKitBuildSpec:
-        """Return this request with external publication fields replaced.
-
-        Parameters
-        ----------
-        external_image : str | None
-            Optional external manifest destination.
-        auth_id : str | None
-            Secret capability ID containing Docker auth JSON for external publishing.
-
-        Returns
-        -------
-        BuildKitBuildSpec
-            Validated request spec with the requested publication fields.
-        """
-        payload = self.model_dump(mode="python")
-        payload.update(
-            {
-                "external_image": external_image,
-                "auth_id": auth_id,
-            }
-        )
-        return type(self).model_validate(payload)
-
-    @property
-    def identity(self) -> ProjectImageIdentity:
-        """Return the project image identity encoded by this request.
-
-        Returns
-        -------
-        ProjectImageIdentity
-            Stable publication identity shared by build, manifest, and lifecycle
-            record layers.
-        """
-        return ProjectImageIdentity(
-            repo_id=self.repo_id,
-            worktree=self.worktree,
-            worktree_id=self.worktree_id,
-            config_id=self.config_id,
-            image=self.image,
-        )
-
     @property
     def request_labels(self) -> dict[str, str]:
         """Return Kubernetes labels applied to this build request.
@@ -337,13 +211,16 @@ class BuildKitBuildSpec(BaseModel):
         dict[str, str]
             Labels used to identify and filter this build request.
         """
-        identity = self.identity
         labels = dict(BUILDKIT_BUILD_LABELS)
         labels.update(
             {
-                BUILDKIT_BUILD_REPO_LABEL: _label_hash(identity.repo_id),
-                BUILDKIT_BUILD_WORKTREE_LABEL: _label_hash(identity.worktree_id),
-                BUILDKIT_BUILD_CONFIG_LABEL: _label_hash(identity.config_id),
+                BUILDKIT_BUILD_REPO_LABEL: buildkit_build_label_hash(self.repo_id),
+                BUILDKIT_BUILD_WORKTREE_LABEL: buildkit_build_label_hash(
+                    self.worktree_id
+                ),
+                BUILDKIT_BUILD_CONFIG_LABEL: buildkit_build_label_hash(
+                    self.config_id
+                ),
             }
         )
         return labels
@@ -357,13 +234,12 @@ class BuildKitBuildSpec(BaseModel):
         dict[str, str]
             Image labels used by downstream runtime discovery.
         """
-        identity = self.identity
         return {
             BERTRAND_ENV: "1",
-            REPO_ID_ENV: identity.repo_id,
-            WORKTREE_ENV: identity.worktree,
-            WORKTREE_ID_ENV: identity.worktree_id,
-            PROJECT_IMAGE_CONFIG_ID: identity.config_id,
+            REPO_ID_ENV: self.repo_id,
+            WORKTREE_ENV: self.worktree,
+            WORKTREE_ID_ENV: self.worktree_id,
+            PROJECT_IMAGE_CONFIG_ID: self.config_id,
         }
 
 
@@ -384,10 +260,22 @@ class BuildKitBuildStatus(BaseModel):
         Current BuildKit client Job name, if any.
     active_platform : str
         Native OCI platform currently being built, if any.
+    internal_digest_ref : str
+        Internal digest-pinned project image manifest ref, if published.
     external_digest_ref : str
         External digest ref emitted by manifest copy, if any.
-    record_name : str
-        `BertrandImage` lifecycle record written by project publication.
+    platform_images : dict[str, str]
+        Platform-specific digest refs included in the project manifest.
+    image_phase : {"Pending", "Active", "Retired", "Collected"}
+        Project image lifecycle state for a successful build.
+    published_at : datetime | None
+        Time the project manifest was published.
+    retired_at : datetime | None
+        Time the project manifest was retired.
+    last_gc_at : datetime | None
+        Time the retired image was last considered by GC.
+    image_last_error : str
+        Last non-fatal image lifecycle error.
     message : str
         Concise human-readable status message.
     log_excerpt : str
@@ -401,10 +289,25 @@ class BuildKitBuildStatus(BaseModel):
     completed_at: datetime | None = None
     active_job: str = ""
     active_platform: str = ""
+    internal_digest_ref: str = ""
     external_digest_ref: str = ""
-    record_name: str = ""
+    platform_images: dict[str, str] = Field(default_factory=dict)
+    image_phase: BuildKitImagePhase = "Pending"
+    published_at: datetime | None = None
+    retired_at: datetime | None = None
+    last_gc_at: datetime | None = None
+    image_last_error: str = ""
     message: str = ""
     log_excerpt: str = ""
+
+    @field_validator("platform_images")
+    @classmethod
+    def _validate_platform_images(cls, value: dict[str, str]) -> dict[str, str]:
+        return _validate_platform_images(
+            platform_images=value,
+            context="BuildKitBuild status",
+            allow_empty=True,
+        )
 
 
 class BuildKitBuildRecord(BaseModel):
@@ -430,6 +333,40 @@ class BuildKitBuildRecord(BaseModel):
     metadata: CustomObjectMetadata
     spec: BuildKitBuildSpec
     status: BuildKitBuildStatus = Field(default_factory=BuildKitBuildStatus)
+
+    @model_validator(mode="after")
+    def _validate_image_lifecycle(self) -> BuildKitBuildRecord:
+        if self.image_phase == "Pending":
+            return self
+        if self.status.phase != "Succeeded" or not self.is_reconciled:
+            msg = (
+                f"{BUILDKIT_BUILD_KIND} {self.name!r}: image lifecycle phase "
+                "requires a reconciled successful build"
+            )
+            raise ValueError(msg)
+        if not DIGEST_REF_RE.fullmatch(self.digest_ref):
+            msg = (
+                f"{BUILDKIT_BUILD_KIND} {self.name!r}: unsupported digest ref "
+                f"{self.digest_ref!r}"
+            )
+            raise ValueError(msg)
+        try:
+            digest = digest_from_ref(self.digest_ref)
+        except ValueError as err:
+            msg = f"{BUILDKIT_BUILD_KIND} {self.name!r}: {err}"
+            raise ValueError(msg) from err
+        expected_digest_ref = digest_ref(self.image, digest)
+        if self.digest_ref != expected_digest_ref:
+            msg = (
+                f"{BUILDKIT_BUILD_KIND} {self.name!r}: digest ref "
+                f"{self.digest_ref!r} does not match image {self.image!r}"
+            )
+            raise ValueError(msg)
+        _validate_platform_images(
+            platform_images=self.platform_images,
+            context=f"{BUILDKIT_BUILD_KIND} {self.name!r}",
+        )
+        return self
 
     @property
     def name(self) -> str:
@@ -510,8 +447,70 @@ class BuildKitBuildRecord(BaseModel):
         """
         return not self.is_terminal
 
+    @property
+    def image(self) -> str:
+        """Return the mutable project image reference."""
+        return self.spec.image
 
-def _label_hash(value: str) -> str:
+    @property
+    def digest_ref(self) -> str:
+        """Return the immutable digest-pinned project image reference."""
+        return self.status.internal_digest_ref
+
+    @property
+    def digest(self) -> str:
+        """Return the project image manifest digest."""
+        return digest_from_ref(self.digest_ref)
+
+    @property
+    def platforms(self) -> tuple[str, ...]:
+        """Return platforms included in this publication."""
+        return tuple(self.platform_images)
+
+    @property
+    def platform_images(self) -> Mapping[str, str]:
+        """Return platform-specific digest refs for this publication."""
+        return MappingProxyType(dict(sorted(self.status.platform_images.items())))
+
+    @property
+    def config_id(self) -> str:
+        """Return the project image configuration identity."""
+        return self.spec.config_id
+
+    @property
+    def image_phase(self) -> BuildKitImagePhase:
+        """Return this build's project image lifecycle phase."""
+        return self.status.image_phase
+
+    @property
+    def published_at(self) -> datetime | None:
+        """Return the publication timestamp normalized to UTC."""
+        return _utc_datetime(self.status.published_at)
+
+    @property
+    def retired_at(self) -> datetime | None:
+        """Return the retirement timestamp normalized to UTC."""
+        return _utc_datetime(self.status.retired_at)
+
+    @property
+    def last_gc_at(self) -> datetime | None:
+        """Return the last image GC attempt timestamp normalized to UTC."""
+        return _utc_datetime(self.status.last_gc_at)
+
+    @property
+    def image_last_error(self) -> str:
+        """Return the last non-fatal image lifecycle error."""
+        return self.status.image_last_error
+
+
+def buildkit_build_label_hash(value: str) -> str:
+    """Return the Kubernetes-label-safe hash used by BuildKit selectors.
+
+    Returns
+    -------
+    str
+        Short SHA-256 hex digest used in BuildKit labels.
+    """
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
@@ -584,80 +583,303 @@ async def submit_buildkit_build(
     )
 
 
-async def get_buildkit_build(
+async def require_active_project_image(
     kube: Kube,
     *,
-    name: str,
+    spec: BuildKitBuildSpec,
     timeout: float,
-) -> BuildKitBuildRecord | None:
-    """Read one durable BuildKit build request.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    name : str
-        Build request name.
-    timeout : float
-        Maximum request budget in seconds.
+) -> BuildKitBuildRecord:
+    """Return the active image-bearing build for one exact project image identity.
 
     Returns
     -------
-    BuildKitBuildRecord | None
-        Build request, or `None` if it does not exist.
-    """
-    return await BUILDKIT_BUILD_RESOURCE.get(
-        kube,
-        name=name,
-        timeout=timeout,
-    )
-
-
-async def list_buildkit_builds(
-    kube: Kube,
-    *,
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-    missing_ok: bool = False,
-) -> list[BuildKitBuildRecord]:
-    """List durable BuildKit build requests.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum request budget in seconds.
-    labels : Mapping[str, str] | None, optional
-        Additional exact-match labels to merge over the BuildKit request label.
-    missing_ok : bool, optional
-        Whether a missing CRD should be treated as an empty list.
-
-    Returns
-    -------
-    list[BuildKitBuildRecord]
-        Validated BuildKit build requests.
+    BuildKitBuildRecord
+        Active successful build record matching the requested spec identity.
 
     Raises
     ------
     TimeoutError
-        If `timeout` is non-positive.
+        If lookup cannot start before `timeout` expires.
     OSError
-        If Kubernetes listing fails or returns malformed objects.
+        If no active image exists or lifecycle invariants are violated.
     """
     if timeout <= 0:
-        msg = "BuildKitBuild list timeout must be non-negative"
+        msg = "active project image lookup timeout must be non-negative"
         raise TimeoutError(msg)
-    try:
-        return await BUILDKIT_BUILD_RESOURCE.list(
-            kube,
-            labels=labels,
-            timeout=timeout,
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
+    await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    records = await BUILDKIT_BUILD_RESOURCE.list(
+        kube,
+        labels={
+            BUILDKIT_BUILD_REPO_LABEL: buildkit_build_label_hash(spec.repo_id),
+            BUILDKIT_BUILD_WORKTREE_LABEL: buildkit_build_label_hash(
+                spec.worktree_id
+            ),
+            BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "active",
+        },
+        timeout=deadline.remaining(),
+    )
+    records = [
+        record
+        for record in records
+        if record.spec.repo_id == spec.repo_id
+        and record.spec.worktree_id == spec.worktree_id
+    ]
+    active = [record for record in records if record.image_phase == "Active"]
+    matching = [record for record in active if record.config_id == spec.config_id]
+    if len(matching) > 1:
+        names = ", ".join(sorted(record.name for record in matching))
+        msg = (
+            "project image lifecycle invariant violated: multiple active "
+            f"{BUILDKIT_BUILD_KIND} records match current config "
+            f"{spec.config_id!r}: {names}"
         )
-    except OSError as err:
-        if missing_ok and _is_missing_api_resource(err):
-            return []
-        raise
+        raise OSError(msg)
+    if matching:
+        record = matching[0]
+        if (
+            record.spec.worktree_id != spec.worktree_id
+            or record.image != spec.image
+        ):
+            msg = (
+                "project image lifecycle invariant violated: active "
+                f"{BUILDKIT_BUILD_KIND} {record.name!r} matches config "
+                f"{spec.config_id!r} but does not match the current image identity"
+            )
+            raise OSError(msg)
+        expected_digest_ref = digest_ref(spec.image, record.digest)
+        if record.digest_ref != expected_digest_ref:
+            msg = (
+                "project image lifecycle invariant violated: active "
+                f"{BUILDKIT_BUILD_KIND} {record.name!r} points at "
+                f"{record.digest_ref!r}, expected {expected_digest_ref!r}"
+            )
+            raise OSError(msg)
+        return record
+
+    workload_label = f"{spec.repo_id}:{spec.worktree_id}"
+    if active:
+        detail = ", ".join(
+            sorted(f"{record.name}(config={record.config_id})" for record in active)
+        )
+        msg = (
+            f"active project image for {workload_label} is stale for current image "
+            f"config {spec.config_id!r}; run `bertrand build` before "
+            f"materializing the workload. Active records: {detail}"
+        )
+        raise OSError(msg)
+
+    msg = (
+        f"no active project image has been published for {workload_label}; run "
+        "`bertrand build` before materializing the workload"
+    )
+    raise OSError(msg)
+
+
+async def retire_project_images(
+    kube: Kube,
+    *,
+    repo_id: str,
+    worktree_id: str,
+    timeout: float,
+    exclude_names: Collection[str] = (),
+) -> list[BuildKitBuildRecord]:
+    """Retire active project images without deleting registry manifests.
+
+    Returns
+    -------
+    list[BuildKitBuildRecord]
+        Build records transitioned from active to retired.
+
+    Raises
+    ------
+    TimeoutError
+        If retirement cannot start before `timeout` expires.
+    """
+    if timeout <= 0:
+        msg = "project image retirement timeout must be non-negative"
+        raise TimeoutError(msg)
+    repo_id = _check_uuid(repo_id)
+    worktree_id = _check_uuid(worktree_id)
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
+    await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    records = await BUILDKIT_BUILD_RESOURCE.list(
+        kube,
+        labels={
+            BUILDKIT_BUILD_REPO_LABEL: buildkit_build_label_hash(repo_id),
+            BUILDKIT_BUILD_WORKTREE_LABEL: buildkit_build_label_hash(worktree_id),
+            BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "active",
+        },
+        timeout=deadline.remaining(),
+    )
+    now = datetime.now(UTC)
+    excluded = set(exclude_names)
+    retired: list[BuildKitBuildRecord] = []
+    for record in sorted(records, key=lambda item: item.name):
+        if (
+            record.spec.repo_id != repo_id
+            or record.spec.worktree_id != worktree_id
+            or record.image_phase != "Active"
+            or record.name in excluded
+        ):
+            continue
+        retired.append(
+            await transition_buildkit_image(
+                kube,
+                record=record,
+                image_phase="Retired",
+                retired_at=record.retired_at or now,
+                image_last_error="",
+                timeout=deadline.remaining(),
+            )
+        )
+    return retired
+
+
+async def gc_project_images(
+    kube: Kube,
+    *,
+    timeout: float,
+    grace_seconds: int = BUILDKIT_IMAGE_GC_GRACE_SECONDS,
+    limit: int = BUILDKIT_IMAGE_GC_LIMIT,
+) -> list[BuildKitBuildRecord]:
+    """Delete eligible retired project image manifests and mark builds collected.
+
+    Returns
+    -------
+    list[BuildKitBuildRecord]
+        Retired build records transitioned to collected.
+
+    Raises
+    ------
+    TimeoutError
+        If GC cannot start before `timeout` expires.
+    ValueError
+        If `grace_seconds` or `limit` is negative.
+    """
+    if timeout <= 0:
+        msg = "project image GC timeout must be non-negative"
+        raise TimeoutError(msg)
+    if grace_seconds < 0:
+        msg = "project image GC grace_seconds must be non-negative"
+        raise ValueError(msg)
+    if limit < 0:
+        msg = "project image GC limit must be non-negative"
+        raise ValueError(msg)
+    if limit == 0:
+        return []
+
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
+    await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    records = await BUILDKIT_BUILD_RESOURCE.list(
+        kube,
+        labels={BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "retired"},
+        timeout=deadline.remaining(),
+    )
+    active_records = await BUILDKIT_BUILD_RESOURCE.list(
+        kube,
+        labels={BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "active"},
+        timeout=deadline.remaining(),
+    )
+    live_refs = await _active_pod_image_refs(kube, timeout=deadline.remaining())
+    active_digest_refs = _active_record_digest_refs(active_records)
+    now = datetime.now(UTC)
+    collected: list[BuildKitBuildRecord] = []
+    for record in sorted(records, key=_image_gc_sort_key):
+        if len(collected) >= limit:
+            break
+        if not _image_gc_eligible(
+            record,
+            now=now,
+            grace=timedelta(seconds=grace_seconds),
+            live_refs=live_refs,
+            active_digest_refs=active_digest_refs,
+        ):
+            continue
+        try:
+            for image_ref in _record_digest_refs(record):
+                await delete_image_manifest(
+                    image_ref,
+                    timeout=deadline.remaining(),
+                )
+            collected.append(
+                await transition_buildkit_image(
+                    kube,
+                    record=record,
+                    image_phase="Collected",
+                    retired_at=record.retired_at,
+                    last_gc_at=now,
+                    image_last_error="",
+                    timeout=deadline.remaining(),
+                )
+            )
+        except (OSError, TimeoutError, ValueError) as err:
+            await transition_buildkit_image(
+                kube,
+                record=record,
+                image_phase="Retired",
+                retired_at=record.retired_at,
+                last_gc_at=now,
+                image_last_error=str(err),
+                timeout=deadline.remaining(),
+            )
+            continue
+    return collected
+
+
+async def next_project_image_gc_time(
+    kube: Kube,
+    *,
+    timeout: float,
+    grace_seconds: int = BUILDKIT_IMAGE_GC_GRACE_SECONDS,
+) -> datetime | None:
+    """Return the next time retired project images may be GC-eligible.
+
+    Returns
+    -------
+    datetime | None
+        Earliest GC eligibility time, or `None` when no retired images exist.
+
+    Raises
+    ------
+    TimeoutError
+        If scheduling lookup cannot start before `timeout` expires.
+    ValueError
+        If `grace_seconds` is negative.
+    """
+    if timeout <= 0:
+        msg = "project image GC scheduling timeout must be non-negative"
+        raise TimeoutError(msg)
+    if grace_seconds < 0:
+        msg = "project image GC scheduling grace_seconds must be non-negative"
+        raise ValueError(msg)
+
+    deadline = Deadline.from_timeout(
+        timeout, message="timeout must be non-negative"
+    )
+    await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    records = await BUILDKIT_BUILD_RESOURCE.list(
+        kube,
+        labels={BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "retired"},
+        timeout=deadline.remaining(),
+    )
+    if not records:
+        return None
+
+    now = datetime.now(UTC)
+    grace = timedelta(seconds=grace_seconds)
+    next_times = [
+        record.retired_at + grace if record.retired_at is not None else now
+        for record in records
+        if record.image_phase == "Retired"
+    ]
+    return min(next_times) if next_times else None
 
 
 async def has_active_buildkit_builds(
@@ -682,19 +904,29 @@ async def has_active_buildkit_builds(
     bool
         True when any current-generation or stale-generation matching request has
         not reached a terminal phase.
+
+    Raises
+    ------
+    OSError
+        If Kubernetes listing fails or returns malformed objects.
     """
     repo_id = _check_uuid(repo_id) if repo_id is not None else None
     labels = (
-        {BUILDKIT_BUILD_REPO_LABEL: _label_hash(repo_id)}
+        {BUILDKIT_BUILD_REPO_LABEL: buildkit_build_label_hash(repo_id)}
         if repo_id is not None
         else None
     )
-    for record in await list_buildkit_builds(
-        kube,
-        timeout=timeout,
-        labels=labels,
-        missing_ok=True,
-    ):
+    try:
+        records = await BUILDKIT_BUILD_RESOURCE.list(
+            kube,
+            timeout=timeout,
+            labels=labels,
+        )
+    except OSError as err:
+        if _is_missing_api_resource(err):
+            return False
+        raise
+    for record in records:
         if repo_id is not None and record.spec.repo_id != repo_id:
             continue
         if record.is_active:
@@ -716,16 +948,19 @@ async def active_buildkit_build_names(kube: Kube, *, timeout: float) -> set[str]
     -------
     set[str]
         Active BuildKit request names.
+
+    Raises
+    ------
+    OSError
+        If Kubernetes listing fails or returns malformed objects.
     """
-    return {
-        record.name
-        for record in await list_buildkit_builds(
-            kube,
-            timeout=timeout,
-            missing_ok=True,
-        )
-        if record.is_active
-    }
+    try:
+        records = await BUILDKIT_BUILD_RESOURCE.list(kube, timeout=timeout)
+    except OSError as err:
+        if _is_missing_api_resource(err):
+            return set()
+        raise
+    return {record.name for record in records if record.is_active}
 
 
 async def wait_buildkit_build(
@@ -772,7 +1007,11 @@ async def wait_buildkit_build(
         if remaining <= 0:
             msg = f"BuildKitBuild {name!r} did not finish before timeout"
             raise TimeoutError(msg)
-        record = await get_buildkit_build(kube, name=name, timeout=remaining)
+        record = await BUILDKIT_BUILD_RESOURCE.get(
+            kube,
+            name=name,
+            timeout=remaining,
+        )
         if record is None:
             msg = f"BuildKitBuild {name!r} disappeared while waiting"
             raise OSError(msg)
@@ -836,12 +1075,80 @@ async def patch_buildkit_build_status(
         by_alias=True,
         exclude_unset=True,
     )
-    return await BUILDKIT_BUILD_RESOURCE.patch_status(
+    record = await BUILDKIT_BUILD_RESOURCE.patch_status(
         kube,
         name=name,
         status=status,
         timeout=deadline.remaining(),
     )
+    if "image_phase" not in updates:
+        return record
+    return await _patch_buildkit_image_labels(
+        kube,
+        record=record,
+        timeout=deadline.remaining(),
+    )
+
+
+async def transition_buildkit_image(
+    kube: Kube,
+    *,
+    record: BuildKitBuildRecord,
+    image_phase: BuildKitImagePhase,
+    timeout: float,
+    retired_at: datetime | None = None,
+    last_gc_at: datetime | None = None,
+    image_last_error: str = "",
+) -> BuildKitBuildRecord:
+    """Patch one successful build record's image lifecycle state.
+
+    Returns
+    -------
+    BuildKitBuildRecord
+        Updated build record.
+
+    Raises
+    ------
+    TimeoutError
+        If the transition cannot start before `timeout` expires.
+    """
+    if timeout <= 0:
+        msg = "project image phase transition timeout must be non-negative"
+        raise TimeoutError(msg)
+    return await patch_buildkit_build_status(
+        kube,
+        name=record.name,
+        phase=record.status.phase,
+        generation=record.generation,
+        image_phase=image_phase,
+        retired_at=None if retired_at is None else retired_at.isoformat(),
+        last_gc_at=None if last_gc_at is None else last_gc_at.isoformat(),
+        image_last_error=image_last_error,
+        timeout=timeout,
+    )
+
+
+def worktree_identity(worktree: Path | str) -> str:
+    """Normalize a repository worktree path for image identity labels.
+
+    Returns
+    -------
+    str
+        Normalized repository-relative worktree identity.
+
+    Raises
+    ------
+    ValueError
+        If the worktree identity is absolute or escapes the repository root.
+    """
+    value = worktree.as_posix() if isinstance(worktree, Path) else str(worktree).strip()
+    if not value or value == ".":
+        return "."
+    path = Path(value)
+    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+        msg = f"repository worktree identity must be a relative subpath: {worktree!r}"
+        raise ValueError(msg)
+    return path.as_posix()
 
 
 def _buildkit_build_name(spec: BuildKitBuildSpec) -> str:
@@ -863,3 +1170,113 @@ def _normalize_worktree(worktree: str) -> str:
         msg = f"BuildKit PVC worktree must be a relative subpath: {worktree!r}"
         raise ValueError(msg)
     return path.as_posix()
+
+
+async def _patch_buildkit_image_labels(
+    kube: Kube,
+    *,
+    record: BuildKitBuildRecord,
+    timeout: float,
+) -> BuildKitBuildRecord:
+    phase = record.image_phase.lower() if record.image_phase != "Pending" else None
+    return await BUILDKIT_BUILD_RESOURCE.patch(
+        kube,
+        name=record.name,
+        body={"metadata": {"labels": {BUILDKIT_BUILD_IMAGE_PHASE_LABEL: phase}}},
+        timeout=timeout,
+        context=f"patch {BUILDKIT_BUILD_KIND} image lifecycle labels",
+    )
+
+
+def _validate_platform_images(
+    *,
+    platform_images: Mapping[str, str],
+    context: str,
+    allow_empty: bool = False,
+) -> dict[str, str]:
+    if not platform_images and not allow_empty:
+        msg = f"{context}: project image platform map cannot be empty"
+        raise ValueError(msg)
+    validated: dict[str, str] = {}
+    for raw_platform, raw_ref in platform_images.items():
+        platform = raw_platform.strip()
+        if not platform:
+            msg = f"{context}: project image platform cannot be empty"
+            raise ValueError(msg)
+        if platform in validated:
+            msg = f"{context}: duplicate project image platform {platform!r}"
+            raise ValueError(msg)
+        ref = raw_ref.strip()
+        if not DIGEST_REF_RE.fullmatch(ref):
+            msg = f"{context}: unsupported platform image ref {ref!r}"
+            raise ValueError(msg)
+        try:
+            digest_from_ref(ref)
+        except ValueError as err:
+            msg = f"{context}: {err}"
+            raise ValueError(msg) from err
+        validated[platform] = ref
+    return dict(sorted(validated.items()))
+
+
+async def _active_pod_image_refs(kube: Kube, *, timeout: float) -> frozenset[str]:
+    pods = await Pod.list(kube, timeout=timeout)
+    refs: set[str] = set()
+    for pod in pods:
+        if pod.is_active:
+            refs.update(pod.image_refs)
+    return frozenset(refs)
+
+
+def _active_record_digest_refs(
+    records: Sequence[BuildKitBuildRecord],
+) -> frozenset[str]:
+    refs: set[str] = set()
+    for record in records:
+        if record.image_phase == "Active":
+            refs.update(_record_digest_refs(record))
+    return frozenset(refs)
+
+
+def _record_digest_refs(record: BuildKitBuildRecord) -> tuple[str, ...]:
+    seen: set[str] = set()
+    refs: list[str] = []
+    for ref in (record.digest_ref, *record.platform_images.values()):
+        if ref and ref not in seen:
+            seen.add(ref)
+            refs.append(ref)
+    return tuple(refs)
+
+
+def _image_gc_eligible(
+    record: BuildKitBuildRecord,
+    *,
+    now: datetime,
+    grace: timedelta,
+    live_refs: frozenset[str],
+    active_digest_refs: frozenset[str],
+) -> bool:
+    retired_at = record.retired_at
+    if retired_at is None:
+        return False
+    if now - retired_at < grace:
+        return False
+    return set(_record_digest_refs(record)).isdisjoint(
+        active_digest_refs
+    ) and _record_image_refs(record).isdisjoint(live_refs)
+
+
+def _record_image_refs(record: BuildKitBuildRecord) -> frozenset[str]:
+    return frozenset((record.image, *_record_digest_refs(record)))
+
+
+def _image_gc_sort_key(record: BuildKitBuildRecord) -> tuple[datetime, str]:
+    return (record.retired_at or datetime.max.replace(tzinfo=UTC), record.name)
+
+
+def _utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

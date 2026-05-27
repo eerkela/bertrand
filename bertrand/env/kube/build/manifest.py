@@ -4,33 +4,29 @@ from __future__ import annotations
 
 import shlex
 import uuid
-from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
-from bertrand.env.kube.build.execution import run_observed_job
-from bertrand.env.kube.build.lifecycle import (
-    ProjectImagePublication,
-    record_project_image,
-)
 from bertrand.env.kube.build.refs import (
     DIGEST_REF_RE,
     tagged_repository,
     validate_tagged_ref,
 )
-from bertrand.env.kube.build.repository import IMAGES, ImageRepository
+from bertrand.env.kube.build.repository import (
+    IMAGE_REPOSITORY_SERVICE_ADDR,
+    image_repository_pull_ref,
+    image_repository_service_ref,
+)
 from bertrand.env.kube.capability.base import resolve_capability_secret
 from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
-    from bertrand.env.config.core import KubeName
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.build.request import ProjectImageIdentity
+    from bertrand.env.kube.build.request import BuildKitBuildSpec
 
 MANIFEST_JOB_IMAGE = "ghcr.io/regclient/regctl:v0.10.0-alpine"
 MANIFEST_JOB_LABEL = "bertrand.dev/manifest-job"
@@ -45,155 +41,114 @@ MANIFEST_AUTH_ENV = "DOCKER_AUTH_CONFIG"
 MANIFEST_AUTH_KEY = "value"
 
 
-@dataclass(frozen=True)
-class _ManifestPublicationIntent:
-    identity: ProjectImageIdentity
-    image: str
-    internal_service_ref: str
-    external_image: str | None
-    auth_id: str | None
-    worktree_id: str
-    repo_id: str
-    platform_refs: dict[str, str]
-    service_platform_refs: dict[str, str]
-    repository: ImageRepository
+type _ManifestPublication = tuple[str, str | None, dict[str, str]]
 
 
 async def _publish_project_image_manifest(
     kube: Kube,
     *,
-    identity: ProjectImageIdentity,
+    spec: BuildKitBuildSpec,
     platform_refs: Mapping[str, str],
     timeout: float,
-    external_image: str | None = None,
-    auth_id: KubeName | None = None,
-    repository: ImageRepository = IMAGES,
     job_observer: Callable[[Job], Awaitable[None]] | None = None,
-) -> ProjectImagePublication:
-    """Assemble, copy, and record one project image manifest.
+) -> _ManifestPublication:
+    """Assemble and optionally copy one project image manifest.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    identity : ProjectImageIdentity
-        Executed project image identity to record after manifest publication.
+    spec : BuildKitBuildSpec
+        Executed build spec to record after manifest publication.
     platform_refs : Mapping[str, str]
         Digest-pinned platform image refs returned by native BuildKit executions,
         keyed by OCI platform.
     timeout : float
         Maximum runtime budget in seconds. If infinite, wait indefinitely.
-    external_image : str | None, optional
-        Optional external mutable image reference to copy the manifest to.
-    auth_id : KubeName | None, optional
-        Secret capability ID containing Docker auth JSON for the external registry.
-    repository : ImageRepository, optional
-        Internal image repository that owns `image` and platform digest refs.
     job_observer : Callable[[Job], Awaitable[None]] | None, optional
         Callback invoked after the manifest assembly Job is created.
 
     Returns
     -------
-    ProjectImagePublication
-        Record-backed publication result for CLI output and downstream callers.
+    tuple[str, str | None, dict[str, str]]
+        Internal manifest digest ref, optional external digest ref, and
+        digest-pinned platform refs to record on the owning `BuildKitBuild`.
 
     Raises
     ------
     TimeoutError
         If the assembly Job cannot complete before `timeout`.
+    ValueError
+        If image refs, auth IDs, or platform refs are malformed.
     """
     if timeout <= 0:
         msg = "image manifest publish timeout must be non-negative"
         raise TimeoutError(msg)
-    intent = _manifest_publication_intent(
-        identity=identity,
-        platform_refs=platform_refs,
-        external_image=external_image,
-        auth_id=auth_id,
-        repository=repository,
+    image = validate_tagged_ref(spec.image, label="internal manifest target")
+    internal_service_ref = image_repository_service_ref(image)
+    if image_repository_pull_ref(internal_service_ref) != image:
+        msg = f"internal manifest target is not canonical: {image!r}"
+        raise ValueError(msg)
+    external_image = (
+        validate_tagged_ref(spec.external_image, label="external manifest target")
+        if spec.external_image is not None
+        else None
     )
+    auth_id = _check_kube_name(spec.auth_id) if spec.auth_id is not None else None
+    worktree_id = _check_uuid(spec.worktree_id)
+    repo_id = _check_uuid(spec.repo_id)
+    platform_refs = _validate_platform_refs(platform_refs)
+    service_platform_refs = {
+        platform: image_repository_service_ref(ref)
+        for platform, ref in platform_refs.items()
+    }
+
     deadline = Deadline.from_timeout(
         timeout,
         message="image manifest publish timeout must be non-negative",
     )
     auth_secret = await _resolve_auth_secret(
         kube,
-        intent=intent,
+        auth_id=auth_id,
+        worktree_id=worktree_id,
+        repo_id=repo_id,
         timeout=deadline.remaining(),
     )
     job = await _create_manifest_job(
         kube,
-        intent=intent,
+        image=internal_service_ref,
+        external_image=external_image,
+        service_platform_refs=service_platform_refs,
         auth_secret=auth_secret,
         timeout=deadline.remaining(),
     )
     logs = await _run_manifest_job(
         kube,
         job=job,
-        intent=intent,
+        image=image,
         timeout=deadline.remaining(),
         job_observer=job_observer,
     )
-    return await _record_manifest_publication(
-        kube,
-        intent=intent,
-        logs=logs,
-        timeout=deadline.remaining(),
-    )
-
-
-def _manifest_publication_intent(
-    *,
-    identity: ProjectImageIdentity,
-    platform_refs: Mapping[str, str],
-    external_image: str | None,
-    auth_id: KubeName | None,
-    repository: ImageRepository,
-) -> _ManifestPublicationIntent:
-    image = validate_tagged_ref(identity.image, label="internal manifest target")
-    internal_service_ref = repository.service_ref(image)
-    if repository.pull_ref(internal_service_ref) != image:
-        msg = f"internal manifest target is not canonical: {image!r}"
-        raise ValueError(msg)
-    external_image = (
-        validate_tagged_ref(external_image, label="external manifest target")
-        if external_image is not None
-        else None
-    )
-    if auth_id is not None:
-        auth_id = _check_kube_name(auth_id)
-    worktree_id = _check_uuid(identity.worktree_id)
-    repo_id = _check_uuid(identity.repo_id)
-    platform_refs = _validate_platform_refs(platform_refs, repository)
-    service_platform_refs = {
-        platform: repository.service_ref(ref) for platform, ref in platform_refs.items()
-    }
-    return _ManifestPublicationIntent(
-        identity=identity,
-        image=image,
-        internal_service_ref=internal_service_ref,
-        external_image=external_image,
-        auth_id=auth_id,
-        worktree_id=worktree_id,
-        repo_id=repo_id,
+    return _manifest_publication_result(
         platform_refs=platform_refs,
-        service_platform_refs=service_platform_refs,
-        repository=repository,
+        external_image=external_image,
+        logs=logs,
     )
 
 
 async def _create_manifest_job(
     kube: Kube,
     *,
-    intent: _ManifestPublicationIntent,
+    image: str,
+    service_platform_refs: Mapping[str, str],
+    external_image: str | None,
     auth_secret: str | None,
     timeout: float,
 ) -> Job:
     script = _manifest_script(
-        image=intent.internal_service_ref,
-        platform_refs=intent.service_platform_refs,
-        external_image=intent.external_image,
-        repository=intent.repository,
+        image=image,
+        platform_refs=service_platform_refs,
+        external_image=external_image,
     )
     return await Job.create(
         kube,
@@ -224,15 +179,14 @@ async def _run_manifest_job(
     kube: Kube,
     *,
     job: Job,
-    intent: _ManifestPublicationIntent,
+    image: str,
     timeout: float,
     job_observer: Callable[[Job], Awaitable[None]] | None,
 ) -> str:
-    return await run_observed_job(
+    return await job.run_observed(
         kube,
-        job,
         timeout=timeout,
-        failure_context=f"image manifest assembly failed for {intent.image!r}",
+        failure_context=f"image manifest assembly failed for {image!r}",
         log_heading="manifest Job logs",
         log_failure_label="manifest Job pod logs",
         tail_lines=MANIFEST_JOB_LOG_TAIL_LINES,
@@ -242,37 +196,25 @@ async def _run_manifest_job(
     )
 
 
-async def _record_manifest_publication(
-    kube: Kube,
+def _manifest_publication_result(
     *,
-    intent: _ManifestPublicationIntent,
+    platform_refs: Mapping[str, str],
+    external_image: str | None,
     logs: str,
-    timeout: float,
-) -> ProjectImagePublication:
-    internal_digest_ref = intent.repository.pull_ref(
+) -> _ManifestPublication:
+    internal_digest_ref = image_repository_pull_ref(
         _parse_sentinel(logs, MANIFEST_INTERNAL_SENTINEL)
     )
     external_digest_ref = (
         _parse_sentinel(logs, MANIFEST_EXTERNAL_SENTINEL)
-        if intent.external_image is not None
+        if external_image is not None
         else None
     )
-    record = await record_project_image(
-        kube,
-        identity=intent.identity,
-        image_digest_ref=internal_digest_ref,
-        platform_images=MappingProxyType(dict(intent.platform_refs)),
-        timeout=timeout,
-    )
-    return ProjectImagePublication(
-        record=record,
-        external_digest_ref=external_digest_ref,
-    )
+    return internal_digest_ref, external_digest_ref, dict(platform_refs)
 
 
 def _validate_platform_refs(
     platform_refs: Mapping[str, str],
-    repository: ImageRepository,
 ) -> dict[str, str]:
     if not platform_refs:
         msg = "image manifest assembly requires at least one platform result"
@@ -290,7 +232,7 @@ def _validate_platform_refs(
         if not DIGEST_REF_RE.fullmatch(digest_ref):
             msg = f"platform image ref must include a sha256 digest: {digest_ref!r}"
             raise ValueError(msg)
-        repository.service_ref(digest_ref)
+        image_repository_service_ref(digest_ref)
         validated[platform] = digest_ref
     return dict(sorted(validated.items()))
 
@@ -298,18 +240,19 @@ def _validate_platform_refs(
 async def _resolve_auth_secret(
     kube: Kube,
     *,
-    intent: _ManifestPublicationIntent,
+    auth_id: str | None,
+    worktree_id: str,
+    repo_id: str,
     timeout: float,
 ) -> str | None:
-    auth_id = intent.auth_id
     if auth_id is None:
         return None
     secret = await resolve_capability_secret(
         kube,
         kind="secret",
         capability_id=auth_id,
-        worktree_id=intent.worktree_id,
-        repo_id=intent.repo_id,
+        worktree_id=worktree_id,
+        repo_id=repo_id,
         required=True,
         timeout=timeout,
     )
@@ -340,9 +283,8 @@ def _manifest_script(
     image: str,
     platform_refs: Mapping[str, str],
     external_image: str | None,
-    repository: ImageRepository,
 ) -> str:
-    host = f"reg={repository.service_addr},tls=disabled"
+    host = f"reg={IMAGE_REPOSITORY_SERVICE_ADDR},tls=disabled"
     internal_repo = tagged_repository(image)
     lines = [
         "set -eu",

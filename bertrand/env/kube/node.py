@@ -15,7 +15,6 @@ from bertrand.env.git import Deadline
 from .api._helpers import _is_too_many_requests
 from .api.metadata import KubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
-from .api.view import TaintView
 from .pod import Pod
 
 if TYPE_CHECKING:
@@ -46,6 +45,25 @@ NODE_ARCH_ALIASES = {
 
 
 type TaintEffect = Literal["NoSchedule", "PreferNoSchedule", "NoExecute"]
+
+
+@dataclass(frozen=True)
+class TaintView:
+    """Read-only Kubernetes Node taint view.
+
+    Parameters
+    ----------
+    key : str
+        Taint key.
+    effect : str
+        Taint effect, such as `"NoSchedule"`.
+    value : str
+        Optional taint value.
+    """
+
+    key: str
+    effect: str
+    value: str = ""
 
 
 @dataclass(frozen=True)

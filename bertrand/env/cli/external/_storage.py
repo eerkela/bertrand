@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, cast
 
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.ceph.capacity import (
+    STORAGE_ACTION_RESOURCE,
     STORAGE_NODE_REPORT_MAX_AGE_SECONDS,
-    CephStoragePlanner,
-    list_storage_actions,
+    _storage_action_counts,
     read_storage_state,
 )
 from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
@@ -89,7 +89,6 @@ class StorageCliSnapshot:
         dict[str, object]
             JSON-serializable storage status payload.
         """
-        planner = CephStoragePlanner()
         return {
             "policy": self.policy.spec.model_dump(mode="json"),
             "status": (
@@ -97,28 +96,28 @@ class StorageCliSnapshot:
                 if self.policy.policy_status
                 else None
             ),
-            "action_counts": planner.action_counts(self.actions),
+            "action_counts": _storage_action_counts(self.actions),
             "reservations": [
                 {
                     "name": reservation.name,
-                    "spec": reservation.spec_payload(),
-                    "status": reservation.status_payload(),
+                    "spec": _reservation_spec_payload(reservation),
+                    "status": _reservation_status_payload(reservation),
                 }
                 for reservation in self.reservations
             ],
             "reports": [
                 {
                     "name": report.name,
-                    "spec": report.spec_payload(),
-                    "status": report.status_payload(),
+                    "spec": _node_report_spec_payload(report),
+                    "status": node_report_status_payload(report),
                 }
                 for report in self.reports
             ],
             "osds": [
                 {
                     "name": osd.name,
-                    "spec": osd.spec_payload(),
-                    "status": osd.status_payload(),
+                    "spec": _osd_spec_payload(osd),
+                    "status": _osd_status_payload(osd),
                 }
                 for osd in self.osds
             ],
@@ -139,24 +138,24 @@ class StorageCliSnapshot:
             "reservations": [
                 {
                     "name": reservation.name,
-                    "spec": reservation.spec_payload(),
-                    "status": reservation.status_payload(),
+                    "spec": _reservation_spec_payload(reservation),
+                    "status": _reservation_status_payload(reservation),
                 }
                 for reservation in self.reservations
             ],
             "reports": [
                 {
                     "name": report.name,
-                    "spec": report.spec_payload(),
-                    "status": report.status_payload(),
+                    "spec": _node_report_spec_payload(report),
+                    "status": node_report_status_payload(report),
                 }
                 for report in self.reports
             ],
             "osds": [
                 {
                     "name": osd.name,
-                    "spec": osd.spec_payload(),
-                    "status": osd.status_payload(),
+                    "spec": _osd_spec_payload(osd),
+                    "status": _osd_status_payload(osd),
                 }
                 for osd in self.osds
             ],
@@ -201,7 +200,11 @@ async def storage_cli_snapshot(
         Storage records and CSI readiness in command scope.
     """
     policy = await read_storage_state(kube, timeout=timeout)
-    actions = await list_storage_actions(kube, timeout=timeout)
+    actions = await STORAGE_ACTION_RESOURCE.list(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        timeout=timeout,
+    )
     reservations = sorted(
         policy.status.reservations.values(),
         key=lambda item: item.name,
@@ -219,6 +222,105 @@ async def storage_cli_snapshot(
         reports=reports,
         osds=osds,
         csi=await storage_csi_status(kube),
+    )
+
+
+def node_report_status_payload(report: CephStorageNodeReport) -> dict[str, object]:
+    """Return the stable JSON status payload for a storage node report.
+
+    Returns
+    -------
+    dict[str, object]
+        JSON-serializable node-report status.
+    """
+    return report.model_dump(
+        mode="json",
+        include={
+            "free_bytes",
+            "path",
+            "lvm_free_bytes",
+            "lvm_pvs",
+            "lvm_pv_inventory",
+            "loop_fallback_active",
+            "heartbeat_at",
+            "last_error",
+        },
+    )
+
+
+def _reservation_spec_payload(
+    reservation: CephStorageReservation,
+) -> dict[str, object]:
+    return reservation.model_dump(
+        mode="json",
+        include={
+            "owner_kind",
+            "owner_name",
+            "request_id",
+            "requested_bytes",
+            "reason",
+            "expires_at",
+        },
+    )
+
+
+def _reservation_status_payload(
+    reservation: CephStorageReservation,
+) -> dict[str, object]:
+    return reservation.model_dump(
+        mode="json",
+        include={
+            "phase",
+            "ready_at",
+            "released_at",
+            "observed_free_bytes",
+            "last_error",
+        },
+    )
+
+
+def _node_report_spec_payload(report: CephStorageNodeReport) -> dict[str, object]:
+    return report.model_dump(mode="json", include={"node_name", "host_id"})
+
+
+def _osd_spec_payload(osd: CephStorageOSD) -> dict[str, object]:
+    return osd.model_dump(
+        mode="json",
+        include={
+            "origin",
+            "node_name",
+            "host_id",
+            "pv_name",
+            "pv_uuid",
+            "pv_device",
+            "lv_name",
+            "lv_path",
+            "loop_file",
+            "loop_device",
+            "block_path",
+            "csi_volume_id",
+            "persistent_volume_name",
+            "persistent_volume_claim_namespace",
+            "persistent_volume_claim_name",
+            "device_set_name",
+            "target_bytes",
+        },
+    )
+
+
+def _osd_status_payload(osd: CephStorageOSD) -> dict[str, object]:
+    return osd.model_dump(
+        mode="json",
+        include={
+            "phase",
+            "observed_bytes",
+            "ceph_osd_id",
+            "created_at",
+            "phase_changed_at",
+            "last_seen_at",
+            "retired_at",
+            "last_error",
+        },
     )
 
 

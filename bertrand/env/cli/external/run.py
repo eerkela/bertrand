@@ -22,7 +22,6 @@ from bertrand.env.cli.external._helper import (
 from bertrand.env.cli.external.build import _publish_project_image
 from bertrand.env.config.bertrand import Bertrand, BertrandModel
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
-from bertrand.env.kube.build.execution import job_pod_diagnostics
 from bertrand.env.kube.cronjob import CronJob
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.pod import Pod
@@ -93,11 +92,16 @@ async def bertrand_run(
             "attach"
         )
         raise ValueError(msg)
-    async with _project_command_context(target, timeout=INFINITY) as context:
+    async with _project_command_context(target, timeout=INFINITY) as (
+        kube,
+        _repo,
+        _worktree,
+        config,
+    ):
         await run_configured_project(
-            context.kube,
-            config=context.config,
-            repo_id=context.config.repo.repo_id,
+            kube,
+            config=config,
+            repo_id=config.repo.repo_id,
             detach=detach,
             tty=tty,
             args=args,
@@ -178,7 +182,7 @@ async def run_configured_project(
         quiet=detach,
         ensure_crds=ensure_build_crds,
     )
-    image_ref = publication.record.digest_ref
+    image_ref = publication.digest_ref
     interactive = attach_mode == "tty"
 
     if topology == "job":
@@ -324,27 +328,29 @@ async def _run_job_foreground(
             explicit_tty=explicit_tty,
         )
         if attached:
-            await _wait_job_complete(kube, job)
+            await _wait_foreground_job_complete(kube, job)
             return
-    follower = _WorkloadLogFollower(
-        kube,
-        source=lambda remaining: job.pods(kube, timeout=remaining),
+    printed: dict[str, str] = {}
+
+    async def source(remaining: float) -> Sequence[Pod]:
+        return await job.pods(kube, timeout=remaining)
+
+    task = asyncio.create_task(
+        _follow_workload_logs(kube, source=source, printed=printed)
     )
-    await follower.start()
     try:
-        await _wait_job_complete(kube, job)
+        await _wait_foreground_job_complete(kube, job)
     finally:
-        await follower.poll()
-        await follower.close()
+        await _poll_workload_logs(kube, source=source, printed=printed)
+        await _cancel_task(task)
 
 
-async def _wait_job_complete(kube: Kube, job: Job) -> None:
+async def _wait_foreground_job_complete(kube: Kube, job: Job) -> None:
     try:
         await job.wait_complete(kube, timeout=INFINITY)
     except (OSError, TimeoutError) as err:
-        diagnostics = await job_pod_diagnostics(
+        diagnostics = await job.pod_diagnostics(
             kube,
-            job,
             timeout=_RUN_LOG_READ_TIMEOUT_SECONDS,
             failure_label="workload Job pod status diagnostics",
         )
@@ -439,16 +445,92 @@ async def _run_deployment_foreground(
         )
         if attached:
             return
-    follower = _WorkloadLogFollower(
-        kube,
-        source=lambda remaining: Pod.list(
+    printed: dict[str, str] = {}
+
+    async def source(remaining: float) -> Sequence[Pod]:
+        return await Pod.list(
             kube,
             namespaces=(BERTRAND_NAMESPACE,),
             labels=deployment.selector,
             timeout=remaining,
-        ),
+        )
+
+    task = asyncio.create_task(
+        _follow_workload_logs(kube, source=source, printed=printed)
     )
-    await follower.follow_forever()
+    try:
+        while True:
+            await asyncio.sleep(_RUN_LOG_POLL_SECONDS)
+    finally:
+        await _cancel_task(task)
+
+
+async def _follow_workload_logs(
+    kube: Kube,
+    *,
+    source: _PodSource,
+    printed: dict[str, str],
+) -> None:
+    while True:
+        await _poll_workload_logs(kube, source=source, printed=printed)
+        await asyncio.sleep(_RUN_LOG_POLL_SECONDS)
+
+
+async def _poll_workload_logs(
+    kube: Kube,
+    *,
+    source: _PodSource,
+    printed: dict[str, str],
+) -> None:
+    try:
+        pods = await source(_RUN_LOG_READ_TIMEOUT_SECONDS)
+        include_headers = len(pods) > 1
+        for pod in pods:
+            log = await pod.logs(
+                kube,
+                timeout=_RUN_LOG_READ_TIMEOUT_SECONDS,
+                tail_lines=_RUN_LOG_TAIL_LINES,
+            )
+            _print_new_workload_log(
+                printed,
+                pod,
+                log,
+                include_header=include_headers,
+            )
+    except (OSError, TimeoutError, ValueError):
+        return
+
+
+def _print_new_workload_log(
+    printed: dict[str, str],
+    pod: Pod,
+    log: str,
+    *,
+    include_header: bool,
+) -> None:
+    log = log.strip()
+    if not log:
+        return
+    key = f"{pod.namespace}/{pod.name}"
+    previous = printed.get(key, "")
+    if log == previous:
+        return
+    if previous and log.startswith(previous):
+        chunk = log[len(previous) :].lstrip("\n")
+    else:
+        chunk = log
+    printed[key] = log
+    if not chunk:
+        return
+    if include_header:
+        print(f"--- {key} ---", flush=True)
+    print(chunk, flush=True)
+
+
+async def _cancel_task(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 async def _try_attach_deployment(
@@ -547,152 +629,60 @@ async def _attach_pod(
         stderr=True,
         tty=True,
     )
-    _TTYAttachSession(stream).run()
+    _pump_tty_stream(stream)
 
 
-class _TTYAttachSession:
-    """Bridge a Kubernetes attach websocket to the local terminal.
+def _pump_tty_stream(stream: Any) -> None:
+    stdin_fd = sys.stdin.fileno()
+    stdout_fd = sys.stdout.fileno()
+    stderr_fd = sys.stderr.fileno()
 
-    Parameters
-    ----------
-    stream : Any
-        Kubernetes websocket client returned by the stream helper.
-    """
-
-    def __init__(self, stream: Any) -> None:
-        self._stream = stream
-        self._stdin_fd = sys.stdin.fileno()
-        self._stdout_fd = sys.stdout.fileno()
-        self._stderr_fd = sys.stderr.fileno()
-
-    def run(self) -> None:
-        """Pump local terminal I/O until the Kubernetes stream closes."""
-        old_terminal = termios.tcgetattr(self._stdin_fd)
-        old_sigwinch = signal.getsignal(signal.SIGWINCH)
-        try:
-            tty_module.setraw(self._stdin_fd)
-            signal.signal(signal.SIGWINCH, self._resize)
-            self._resize()
-            while self._stream.is_open():
-                self._stream.update(timeout=0)
-                self._drain_output()
-                try:
-                    readable, _, _ = select.select(
-                        (self._stdin_fd,),
-                        (),
-                        (),
-                        _TTY_PUMP_SECONDS,
-                    )
-                except InterruptedError:
-                    continue
-                if self._stdin_fd not in readable:
-                    continue
-                data = os.read(self._stdin_fd, 4096)
-                if not data:
-                    break
-                self._stream.write_channel(_STDIN_CHANNEL, data)
-            self._stream.update(timeout=0)
-            self._drain_output()
-        finally:
-            with contextlib.suppress(*_TTY_STREAM_ERRORS):
-                self._stream.close()
-            signal.signal(signal.SIGWINCH, old_sigwinch)
-            termios.tcsetattr(self._stdin_fd, termios.TCSADRAIN, old_terminal)
-
-    def _resize(self, _signum: int | None = None, _frame: object | None = None) -> None:
+    def resize(_signum: int | None = None, _frame: object | None = None) -> None:
         size = shutil.get_terminal_size(fallback=(80, 24))
         payload = json.dumps({"Width": size.columns, "Height": size.lines}).encode()
         with contextlib.suppress(*_TTY_STREAM_ERRORS):
-            self._stream.write_channel(_RESIZE_CHANNEL, payload)
+            stream.write_channel(_RESIZE_CHANNEL, payload)
 
-    def _drain_output(self) -> None:
-        self._write_channel(_STDOUT_CHANNEL, self._stdout_fd)
-        self._write_channel(_STDERR_CHANNEL, self._stderr_fd)
-
-    def _write_channel(self, channel: int, fd: int) -> None:
-        data = self._stream.read_channel(channel)
+    def write_channel(channel: int, fd: int) -> None:
+        data = stream.read_channel(channel)
         if not data:
             return
         if isinstance(data, str):
             data = data.encode("utf-8", errors="replace")
         os.write(fd, data)
 
+    def drain_output() -> None:
+        write_channel(_STDOUT_CHANNEL, stdout_fd)
+        write_channel(_STDERR_CHANNEL, stderr_fd)
 
-class _WorkloadLogFollower:
-    """Best-effort foreground log follower for workload Pods.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    source : Callable[[float], Awaitable[Sequence[Pod]]]
-        Async callback that lists the Pods whose logs should be streamed.
-    """
-
-    def __init__(self, kube: Kube, *, source: _PodSource) -> None:
-        self._kube = kube
-        self._source = source
-        self._task: asyncio.Task[None] | None = None
-        self._printed: dict[str, str] = {}
-
-    async def start(self) -> None:
-        """Start log following in the background."""
-        if self._task is None:
-            self._task = asyncio.create_task(self._run())
-
-    async def follow_forever(self) -> None:
-        """Follow logs until the caller interrupts the process."""
-        await self.start()
-        try:
-            while True:
-                await asyncio.sleep(_RUN_LOG_POLL_SECONDS)
-        finally:
-            await self.close()
-
-    async def close(self) -> None:
-        """Stop background log following."""
-        task = self._task
-        self._task = None
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-
-    async def poll(self) -> None:
-        """Read and print one best-effort log snapshot."""
-        try:
-            pods = await self._source(_RUN_LOG_READ_TIMEOUT_SECONDS)
-            include_headers = len(pods) > 1
-            for pod in pods:
-                log = await pod.logs(
-                    self._kube,
-                    timeout=_RUN_LOG_READ_TIMEOUT_SECONDS,
-                    tail_lines=_RUN_LOG_TAIL_LINES,
+    old_terminal = termios.tcgetattr(stdin_fd)
+    old_sigwinch = signal.getsignal(signal.SIGWINCH)
+    try:
+        tty_module.setraw(stdin_fd)
+        signal.signal(signal.SIGWINCH, resize)
+        resize()
+        while stream.is_open():
+            stream.update(timeout=0)
+            drain_output()
+            try:
+                readable, _, _ = select.select(
+                    (stdin_fd,),
+                    (),
+                    (),
+                    _TTY_PUMP_SECONDS,
                 )
-                self._print_new(pod, log, include_header=include_headers)
-        except (OSError, TimeoutError, ValueError):
-            return
-
-    async def _run(self) -> None:
-        while True:
-            await self.poll()
-            await asyncio.sleep(_RUN_LOG_POLL_SECONDS)
-
-    def _print_new(self, pod: Pod, log: str, *, include_header: bool) -> None:
-        log = log.strip()
-        if not log:
-            return
-        key = f"{pod.namespace}/{pod.name}"
-        previous = self._printed.get(key, "")
-        if log == previous:
-            return
-        if previous and log.startswith(previous):
-            chunk = log[len(previous) :].lstrip("\n")
-        else:
-            chunk = log
-        self._printed[key] = log
-        if not chunk:
-            return
-        if include_header:
-            print(f"--- {key} ---", flush=True)
-        print(chunk, flush=True)
+            except InterruptedError:
+                continue
+            if stdin_fd not in readable:
+                continue
+            data = os.read(stdin_fd, 4096)
+            if not data:
+                break
+            stream.write_channel(_STDIN_CHANNEL, data)
+        stream.update(timeout=0)
+        drain_output()
+    finally:
+        with contextlib.suppress(*_TTY_STREAM_ERRORS):
+            stream.close()
+        signal.signal(signal.SIGWINCH, old_sigwinch)
+        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_terminal)

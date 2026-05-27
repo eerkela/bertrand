@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import Config, _check_uuid
@@ -23,31 +22,12 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 
-@dataclass(frozen=True)
-class LiveProjectContext:
-    """Active project context for commands running inside a dev Pod.
-
-    Parameters
-    ----------
-    kube : Kube
-        In-cluster Kubernetes API client for the dev Pod service account.
-    config : Config
-        Active parsed project configuration.
-    repo_id : str
-        Stable repository UUID injected into the workload environment.
-    """
-
-    kube: Kube
-    config: Config
-    repo_id: str
-
-
 @asynccontextmanager
 async def live_project_context(
     command: str,
     *,
     timeout: float = INFINITY,
-) -> AsyncIterator[LiveProjectContext]:
+) -> AsyncIterator[tuple[Kube, Config, str]]:
     """Open the current dev Pod's project config using in-cluster credentials.
 
     Parameters
@@ -59,8 +39,8 @@ async def live_project_context(
 
     Yields
     ------
-    LiveProjectContext
-        In-cluster Kubernetes client and active config context.
+    tuple[Kube, Config, str]
+        In-cluster Kubernetes client, active config context, and repository UUID.
 
     Raises
     ------
@@ -79,7 +59,7 @@ async def live_project_context(
             repo=GitRepository(git_dir=PROJECT_MOUNT / ".git"),
             timeout=timeout,
         ) as config:
-            yield LiveProjectContext(kube=kube, config=config, repo_id=repo_id)
+            yield kube, config, repo_id
 
 
 @asynccontextmanager

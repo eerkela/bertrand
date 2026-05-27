@@ -36,11 +36,11 @@ def bertrand_run(args: argparse.Namespace) -> None:
 
 
 async def _bertrand_run_async(args: argparse.Namespace) -> None:
-    async with live_project_context("run") as context:
+    async with live_project_context("run") as (kube, config, repo_id):
         await run_configured_project(
-            context.kube,
-            config=context.config,
-            repo_id=context.repo_id,
+            kube,
+            config=config,
+            repo_id=repo_id,
             detach=args.detach,
             tty=args.tty,
             args=tuple(args.args),

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from bertrand.env.build_args import normalize_image_build_args
@@ -12,210 +11,28 @@ from bertrand.env.config.bertrand import Bertrand, BertrandModel, project_image_
 from bertrand.env.config.conan import ConanConfig, ConanConfigModel
 from bertrand.env.config.core import Config, _check_uuid
 from bertrand.env.config.python import PyProject
-from bertrand.env.git import INFINITY, Deadline, ensure_worktree_id
+from bertrand.env.git import ensure_worktree_id
 from bertrand.env.kube.build.containerfile import project_containerfile
-from bertrand.env.kube.build.lifecycle import (
-    PROJECT_IMAGE_RESOURCE,
-    ProjectImagePublication,
-    get_project_image,
-    worktree_identity,
-)
-from bertrand.env.kube.build.repository import IMAGES
+from bertrand.env.kube.build.repository import image_repository_ref
 from bertrand.env.kube.build.request import (
-    BUILDKIT_BUILD_RESOURCE,
-    BuildKitBuildRecord,
     BuildKitBuildSpec,
-    ProjectImageIdentity,
-    submit_buildkit_build,
-    wait_buildkit_build,
+    worktree_identity,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
-    from pathlib import Path
+    from collections.abc import Mapping, Sequence
 
     from bertrand.env.config.core import KubeName
-    from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.workload.capability import CapabilityRequest
 
 
-@dataclass(frozen=True)
-class ProjectImageBuild:
-    """Cluster-native image build request for the configured project image.
-
-    Parameters
-    ----------
-    spec : BuildKitBuildSpec
-        Durable project image build request submitted to the BuildKit controller.
-    """
-
-    spec: BuildKitBuildSpec
-
-    @property
-    def identity(self) -> ProjectImageIdentity:
-        """Return the stable project image publication identity.
-
-        Returns
-        -------
-        ProjectImageIdentity
-            Identity shared by the request, manifest, and lifecycle record layers.
-        """
-        return self.spec.identity
-
-    async def publish(
-        self,
-        kube: Kube,
-        *,
-        timeout: float = INFINITY,
-        external_image: str | None = None,
-        auth_id: KubeName | None = None,
-        on_update: Callable[[BuildKitBuildRecord], Awaitable[None]] | None = None,
-        ensure_crds: bool = True,
-    ) -> ProjectImagePublication:
-        """Publish this project image manifest and update its lifecycle record.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float, optional
-            Maximum runtime budget in seconds. If infinite, wait indefinitely.
-        external_image : str | None, optional
-            Optional external image reference to copy the assembled manifest to.
-        auth_id : KubeName | None, optional
-            Secret capability ID containing Docker auth JSON for the external
-            registry.
-        on_update : Callable[[BuildKitBuildRecord], Awaitable[None]] | None, optional
-            Async callback invoked when the durable request status changes.
-        ensure_crds : bool, optional
-            Whether to converge the BuildKit/image lifecycle CRDs before submission.
-            Disable only from in-cluster dev commands whose service account should
-            not own CRD-definition writes.
-
-        Returns
-        -------
-        ProjectImagePublication
-            Publication result backed by the active `BertrandImage` record.
-
-        Raises
-        ------
-        TimeoutError
-            If CRD convergence, image publication, or record updates exceed
-            `timeout`.
-        OSError
-            If the durable build request fails or its lifecycle record is missing.
-        """
-        if timeout <= 0:
-            msg = "project image publish timeout must be non-negative"
-            raise TimeoutError(msg)
-        deadline = Deadline.from_timeout(
-            timeout, message="timeout must be non-negative"
-        )
-        request = await self.submit(
-            kube,
-            timeout=deadline.remaining(),
-            external_image=external_image,
-            auth_id=auth_id,
-            ensure_crds=ensure_crds,
-        )
-        request = await wait_buildkit_build(
-            kube,
-            name=request.name,
-            timeout=deadline.remaining(),
-            on_update=on_update,
-        )
-        status = request.status
-        if status.phase != "Succeeded":
-            detail = status.message or f"BuildKitBuild {request.name!r} failed"
-            logs = status.log_excerpt.strip()
-            if logs:
-                detail = f"{detail}\n\nBuild logs:\n{logs}"
-            raise OSError(detail)
-        if not status.record_name:
-            msg = f"BuildKitBuild {request.name!r} succeeded without a record name"
-            raise OSError(msg)
-        record = await get_project_image(
-            kube,
-            name=status.record_name,
-            timeout=deadline.remaining(),
-        )
-        if record is None:
-            msg = (
-                f"BuildKitBuild {request.name!r} recorded missing project image "
-                f"{status.record_name!r}"
-            )
-            raise OSError(msg)
-        return ProjectImagePublication(
-            record=record,
-            external_digest_ref=status.external_digest_ref or None,
-        )
-
-    async def submit(
-        self,
-        kube: Kube,
-        *,
-        timeout: float = INFINITY,
-        external_image: str | None = None,
-        auth_id: KubeName | None = None,
-        ensure_crds: bool = True,
-    ) -> BuildKitBuildRecord:
-        """Submit this project image as a durable BuildKit request.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float, optional
-            Maximum submission budget in seconds. If infinite, wait indefinitely.
-        external_image : str | None, optional
-            Optional external image reference to copy the assembled manifest to.
-        auth_id : KubeName | None, optional
-            Secret capability ID containing Docker auth JSON for the external
-            registry.
-        ensure_crds : bool, optional
-            Whether to converge the BuildKit/image lifecycle CRDs before submission.
-
-        Returns
-        -------
-        BuildKitBuildRecord
-            Submitted durable build request.
-
-        Raises
-        ------
-        TimeoutError
-            If CRD convergence or request creation exceeds `timeout`.
-        """
-        if timeout <= 0:
-            msg = "project image submit timeout must be non-negative"
-            raise TimeoutError(msg)
-        deadline = Deadline.from_timeout(
-            timeout, message="timeout must be non-negative"
-        )
-        if ensure_crds:
-            await BUILDKIT_BUILD_RESOURCE.ensure_crd(
-                kube,
-                timeout=deadline.remaining(),
-            )
-            await PROJECT_IMAGE_RESOURCE.ensure_crd(
-                kube,
-                timeout=deadline.remaining(),
-            )
-        spec = self.spec.with_external_publication(
-            external_image=external_image,
-            auth_id=auth_id,
-        )
-        return await submit_buildkit_build(
-            kube,
-            spec=spec,
-            timeout=deadline.remaining(),
-        )
-
-
-def project_image_build(
+def project_image_spec(
     config: Config,
     *,
     repo_id: str,
-) -> ProjectImageBuild:
+    external_image: str | None = None,
+    auth_id: KubeName | None = None,
+) -> BuildKitBuildSpec:
     """Translate project image config into a BuildKit build contract.
 
     Parameters
@@ -224,10 +41,14 @@ def project_image_build(
         Active project configuration context.
     repo_id : str
         Stable repository UUID.
+    external_image : str | None, optional
+        Optional external image ref for manifest publication.
+    auth_id : KubeName | None, optional
+        Optional Secret capability ID for external registry auth.
 
     Returns
     -------
-    ProjectImageBuild
+    BuildKitBuildSpec
         Build request containing stable identity, target image, and BuildKit execution
         contract.
 
@@ -260,9 +81,9 @@ def project_image_build(
     image_config = bertrand.image
 
     worktree = worktree_identity(config.worktree)
-    worktree_id = project_worktree_id(config.root)
+    worktree_id = ensure_worktree_id(config.root)
     oci_tag = project_image_tag(pyproject.project.version)
-    image = IMAGES.ref(
+    image = image_repository_ref(
         "/".join(
             (
                 "projects",
@@ -284,41 +105,22 @@ def project_image_build(
         conan_config=config.get(ConanConfig),
         dockerfile=dockerfile,
     )
-    identity = ProjectImageIdentity(
+    return BuildKitBuildSpec(
         repo_id=repo_id,
         worktree=worktree,
         worktree_id=worktree_id,
         config_id=config_id,
         image=image,
+        dockerfile=dockerfile,
+        build_args=_build_args(image_config.args),
+        target=image_config.target,
+        pull=image_config.pull,
+        secrets=_capability_requests(image_config.secrets),
+        ssh=_capability_requests(image_config.ssh),
+        devices=_capability_requests(image_config.devices),
+        external_image=external_image,
+        auth_id=auth_id,
     )
-    return ProjectImageBuild(
-        spec=BuildKitBuildSpec.from_identity(
-            identity=identity,
-            dockerfile=dockerfile,
-            build_args=_build_args(image_config.args),
-            target=image_config.target,
-            pull=image_config.pull,
-            secrets=_capability_requests(image_config.secrets),
-            ssh=_capability_requests(image_config.ssh),
-            devices=_capability_requests(image_config.devices),
-        )
-    )
-
-
-def project_worktree_id(worktree_root: Path) -> str:
-    """Return the persistent worktree ID for one project worktree.
-
-    Parameters
-    ----------
-    worktree_root : Path
-        Absolute or relative checked-out worktree root.
-
-    Returns
-    -------
-    str
-        Stable UUID hex string stored at ``.bertrand/worktree_id``.
-    """
-    return ensure_worktree_id(worktree_root)
 
 
 def _build_args(args: Mapping[str, object]) -> dict[str, str]:

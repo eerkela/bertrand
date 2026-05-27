@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
-import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -19,8 +17,6 @@ from bertrand.env.kube.custom_object import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from bertrand.env.kube.api.client import Kube
 
 DEV_GROUP = "dev.bertrand.dev"
@@ -174,7 +170,7 @@ class CodeOpenRecord(BaseModel):
         return self.metadata.namespace
 
 
-_CODE_OPEN_RESOURCE = CustomObjectResource[CodeOpenRecord](
+CODE_OPEN_RESOURCE = CustomObjectResource[CodeOpenRecord](
     group=DEV_GROUP,
     version=DEV_VERSION,
     kind=CODE_OPEN_KIND,
@@ -201,215 +197,6 @@ _CODE_OPEN_RESOURCE = CustomObjectResource[CodeOpenRecord](
     status_schema_overrides={"properties": {"phase": {"type": "string"}}},
     default_namespace=BERTRAND_NAMESPACE,
 )
-
-
-@dataclass(frozen=True)
-class CodeOpenIntent:
-    """Intent for creating one editor-open mailbox request.
-
-    Parameters
-    ----------
-    session_id : str
-        Active host bridge session identifier.
-    repo_id : str
-        Stable Bertrand repository UUID.
-    worktree : str
-        Repository-relative worktree path.
-    pod_name : str
-        Kubernetes Pod name requesting the editor.
-    container_name : str
-        Container inside the Pod that owns the workspace.
-    workspace_path : str
-        Container path to open in the editor.
-    editor : str
-        Editor alias selected from Bertrand config.
-    block : bool
-        Whether the requester waits for editor lifetime completion.
-    deadline : float
-        Unix timestamp deadline for request handling.
-    host_id : str
-        Host identity expected to service this request.
-    request_id : str
-        Unique request ID.  Defaults to a random UUID hex value.
-    """
-
-    session_id: str
-    repo_id: str
-    worktree: str
-    pod_name: str
-    container_name: str
-    workspace_path: str
-    editor: str
-    block: bool
-    deadline: float
-    host_id: str
-    request_id: str = ""
-
-    def __post_init__(self) -> None:
-        """Normalize the request ID."""
-        if not self.request_id:
-            object.__setattr__(self, "request_id", uuid.uuid4().hex)
-
-    @property
-    def name(self) -> str:
-        """Return the deterministic request object name.
-
-        Returns
-        -------
-        str
-            Kubernetes custom-object name.
-        """
-        return code_open_request_name(self.session_id, self.request_id)
-
-    @property
-    def spec(self) -> dict[str, object]:
-        """Return this intent as a Kubernetes ``spec`` payload.
-
-        Returns
-        -------
-        dict[str, object]
-            Custom-resource spec payload.
-        """
-        return {
-            "session_id": self.session_id,
-            "request_id": self.request_id,
-            "repo_id": self.repo_id,
-            "worktree": self.worktree,
-            "pod_name": self.pod_name,
-            "container_name": self.container_name,
-            "workspace_path": self.workspace_path,
-            "editor": self.editor,
-            "block": self.block,
-            "deadline": self.deadline,
-        }
-
-    @property
-    def labels(self) -> dict[str, str]:
-        """Return Kubernetes labels for this request.
-
-        Returns
-        -------
-        dict[str, str]
-            Label selector values used by the host bridge and cleanup paths.
-        """
-        return {
-            CODE_OPEN_SESSION_LABEL: _label_value(self.session_id),
-            CODE_OPEN_REQUEST_LABEL: _label_value(self.request_id),
-            CODE_OPEN_HOST_LABEL: _hash_label(self.host_id),
-            CODE_OPEN_WORKTREE_LABEL: _hash_label(self.worktree),
-            CODE_OPEN_PHASE_LABEL: "pending",
-            REPO_ID_ENV: _label_value(self.repo_id),
-        }
-
-
-async def ensure_code_open_request_crd(kube: Kube, *, timeout: float) -> None:
-    """Converge the ``CodeOpenRequest`` CRD.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum convergence budget in seconds.
-
-    Raises
-    ------
-    TimeoutError
-        If CRD establishment exceeds the budget.
-    """
-    if timeout <= 0:
-        msg = "CodeOpenRequest CRD timeout must be non-negative"
-        raise TimeoutError(msg)
-    await _CODE_OPEN_RESOURCE.ensure_crd(kube, timeout=timeout)
-
-
-async def create_code_open_request(
-    kube: Kube,
-    *,
-    intent: CodeOpenIntent,
-    timeout: float,
-) -> CodeOpenRecord:
-    """Create one editor-open mailbox request.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    intent : CodeOpenIntent
-        Request creation intent.
-    timeout : float
-        Maximum request budget in seconds.
-
-    Returns
-    -------
-    CodeOpenRecord
-        Created mailbox record.
-    """
-    return await _CODE_OPEN_RESOURCE.create(
-        kube,
-        name=intent.name,
-        spec=intent.spec,
-        labels=intent.labels,
-        timeout=timeout,
-    )
-
-
-async def get_code_open_request(
-    kube: Kube,
-    *,
-    name: str,
-    timeout: float,
-) -> CodeOpenRecord | None:
-    """Read one editor-open mailbox request.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    name : str
-        Request object name.
-    timeout : float
-        Maximum request budget in seconds.
-
-    Returns
-    -------
-    CodeOpenRecord | None
-        Wrapped record, or ``None`` if it does not exist.
-    """
-    return await _CODE_OPEN_RESOURCE.get(
-        kube,
-        name=name,
-        timeout=timeout,
-    )
-
-
-async def list_code_open_requests(
-    kube: Kube,
-    *,
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-) -> list[CodeOpenRecord]:
-    """List editor-open mailbox requests.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum request budget in seconds.
-    labels : Mapping[str, str] | None, optional
-        Optional label selector.
-
-    Returns
-    -------
-    list[CodeOpenRecord]
-        Validated mailbox records matching the selector.
-    """
-    return await _CODE_OPEN_RESOURCE.list(
-        kube,
-        labels=labels,
-        timeout=timeout,
-    )
 
 
 async def patch_code_open_request_status(
@@ -453,34 +240,10 @@ async def patch_code_open_request_status(
         status["accepted_at"] = _now()
     if phase in ("Succeeded", "Failed", "Expired"):
         status["completed_at"] = _now()
-    return await _CODE_OPEN_RESOURCE.patch_status(
+    return await CODE_OPEN_RESOURCE.patch_status(
         kube,
         name=record.name,
         status=status,
-        timeout=timeout,
-    )
-
-
-async def delete_code_open_request(
-    kube: Kube,
-    *,
-    record: CodeOpenRecord,
-    timeout: float,
-) -> None:
-    """Delete one editor-open mailbox request.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    record : CodeOpenRecord
-        Request record to delete.
-    timeout : float
-        Maximum request budget in seconds.
-    """
-    await _CODE_OPEN_RESOURCE.delete_by_name(
-        kube,
-        name=record.name,
         timeout=timeout,
     )
 
@@ -530,7 +293,7 @@ async def wait_code_open_request(
                 "then run `bertrand code` inside that session."
             )
             raise TimeoutError(msg)
-        record = await get_code_open_request(kube, name=name, timeout=remaining)
+        record = await CODE_OPEN_RESOURCE.get(kube, name=name, timeout=remaining)
         if record is None:
             msg = f"{CODE_OPEN_KIND} {name!r} disappeared before completion"
             raise OSError(msg)
@@ -545,6 +308,31 @@ async def wait_code_open_request(
                 timeout=remaining,
             )
         await asyncio.sleep(deadline.bounded(0.5))
+
+
+def code_open_request_labels(spec: CodeOpenSpec, host_id: str) -> dict[str, str]:
+    """Return Kubernetes labels for one editor-open request.
+
+    Parameters
+    ----------
+    spec : CodeOpenSpec
+        Request spec to label.
+    host_id : str
+        Host identity expected to service the request.
+
+    Returns
+    -------
+    dict[str, str]
+        Label selector values used by the host bridge and cleanup paths.
+    """
+    return {
+        CODE_OPEN_SESSION_LABEL: _label_value(spec.session_id),
+        CODE_OPEN_REQUEST_LABEL: _label_value(spec.request_id),
+        CODE_OPEN_HOST_LABEL: _hash_label(host_id),
+        CODE_OPEN_WORKTREE_LABEL: _hash_label(spec.worktree),
+        CODE_OPEN_PHASE_LABEL: "pending",
+        REPO_ID_ENV: _label_value(spec.repo_id),
+    }
 
 
 def code_open_request_name(session_id: str, request_id: str) -> str:

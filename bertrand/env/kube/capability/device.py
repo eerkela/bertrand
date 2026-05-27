@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 from contextlib import suppress
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -17,6 +16,7 @@ from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY, Deadlin
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.custom_object import (
+    CustomObject,
     CustomObjectMetadata,
     CustomObjectResource,
 )
@@ -27,14 +27,15 @@ from bertrand.env.kube.dra import (
     RESOURCE_CLAIM_PLURAL,
     RESOURCE_CLAIM_TEMPLATE_PLURAL,
     RESOURCE_SLICE_PLURAL,
-    DeviceClass,
-    ResourceClaimTemplate,
-    ResourceSlice,
+    create_resource_claim_template,
     ensure_dra_api,
+    upsert_device_class,
+    upsert_resource_claim_template,
+    upsert_resource_slice,
 )
 from bertrand.env.kube.rbac import (
-    upsert_cluster_role,
-    upsert_cluster_role_binding,
+    upsert_rbac_binding,
+    upsert_rbac_role,
 )
 from bertrand.env.kube.service_account import ServiceAccount
 
@@ -211,64 +212,6 @@ BERTRAND_DEVICE_RESOURCE = CustomObjectResource[BertrandDeviceRecord](
 )
 
 
-@dataclass(frozen=True)
-class DRADeviceRequest:
-    """Validated DRA device capability request.
-
-    Parameters
-    ----------
-    capability_id : str
-        Host-agnostic Bertrand device capability ID.
-    required : bool
-        Whether missing inventory should fail the caller.
-    """
-
-    capability_id: str
-    required: bool
-
-    def __post_init__(self) -> None:
-        """Validate the device capability ID."""
-        object.__setattr__(self, "capability_id", _check_kube_name(self.capability_id))
-
-
-@dataclass(frozen=True)
-class DRAResourceClaimIntent:
-    """ResourceClaimTemplate intent for one DRA device request.
-
-    Parameters
-    ----------
-    claim_name : str
-        Pod-local `resourceClaims[*].name`.
-    template_name : str
-        Namespaced `ResourceClaimTemplate` name.
-    capability_id : str
-        Device capability ID matched by the claim.
-    required : bool
-        Whether the originating capability request was required.
-    container_name : str | None, optional
-        Container that should reference this claim.
-    """
-
-    claim_name: str
-    template_name: str
-    capability_id: str
-    required: bool
-    container_name: str | None = None
-
-    def pod_claim(self) -> PodResourceClaimManifest:
-        """Return the pod-level claim reference.
-
-        Returns
-        -------
-        PodResourceClaimManifest
-            Pod resource-claim entry referencing this template.
-        """
-        return {
-            "name": self.claim_name,
-            "resourceClaimTemplateName": self.template_name,
-        }
-
-
 async def ensure_dra_backend(
     kube: Kube,
     *,
@@ -303,7 +246,7 @@ async def ensure_dra_backend(
     deadline = Deadline.from_timeout(timeout, message=message)
     await ensure_dra_api(kube, timeout=deadline.remaining())
     await BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
-    await DeviceClass.upsert(
+    await upsert_device_class(
         kube,
         name=DRA_DEVICE_CLASS,
         spec=_device_class_spec(),
@@ -317,16 +260,19 @@ async def ensure_dra_backend(
         labels=_DRA_LABELS,
         timeout=deadline.remaining(),
     )
-    await upsert_cluster_role(
+    await upsert_rbac_role(
         kube,
+        kind="ClusterRole",
         name=DRA_PROVIDER_NAME,
         labels=_DRA_LABELS,
         rules=_provider_rules(),
         timeout=deadline.remaining(),
     )
-    await upsert_cluster_role_binding(
+    await upsert_rbac_binding(
         kube,
+        kind="ClusterRoleBinding",
         name=DRA_PROVIDER_NAME,
+        role_kind="ClusterRole",
         role_name=DRA_PROVIDER_NAME,
         service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
         service_account_namespace=BERTRAND_NAMESPACE,
@@ -602,8 +548,8 @@ async def select_device_claims(
     host_ids: Collection[str] | None = None,
     node_names: Collection[str] | None = None,
     timeout: float,
-) -> tuple[DRADeviceRequest, ...]:
-    """Normalize device requests into DRA-authoritative claim requests.
+) -> tuple[str, ...]:
+    """Return selected DRA device capability IDs.
 
     Parameters
     ----------
@@ -620,8 +566,8 @@ async def select_device_claims(
 
     Returns
     -------
-    tuple[DRADeviceRequest, ...]
-        Required and available optional device claim requests.
+    tuple[str, ...]
+        Required and available optional device capability IDs.
 
     Raises
     ------
@@ -634,7 +580,7 @@ async def select_device_claims(
     if timeout <= 0:
         raise TimeoutError(message)
     deadline = Deadline.from_timeout(timeout, message=message)
-    selected: list[DRADeviceRequest] = []
+    selected: list[str] = []
     for raw_id, required in sorted(requests.items()):
         capability_id = _check_kube_name(str(raw_id))
         inventory = await list_device_inventory(
@@ -658,63 +604,104 @@ async def select_device_claims(
                 )
                 raise OSError(msg)
             continue
-        selected.append(
-            DRADeviceRequest(capability_id=capability_id, required=required)
-        )
+        selected.append(capability_id)
     return tuple(selected)
 
 
-def resource_claim_intents(
+def resource_claim_name(
     *,
     owner: str,
-    requests: Collection[DRADeviceRequest],
+    capability_id: str,
     container_name: str | None = None,
-) -> tuple[DRAResourceClaimIntent, ...]:
-    """Render deterministic ResourceClaimTemplate intents.
+) -> str:
+    """Return the deterministic pod-local DRA claim name.
 
     Parameters
     ----------
     owner : str
         Stable owner string used to derive names.
-    requests : Collection[DRADeviceRequest]
-        Device requests to render.
+    capability_id : str
+        Device capability ID matched by the claim.
     container_name : str | None, optional
-        Container that should reference the claims.
+        Container that should reference the claim.
 
     Returns
     -------
-    tuple[DRAResourceClaimIntent, ...]
-        Deterministic resource-claim intents.
-
-    Raises
-    ------
-    ValueError
-        If `owner` is empty.
+    str
+        Pod-local claim name.
     """
+    return _claim_name(
+        _claim_owner(owner),
+        _check_kube_name(capability_id),
+        container_name,
+    )
+
+
+def resource_claim_template_name(
+    *,
+    owner: str,
+    capability_id: str,
+    container_name: str | None = None,
+) -> str:
+    """Return the deterministic DRA ResourceClaimTemplate name.
+
+    Returns
+    -------
+    str
+        Namespaced ResourceClaimTemplate name.
+    """
+    return _template_name(
+        _claim_owner(owner),
+        _check_kube_name(capability_id),
+        container_name,
+    )
+
+
+def pod_resource_claim(
+    *,
+    owner: str,
+    capability_id: str,
+    container_name: str | None = None,
+) -> PodResourceClaimManifest:
+    """Render one pod-level DRA resource-claim reference.
+
+    Returns
+    -------
+    PodResourceClaimManifest
+        Pod resource-claim entry referencing a deterministic template.
+    """
+    return {
+        "name": resource_claim_name(
+            owner=owner,
+            capability_id=capability_id,
+            container_name=container_name,
+        ),
+        "resourceClaimTemplateName": resource_claim_template_name(
+            owner=owner,
+            capability_id=capability_id,
+            container_name=container_name,
+        ),
+    }
+
+
+def _claim_owner(owner: str) -> str:
     owner = owner.strip()
     if not owner:
         msg = "DRA resource claim owner cannot be empty"
         raise ValueError(msg)
-    return tuple(
-        DRAResourceClaimIntent(
-            claim_name=_claim_name(owner, request.capability_id, container_name),
-            template_name=_template_name(owner, request.capability_id, container_name),
-            capability_id=request.capability_id,
-            required=request.required,
-            container_name=container_name.strip() if container_name else None,
-        )
-        for request in sorted(requests, key=lambda item: item.capability_id)
-    )
+    return owner
 
 
 async def create_resource_claim_templates(
     kube: Kube,
     *,
     namespace: str,
-    intents: Collection[DRAResourceClaimIntent],
+    owner: str,
+    capability_ids: Collection[str],
+    container_name: str | None = None,
     labels: Mapping[str, str],
     timeout: float,
-) -> tuple[ResourceClaimTemplate, ...]:
+) -> tuple[CustomObject, ...]:
     """Create ResourceClaimTemplates for a pod or Job.
 
     Parameters
@@ -723,8 +710,12 @@ async def create_resource_claim_templates(
         Active Kubernetes API context.
     namespace : str
         Namespace that owns the templates.
-    intents : Collection[DRAResourceClaimIntent]
-        Claim templates to create.
+    owner : str
+        Stable owner string used to derive template names.
+    capability_ids : Collection[str]
+        Device capability IDs to create claim templates for.
+    container_name : str | None, optional
+        Container that should reference the templates.
     labels : Mapping[str, str]
         Labels to apply to each template.
     timeout : float
@@ -732,24 +723,29 @@ async def create_resource_claim_templates(
 
     Returns
     -------
-    tuple[ResourceClaimTemplate, ...]
+    tuple[CustomObject, ...]
         Created templates.
     """
-    if not intents:
+    capability_ids = tuple(sorted(_check_kube_name(item) for item in capability_ids))
+    if not capability_ids:
         return ()
     deadline = Deadline.from_timeout(
         timeout,
         message="DRA ResourceClaimTemplate creation timeout must be positive",
     )
-    created: list[ResourceClaimTemplate] = []
+    created: list[CustomObject] = []
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
-    for intent in intents:
-        template = await ResourceClaimTemplate.create(
+    for capability_id in capability_ids:
+        template = await create_resource_claim_template(
             kube,
             namespace=namespace,
-            name=intent.template_name,
-            spec={"spec": _resource_claim_spec(intent.capability_id)},
+            name=resource_claim_template_name(
+                owner=owner,
+                capability_id=capability_id,
+                container_name=container_name,
+            ),
+            spec={"spec": _resource_claim_spec(capability_id)},
             labels=template_labels,
             timeout=deadline.remaining(),
         )
@@ -761,10 +757,12 @@ async def upsert_resource_claim_templates(
     kube: Kube,
     *,
     namespace: str,
-    intents: Collection[DRAResourceClaimIntent],
+    owner: str,
+    capability_ids: Collection[str],
+    container_name: str | None = None,
     labels: Mapping[str, str],
     timeout: float,
-) -> tuple[ResourceClaimTemplate, ...]:
+) -> tuple[CustomObject, ...]:
     """Create or patch ResourceClaimTemplates for a controller-backed workload.
 
     Parameters
@@ -773,8 +771,12 @@ async def upsert_resource_claim_templates(
         Active Kubernetes API context.
     namespace : str
         Namespace that owns the templates.
-    intents : Collection[DRAResourceClaimIntent]
-        Claim templates to converge.
+    owner : str
+        Stable owner string used to derive template names.
+    capability_ids : Collection[str]
+        Device capability IDs to converge claim templates for.
+    container_name : str | None, optional
+        Container that should reference the templates.
     labels : Mapping[str, str]
         Labels to apply to each template.
     timeout : float
@@ -782,24 +784,29 @@ async def upsert_resource_claim_templates(
 
     Returns
     -------
-    tuple[ResourceClaimTemplate, ...]
+    tuple[CustomObject, ...]
         Converged templates.
     """
-    if not intents:
+    capability_ids = tuple(sorted(_check_kube_name(item) for item in capability_ids))
+    if not capability_ids:
         return ()
     deadline = Deadline.from_timeout(
         timeout,
         message="DRA ResourceClaimTemplate convergence timeout must be positive",
     )
-    rendered: list[ResourceClaimTemplate] = []
+    rendered: list[CustomObject] = []
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
-    for intent in intents:
-        template = await ResourceClaimTemplate.upsert(
+    for capability_id in capability_ids:
+        template = await upsert_resource_claim_template(
             kube,
             namespace=namespace,
-            name=intent.template_name,
-            spec={"spec": _resource_claim_spec(intent.capability_id)},
+            name=resource_claim_template_name(
+                owner=owner,
+                capability_id=capability_id,
+                container_name=container_name,
+            ),
+            spec={"spec": _resource_claim_spec(capability_id)},
             labels=template_labels,
             timeout=deadline.remaining(),
         )
@@ -924,7 +931,7 @@ async def _publish_node_slice(
     if not node_name:
         msg = "ResourceSlice publication requires a node name"
         raise OSError(msg)
-    await ResourceSlice.upsert(
+    await upsert_resource_slice(
         kube,
         name=_resource_slice_name(node_name),
         spec=_resource_slice_spec(node_name, records),

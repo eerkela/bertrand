@@ -311,14 +311,13 @@ class BertrandOSDCSIDriver:
         volume_id: str,
         pv_name: str,
     ) -> CephStorageOSD:
-        spec = record.spec_payload()
-        spec.update(
-            {
+        bound = record.model_copy(
+            update={
                 "csi_volume_id": volume_id,
                 "persistent_volume_name": pv_name,
                 "persistent_volume_claim_namespace": claim.namespace,
                 "persistent_volume_claim_name": claim.name,
-            }
+            },
         )
         phase = record.phase
         if phase not in {"Ready", "Expanding"}:
@@ -326,7 +325,7 @@ class BertrandOSDCSIDriver:
         return await upsert_storage_osd(
             kube,
             name=record.name,
-            spec=spec,
+            spec=bound,
             phase=phase,
             timeout=CSI_REQUEST_TIMEOUT_SECONDS,
         )
@@ -589,50 +588,54 @@ class BertrandOSDCSIDriver:
         )
 
 
-def _method_table(
-    driver: BertrandOSDCSIDriver,
-) -> dict[str, Callable[[bytes, Any], bytes]]:
-    return {
-        "/csi.v1.Identity/GetPluginInfo": driver._get_plugin_info,
-        "/csi.v1.Identity/GetPluginCapabilities": driver._get_plugin_capabilities,
-        "/csi.v1.Identity/Probe": driver._probe,
-        "/csi.v1.Controller/ControllerGetCapabilities": (
-            driver._controller_get_capabilities
-        ),
-        "/csi.v1.Controller/CreateVolume": driver._create_volume,
-        "/csi.v1.Controller/DeleteVolume": driver._delete_volume,
-        "/csi.v1.Controller/ControllerExpandVolume": driver._controller_expand_volume,
-        "/csi.v1.Controller/ValidateVolumeCapabilities": (
-            driver._validate_volume_capabilities
-        ),
-        "/csi.v1.Node/NodeGetCapabilities": driver._node_get_capabilities,
-        "/csi.v1.Node/NodeGetInfo": driver._node_get_info,
-        "/csi.v1.Node/NodeStageVolume": driver._node_stage_volume,
-        "/csi.v1.Node/NodeUnstageVolume": driver._node_unstage_volume,
-        "/csi.v1.Node/NodePublishVolume": driver._node_publish_volume,
-        "/csi.v1.Node/NodeUnpublishVolume": driver._node_unpublish_volume,
-        "/csi.v1.Node/NodeExpandVolume": driver._node_expand_volume,
-    }
-
-
-class _CSIHandler:
-    def __init__(
-        self,
-        grpc: Any,
-        methods: Mapping[str, Callable[[bytes, Any], bytes]],
-    ) -> None:
-        self._grpc = grpc
-        self._methods = methods
-
-    def service(self, handler_call_details: Any) -> Any:
-        method = self._methods.get(handler_call_details.method)
-        if method is None:
-            return None
-        return self._grpc.unary_unary_rpc_method_handler(
+def _generic_rpc_handlers(grpc: Any, driver: BertrandOSDCSIDriver) -> tuple[Any, ...]:
+    def raw_handler(method: Callable[[bytes, Any], bytes]) -> Any:
+        return grpc.unary_unary_rpc_method_handler(
             method,
             request_deserializer=lambda payload: payload,
             response_serializer=lambda payload: payload,
         )
+
+    return (
+        grpc.method_handlers_generic_handler(
+            "csi.v1.Identity",
+            {
+                "GetPluginInfo": raw_handler(driver._get_plugin_info),
+                "GetPluginCapabilities": raw_handler(
+                    driver._get_plugin_capabilities
+                ),
+                "Probe": raw_handler(driver._probe),
+            },
+        ),
+        grpc.method_handlers_generic_handler(
+            "csi.v1.Controller",
+            {
+                "ControllerGetCapabilities": raw_handler(
+                    driver._controller_get_capabilities
+                ),
+                "CreateVolume": raw_handler(driver._create_volume),
+                "DeleteVolume": raw_handler(driver._delete_volume),
+                "ControllerExpandVolume": raw_handler(
+                    driver._controller_expand_volume
+                ),
+                "ValidateVolumeCapabilities": raw_handler(
+                    driver._validate_volume_capabilities
+                ),
+            },
+        ),
+        grpc.method_handlers_generic_handler(
+            "csi.v1.Node",
+            {
+                "NodeGetCapabilities": raw_handler(driver._node_get_capabilities),
+                "NodeGetInfo": raw_handler(driver._node_get_info),
+                "NodeStageVolume": raw_handler(driver._node_stage_volume),
+                "NodeUnstageVolume": raw_handler(driver._node_unstage_volume),
+                "NodePublishVolume": raw_handler(driver._node_publish_volume),
+                "NodeUnpublishVolume": raw_handler(driver._node_unpublish_volume),
+                "NodeExpandVolume": raw_handler(driver._node_expand_volume),
+            },
+        ),
+    )
 
 
 def serve_csi(*, role: str, endpoint: str, node_name: str = "") -> None:
@@ -654,7 +657,7 @@ def serve_csi(*, role: str, endpoint: str, node_name: str = "") -> None:
     driver = BertrandOSDCSIDriver(role=role, node_name=node_name)
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
-    server.add_generic_rpc_handlers((_CSIHandler(grpc, _method_table(driver)),))
+    server.add_generic_rpc_handlers(_generic_rpc_handlers(grpc, driver))
     server.add_insecure_port(endpoint)
     server.start()
     try:

@@ -1,4 +1,4 @@
-"""Wrappers for Kubernetes CSI snapshot custom resources."""
+"""Kubernetes CSI snapshot custom-object helpers."""
 
 from __future__ import annotations
 
@@ -6,10 +6,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
 from bertrand.env.git import until
-from bertrand.env.kube.custom_object import (
-    CustomObjectResource,
-    CustomObjectWrapper,
-)
+from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -26,343 +23,290 @@ VOLUME_SNAPSHOT_CLASS_PLURAL = "volumesnapshotclasses"
 VOLUME_SNAPSHOT_WAIT_INTERVAL_SECONDS = 0.5
 
 
-class VolumeSnapshotClass(CustomObjectWrapper):
-    """Wrapper around one cluster-scoped `VolumeSnapshotClass`.
-
-    Parameters
-    ----------
-    _obj : CustomObject
-        Generic custom object returned by the snapshot API.
-    """
-
-    @classmethod
-    async def create(
-        cls,
-        kube: Kube,
-        *,
-        name: str,
-        driver: str,
-        deletion_policy: str,
-        timeout: float,
-        parameters: Mapping[str, str] | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> VolumeSnapshotClass:
-        """Create one `VolumeSnapshotClass`.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            Snapshot class name.
-        driver : str
-            CSI driver name.
-        deletion_policy : str
-            Kubernetes snapshot deletion policy.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        parameters : Mapping[str, str] | None, optional
-            Driver-specific snapshot class parameters.
-        labels : Mapping[str, str] | None, optional
-            Labels to apply to the snapshot class.
-
-        Returns
-        -------
-        VolumeSnapshotClass
-            Wrapped created snapshot class.
-        """
-        manifest = {
-            "apiVersion": SNAPSHOT_API_VERSION,
-            "kind": VOLUME_SNAPSHOT_CLASS_KIND,
-            "metadata": {"name": name, "labels": dict(labels or {})},
-            "driver": driver,
-            "deletionPolicy": deletion_policy,
-            "parameters": dict(parameters or {}),
-        }
-        return await cls.resource.create_manifest(
-            kube,
-            manifest=manifest,
-            timeout=timeout,
-        )
-
-    @property
-    def driver(self) -> str:
-        """Return the CSI driver name.
-
-        Returns
-        -------
-        str
-            Trimmed `driver` field.
-        """
-        return str(self._obj.payload.get("driver") or "").strip()
-
-    @property
-    def deletion_policy(self) -> str:
-        """Return the snapshot deletion policy.
-
-        Returns
-        -------
-        str
-            Trimmed `deletionPolicy` field.
-        """
-        return str(self._obj.payload.get("deletionPolicy") or "").strip()
-
-
-VolumeSnapshotClass.resource = CustomObjectResource(
+VOLUME_SNAPSHOT_CLASS_RESOURCE = CustomObjectResource[CustomObject](
     group=SNAPSHOT_GROUP,
     version=SNAPSHOT_VERSION,
     kind=VOLUME_SNAPSHOT_CLASS_KIND,
     plural=VOLUME_SNAPSHOT_CLASS_PLURAL,
     scope="cluster",
-    parser=VolumeSnapshotClass._from_object,
 )
 
 
-class VolumeSnapshot(CustomObjectWrapper):
-    """Wrapper around one namespaced `VolumeSnapshot`.
-
-    Parameters
-    ----------
-    _obj : CustomObject
-        Generic custom object returned by the snapshot API.
-    """
-
-    @classmethod
-    async def create(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        source_claim: str,
-        snapshot_class: str,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
-    ) -> VolumeSnapshot:
-        """Create one snapshot from a source PersistentVolumeClaim.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the snapshot and source claim.
-        name : str
-            Snapshot name.
-        source_claim : str
-            Source PersistentVolumeClaim name.
-        snapshot_class : str
-            VolumeSnapshotClass name to use.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Labels to apply to the snapshot.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to the snapshot.
-
-        Returns
-        -------
-        VolumeSnapshot
-            Wrapped created snapshot.
-        """
-        return await cls.resource.create(
-            kube,
-            namespace=namespace,
-            name=name,
-            spec={
-                "volumeSnapshotClassName": snapshot_class,
-                "source": {"persistentVolumeClaimName": source_claim},
-            },
-            labels=labels,
-            annotations=annotations,
-            timeout=timeout,
-        )
-
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this snapshot.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        namespace, name = self._require_namespace_name("delete VolumeSnapshot")
-        await type(self).resource.delete_by_name(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> VolumeSnapshot | None:
-        """Re-read this snapshot.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        VolumeSnapshot | None
-            Fresh wrapper for the same snapshot, or `None` if deleted.
-        """
-        namespace, name = self._require_namespace_name("refresh VolumeSnapshot")
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-
-    async def wait_ready(self, kube: Kube, *, timeout: float) -> VolumeSnapshot:
-        """Wait until the snapshot reports `readyToUse`.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum wait budget in seconds.
-
-        Returns
-        -------
-        VolumeSnapshot
-            Fresh snapshot wrapper whose status is ready.
-
-        Raises
-        ------
-        TimeoutError
-            If readiness does not complete before `timeout`.
-        """
-        namespace, name = self._require_namespace_name("wait for VolumeSnapshot")
-
-        async def ready(remaining: float) -> VolumeSnapshot:
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                msg = f"VolumeSnapshot {namespace}/{name} disappeared before ready"
-                raise OSError(msg)
-            error = live.error_message
-            if error:
-                msg = f"VolumeSnapshot {namespace}/{name} failed: {error}"
-                raise OSError(msg)
-            if live.ready_to_use:
-                return live
-            msg = f"VolumeSnapshot {namespace}/{name} is not ready yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                ready,
-                timeout=timeout,
-                interval=VOLUME_SNAPSHOT_WAIT_INTERVAL_SECONDS,
-                action=f"waiting for VolumeSnapshot {namespace}/{name}",
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for VolumeSnapshot {namespace}/{name}"
-            raise TimeoutError(msg) from err
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this snapshot is deleted.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum wait budget in seconds.
-        """
-        namespace, name = self._require_namespace_name("wait for VolumeSnapshot")
-        await type(self).resource.wait_deleted(
-            label=f"VolumeSnapshot {namespace}/{name}",
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-        )
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return the snapshot creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Snapshot status creation time, metadata creation time, or `None`.
-        """
-        value = self._obj.status.get("creationTime")
-        if isinstance(value, str):
-            return self._obj.parse_utc_datetime(value)
-        return self._obj.created_at_utc
-
-    @property
-    def ready_to_use(self) -> bool:
-        """Return whether this snapshot is ready to use.
-
-        Returns
-        -------
-        bool
-            Value of `status.readyToUse`.
-        """
-        return bool(self._obj.status.get("readyToUse"))
-
-    @property
-    def error_message(self) -> str:
-        """Return the snapshot controller error message.
-
-        Returns
-        -------
-        str
-            Snapshot status error message, or an empty string.
-        """
-        error = self._obj.status.get("error")
-        if not isinstance(error, Mapping):
-            return ""
-        error = cast("Mapping[str, object]", error)
-        return str(error.get("message") or "").strip()
-
-    @property
-    def source_claim(self) -> str:
-        """Return the source PersistentVolumeClaim name.
-
-        Returns
-        -------
-        str
-            Source PVC name, or an empty string when unavailable.
-        """
-        source = self._obj.spec.get("source")
-        if not isinstance(source, Mapping):
-            return ""
-        source = cast("Mapping[str, object]", source)
-        return str(source.get("persistentVolumeClaimName") or "").strip()
-
-    @property
-    def snapshot_class_name(self) -> str:
-        """Return the snapshot class name.
-
-        Returns
-        -------
-        str
-            `spec.volumeSnapshotClassName`, or an empty string.
-        """
-        return str(self._obj.spec.get("volumeSnapshotClassName") or "").strip()
-
-    def _require_namespace_name(self, action: str) -> tuple[str, str]:
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = f"cannot {action} with missing metadata.name/namespace"
-            raise OSError(msg)
-        return namespace, name
-
-
-VolumeSnapshot.resource = CustomObjectResource(
+VOLUME_SNAPSHOT_RESOURCE = CustomObjectResource[CustomObject](
     group=SNAPSHOT_GROUP,
     version=SNAPSHOT_VERSION,
     kind=VOLUME_SNAPSHOT_KIND,
     plural=VOLUME_SNAPSHOT_PLURAL,
-    parser=VolumeSnapshot._from_object,
 )
+
+
+async def create_volume_snapshot_class(
+    kube: Kube,
+    *,
+    name: str,
+    driver: str,
+    deletion_policy: str,
+    timeout: float,
+    parameters: Mapping[str, str] | None = None,
+    labels: Mapping[str, str] | None = None,
+) -> CustomObject:
+    """Create one `VolumeSnapshotClass`.
+
+    Returns
+    -------
+    CustomObject
+        Created snapshot class.
+    """
+    manifest = {
+        "apiVersion": SNAPSHOT_API_VERSION,
+        "kind": VOLUME_SNAPSHOT_CLASS_KIND,
+        "metadata": {"name": name, "labels": dict(labels or {})},
+        "driver": driver,
+        "deletionPolicy": deletion_policy,
+        "parameters": dict(parameters or {}),
+    }
+    return await VOLUME_SNAPSHOT_CLASS_RESOURCE.create_manifest(
+        kube,
+        manifest=manifest,
+        timeout=timeout,
+    )
+
+
+def volume_snapshot_class_driver(snapshot_class: CustomObject) -> str:
+    """Return the CSI driver name for one snapshot class.
+
+    Returns
+    -------
+    str
+        Trimmed `driver` field.
+    """
+    return str(snapshot_class.payload.get("driver") or "").strip()
+
+
+def volume_snapshot_class_deletion_policy(snapshot_class: CustomObject) -> str:
+    """Return the deletion policy for one snapshot class.
+
+    Returns
+    -------
+    str
+        Trimmed `deletionPolicy` field.
+    """
+    return str(snapshot_class.payload.get("deletionPolicy") or "").strip()
+
+
+async def create_volume_snapshot(
+    kube: Kube,
+    *,
+    namespace: str,
+    name: str,
+    source_claim: str,
+    snapshot_class: str,
+    timeout: float,
+    labels: Mapping[str, str] | None = None,
+    annotations: Mapping[str, str] | None = None,
+) -> CustomObject:
+    """Create one snapshot from a source PersistentVolumeClaim.
+
+    Returns
+    -------
+    CustomObject
+        Created VolumeSnapshot.
+    """
+    return await VOLUME_SNAPSHOT_RESOURCE.create(
+        kube,
+        namespace=namespace,
+        name=name,
+        spec={
+            "volumeSnapshotClassName": snapshot_class,
+            "source": {"persistentVolumeClaimName": source_claim},
+        },
+        labels=labels,
+        annotations=annotations,
+        timeout=timeout,
+    )
+
+
+async def delete_volume_snapshot(
+    kube: Kube,
+    snapshot: CustomObject,
+    *,
+    timeout: float,
+) -> None:
+    """Delete one VolumeSnapshot."""
+    namespace, name = _require_volume_snapshot_namespace_name(
+        snapshot, "delete VolumeSnapshot"
+    )
+    await VOLUME_SNAPSHOT_RESOURCE.delete_by_name(
+        kube,
+        namespace=namespace,
+        name=name,
+        timeout=timeout,
+    )
+
+
+async def refresh_volume_snapshot(
+    kube: Kube,
+    snapshot: CustomObject,
+    *,
+    timeout: float,
+) -> CustomObject | None:
+    """Re-read one VolumeSnapshot.
+
+    Returns
+    -------
+    CustomObject | None
+        Fresh snapshot object, or `None` when deleted.
+    """
+    namespace, name = _require_volume_snapshot_namespace_name(
+        snapshot, "refresh VolumeSnapshot"
+    )
+    return await VOLUME_SNAPSHOT_RESOURCE.get(
+        kube,
+        namespace=namespace,
+        name=name,
+        timeout=timeout,
+    )
+
+
+async def wait_volume_snapshot_ready(
+    kube: Kube,
+    snapshot: CustomObject,
+    *,
+    timeout: float,
+) -> CustomObject:
+    """Wait until one VolumeSnapshot reports `readyToUse`.
+
+    Returns
+    -------
+    CustomObject
+        Fresh snapshot object whose status is ready.
+
+    Raises
+    ------
+    TimeoutError
+        If readiness does not complete before `timeout`.
+    """
+    namespace, name = _require_volume_snapshot_namespace_name(
+        snapshot, "wait for VolumeSnapshot"
+    )
+
+    async def ready(remaining: float) -> CustomObject:
+        live = await refresh_volume_snapshot(kube, snapshot, timeout=remaining)
+        if live is None:
+            msg = f"VolumeSnapshot {namespace}/{name} disappeared before ready"
+            raise OSError(msg)
+        error = volume_snapshot_error_message(live)
+        if error:
+            msg = f"VolumeSnapshot {namespace}/{name} failed: {error}"
+            raise OSError(msg)
+        if volume_snapshot_ready_to_use(live):
+            return live
+        msg = f"VolumeSnapshot {namespace}/{name} is not ready yet"
+        raise TimeoutError(msg)
+
+    try:
+        return await until(
+            ready,
+            timeout=timeout,
+            interval=VOLUME_SNAPSHOT_WAIT_INTERVAL_SECONDS,
+            action=f"waiting for VolumeSnapshot {namespace}/{name}",
+        )
+    except TimeoutError as err:
+        msg = f"timed out waiting for VolumeSnapshot {namespace}/{name}"
+        raise TimeoutError(msg) from err
+
+
+async def wait_volume_snapshot_deleted(
+    kube: Kube,
+    snapshot: CustomObject,
+    *,
+    timeout: float,
+) -> None:
+    """Wait until one VolumeSnapshot is deleted."""
+    namespace, name = _require_volume_snapshot_namespace_name(
+        snapshot, "wait for VolumeSnapshot"
+    )
+    await VOLUME_SNAPSHOT_RESOURCE.wait_deleted(
+        label=f"VolumeSnapshot {namespace}/{name}",
+        timeout=timeout,
+        refresh=lambda remaining: refresh_volume_snapshot(
+            kube, snapshot, timeout=remaining
+        ),
+    )
+
+
+def volume_snapshot_created_at(snapshot: CustomObject) -> datetime | None:
+    """Return the snapshot creation timestamp.
+
+    Returns
+    -------
+    datetime | None
+        Snapshot status creation time, metadata creation time, or `None`.
+    """
+    value = snapshot.status.get("creationTime")
+    if isinstance(value, str):
+        return snapshot.parse_utc_datetime(value)
+    return snapshot.created_at_utc
+
+
+def volume_snapshot_ready_to_use(snapshot: CustomObject) -> bool:
+    """Return whether one snapshot is ready to use.
+
+    Returns
+    -------
+    bool
+        Value of `status.readyToUse`.
+    """
+    return bool(snapshot.status.get("readyToUse"))
+
+
+def volume_snapshot_error_message(snapshot: CustomObject) -> str:
+    """Return the snapshot controller error message.
+
+    Returns
+    -------
+    str
+        Snapshot status error message, or an empty string.
+    """
+    error = snapshot.status.get("error")
+    if not isinstance(error, Mapping):
+        return ""
+    error = cast("Mapping[str, object]", error)
+    return str(error.get("message") or "").strip()
+
+
+def volume_snapshot_source_claim(snapshot: CustomObject) -> str:
+    """Return the source PersistentVolumeClaim name.
+
+    Returns
+    -------
+    str
+        Source PVC name, or an empty string when unavailable.
+    """
+    source = snapshot.spec.get("source")
+    if not isinstance(source, Mapping):
+        return ""
+    source = cast("Mapping[str, object]", source)
+    return str(source.get("persistentVolumeClaimName") or "").strip()
+
+
+def volume_snapshot_class_name(snapshot: CustomObject) -> str:
+    """Return the snapshot class name.
+
+    Returns
+    -------
+    str
+        `spec.volumeSnapshotClassName`, or an empty string.
+    """
+    return str(snapshot.spec.get("volumeSnapshotClassName") or "").strip()
+
+
+def _require_volume_snapshot_namespace_name(
+    snapshot: CustomObject, action: str
+) -> tuple[str, str]:
+    namespace = snapshot.namespace
+    name = snapshot.name
+    if not namespace or not name:
+        msg = f"cannot {action} with missing metadata.name/namespace"
+        raise OSError(msg)
+    return namespace, name

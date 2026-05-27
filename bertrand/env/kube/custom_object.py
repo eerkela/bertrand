@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import math
-from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
+from collections.abc import AsyncIterator, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -15,14 +15,11 @@ from bertrand.env.git import Deadline
 from bertrand.env.kube.crd import CustomResourceDefinition
 
 from .api._helpers import (
-    _is_conflict,
     _is_missing_api_resource,
     _is_not_found,
-    _label_selector,
-    _wait_until_deleted,
 )
+from .api.resource import ResourceScope, _DescriptorEngine
 from .api.watch import WatchEvent, WatchExpired
-from .api.watch import watch as kube_watch
 
 if TYPE_CHECKING:
     import builtins
@@ -30,14 +27,8 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 
-type CustomObjectScope = Literal["cluster", "namespaced"]
+type CustomObjectScope = ResourceScope
 type _CustomObjectFragment = Mapping[str, object] | BaseModel
-
-
-@dataclass(frozen=True)
-class _CustomObjectSnapshot:
-    items: list[CustomObject]
-    resource_version: str
 
 
 class CustomObjectMetadata(BaseModel):
@@ -338,165 +329,7 @@ class CustomObject:
 
 
 @dataclass(frozen=True)
-class CustomObjectWrapper:
-    """Base wrapper around one Kubernetes custom object.
-
-    Parameters
-    ----------
-    _obj : CustomObject
-        Generic custom object returned by Kubernetes.
-    """
-
-    _obj: CustomObject
-    resource: ClassVar[CustomObjectResource[Any]]
-
-    @classmethod
-    def _from_object(cls, obj: CustomObject) -> Self:
-        return cls(_obj=obj)
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        name: str,
-        timeout: float,
-        namespace: str | None = None,
-    ) -> Self | None:
-        """Read one wrapped custom object by name.
-
-        Returns
-        -------
-        Self | None
-            Wrapped object, or `None` when absent.
-        """
-        result = await cls.resource.get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=timeout,
-        )
-        return cast("Self | None", result)
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-        namespace: str | None = None,
-    ) -> builtins.list[Self]:
-        """List wrapped custom objects with optional label filtering.
-
-        Returns
-        -------
-        list[Self]
-            Wrapped objects matching the selector.
-        """
-        result = await cls.resource.list(
-            kube,
-            namespace=namespace,
-            labels=labels,
-            timeout=timeout,
-        )
-        return cast("list[Self]", result)
-
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
-        """Re-read this custom object.
-
-        Returns
-        -------
-        Self | None
-            Fresh wrapper, or `None` when deleted.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not carry enough metadata to refresh itself.
-        """
-        if self._obj.scope == "namespaced" and not self.namespace:
-            msg = f"cannot refresh {self._obj.plural} object without namespace"
-            raise OSError(msg)
-        if not self.name:
-            msg = f"cannot refresh {self._obj.plural} object without name"
-            raise OSError(msg)
-        return await type(self).get(
-            kube,
-            namespace=self.namespace or None,
-            name=self.name,
-            timeout=timeout,
-        )
-
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this custom object by name.
-
-        Raises
-        ------
-        OSError
-            If this wrapper does not carry enough metadata to delete itself.
-        """
-        if self._obj.scope == "namespaced" and not self.namespace:
-            msg = f"cannot delete {self._obj.plural} object without namespace"
-            raise OSError(msg)
-        if not self.name:
-            msg = f"cannot delete {self._obj.plural} object without name"
-            raise OSError(msg)
-        await type(self).resource.delete_by_name(
-            kube,
-            namespace=self.namespace or None,
-            name=self.name,
-            timeout=timeout,
-        )
-
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
-        """Wait until this custom object is deleted."""
-        label = f"{self._obj.plural} {self.namespace}/{self.name}"
-        if not self.namespace:
-            label = f"{self._obj.plural} {self.name}"
-        await type(self).resource.wait_deleted(
-            label=label,
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
-        )
-
-    @property
-    def name(self) -> str:
-        """Return the Kubernetes object name.
-
-        Returns
-        -------
-        str
-            Kubernetes ``metadata.name``.
-        """
-        return self._obj.name
-
-    @property
-    def namespace(self) -> str:
-        """Return the Kubernetes object namespace.
-
-        Returns
-        -------
-        str
-            Kubernetes ``metadata.namespace``, or an empty string for cluster-scoped
-            objects.
-        """
-        return self._obj.namespace
-
-    @property
-    def labels(self) -> Mapping[str, str]:
-        """Return Kubernetes object labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only Kubernetes labels.
-        """
-        return self._obj.labels
-
-
-@dataclass(frozen=True)
-class CustomObjectResource[T_co]:
+class CustomObjectResource[T_co](_DescriptorEngine):
     """Descriptor for an externally installed or Bertrand-owned custom-object API.
 
     Parameters
@@ -545,6 +378,8 @@ class CustomObjectResource[T_co]:
     crd_labels: Mapping[str, str] | None = None
     crd_timeout_message: str | None = None
     default_namespace: str | None = None
+    _cluster_namespace_phrase: ClassVar[str] = "in namespace"
+    _cluster_watch_phrase: ClassVar[str] = "in namespace"
 
     def __post_init__(self) -> None:
         """Validate descriptor parser configuration.
@@ -627,98 +462,6 @@ class CustomObjectResource[T_co]:
         )
         await crd.wait_established(kube, timeout=deadline.remaining())
 
-    async def get(
-        self,
-        kube: Kube,
-        *,
-        name: str,
-        timeout: float,
-        namespace: str | None = None,
-        context: str | None = None,
-    ) -> T_co | None:
-        """Read one custom object by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            Custom object name.
-        timeout : float
-            Maximum request budget in seconds.
-        namespace : str | None, optional
-            Namespace that owns the custom object.
-        context : str | None, optional
-            Kubernetes request diagnostic override.
-
-        Returns
-        -------
-        T_co | None
-            Wrapped object, or ``None`` if it does not exist.
-
-        Raises
-        ------
-        OSError
-            If the custom-object API kind is unavailable or the returned payload is
-            malformed.
-        """
-        namespace = self._single_namespace(self._namespace(namespace), action="read")
-        label = self._object_label(name=name, namespace=namespace)
-        endpoint, api_kwargs = self._read_endpoint(
-            kube,
-            namespace=namespace,
-            name=name,
-        )
-        try:
-            payload = await self._request(
-                kube,
-                endpoint=endpoint,
-                api_kwargs=api_kwargs,
-                timeout=timeout,
-                context=context or f"failed to read {self.kind} {label}",
-            )
-        except OSError as err:
-            if _is_not_found(err) and not _is_missing_api_resource(err):
-                return None
-            raise
-        if payload is None:
-            return None
-        return self._wrap(self._wrap_object(payload))
-
-    async def list(
-        self,
-        kube: Kube,
-        *,
-        timeout: float,
-        labels: Mapping[str, str] | None = None,
-        namespace: str | None = None,
-    ) -> builtins.list[T_co]:
-        """List custom objects with optional labels.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds.
-        labels : Mapping[str, str] | None, optional
-            Exact-match label selector.
-        namespace : str | None, optional
-            Optional namespace filter.
-
-        Returns
-        -------
-        list[T_co]
-            Wrapped objects returned by Kubernetes.
-        """
-        snapshot = await self._snapshot(
-            kube,
-            namespace=self._namespace(namespace),
-            labels=self._selector(labels),
-            timeout=timeout,
-        )
-        return [self._wrap(obj) for obj in snapshot.items]
-
     async def watch(
         self,
         kube: Kube,
@@ -744,7 +487,7 @@ class CustomObjectResource[T_co]:
         if timeout <= 0:
             msg = f"{self.kind} watch timeout must be non-negative"
             raise TimeoutError(msg)
-        namespace = self._watch_namespace(self._namespace(namespace))
+        namespace = self._watch_namespace(namespace)
         labels = self._selector(labels)
         deadline = Deadline.from_timeout(
             timeout,
@@ -757,15 +500,17 @@ class CustomObjectResource[T_co]:
             if remaining <= 0:
                 return
             if not current_version:
-                snapshot = await self._snapshot(
+                items, current_version = await self._snapshot(
                     kube,
                     namespace=namespace,
                     labels=labels,
                     timeout=remaining,
                 )
-                current_version = snapshot.resource_version
                 if can_emit_initial:
-                    for event in self._initial_watch_events(snapshot):
+                    for event in self._initial_watch_events(
+                        items,
+                        resource_version=current_version,
+                    ):
                         yield event
                     can_emit_initial = False
 
@@ -773,7 +518,7 @@ class CustomObjectResource[T_co]:
             if remaining <= 0:
                 return
             try:
-                async for event in self._watch_once(
+                async for event in self.watch_stream(
                     kube,
                     namespace=namespace,
                     labels=labels,
@@ -782,12 +527,7 @@ class CustomObjectResource[T_co]:
                 ):
                     if event.resource_version:
                         current_version = event.resource_version
-                    yield WatchEvent(
-                        type=event.type,
-                        object=self._wrap(event.object),
-                        resource_version=event.resource_version,
-                        raw_type=event.raw_type,
-                    )
+                    yield event
             except WatchExpired:
                 current_version = ""
             else:
@@ -828,11 +568,10 @@ class CustomObjectResource[T_co]:
         T_co
             Wrapped created object.
         """
-        namespace = self._single_namespace(self._namespace(namespace), action="create")
-        obj = await self._create(
+        namespace = self._single_namespace(namespace, action="create")
+        return await self.create_manifest(
             kube,
-            namespace=namespace,
-            body=self._body(
+            manifest=self._body(
                 namespace=namespace,
                 name=name,
                 spec=spec,
@@ -840,55 +579,21 @@ class CustomObjectResource[T_co]:
                 annotations=annotations,
             ),
             timeout=timeout,
-        )
-        return self._wrap(obj)
-
-    async def create_manifest(
-        self,
-        kube: Kube,
-        *,
-        manifest: Mapping[str, object],
-        timeout: float,
-        namespace: str | None = None,
-    ) -> T_co:
-        """Create one custom object from a complete manifest.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        manifest : Mapping[str, object]
-            Complete Kubernetes manifest.
-        timeout : float
-            Maximum request budget in seconds.
-        namespace : str | None, optional
-            Namespace that owns the custom object.
-
-        Returns
-        -------
-        T_co
-            Wrapped created object.
-        """
-        namespace = self._single_namespace(self._namespace(namespace), action="create")
-        self._require_manifest_name(manifest)
-        obj = await self._create(
-            kube,
             namespace=namespace,
-            body=manifest,
-            timeout=timeout,
         )
-        return self._wrap(obj)
 
     async def upsert(
         self,
         kube: Kube,
         *,
         name: str,
-        spec: _CustomObjectFragment,
         timeout: float,
         namespace: str | None = None,
+        spec: _CustomObjectFragment | None = None,
+        manifest: Mapping[str, object] | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
+        owner: Callable[..., Any] | None = None,
     ) -> T_co:
         """Create or patch one custom object from intent fields.
 
@@ -913,21 +618,35 @@ class CustomObjectResource[T_co]:
         -------
         T_co
             Wrapped created or patched object.
+
+        Raises
+        ------
+        OSError
+            If neither ``spec`` nor ``manifest`` is provided.
         """
-        namespace = self._single_namespace(self._namespace(namespace), action="upsert")
-        obj = await self._upsert(
-            kube,
-            namespace=namespace,
-            body=self._body(
+        namespace = self._single_namespace(namespace, action="upsert")
+        if manifest is None:
+            if spec is None:
+                msg = "custom object upsert requires spec or manifest"
+                raise OSError(msg)
+            manifest = self._body(
                 namespace=namespace,
                 name=name,
                 spec=spec,
                 labels=labels,
                 annotations=annotations,
+            )
+        return cast(
+            "T_co",
+            await self._upsert_manifest(
+                kube,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+                namespace=namespace,
+                owner=owner,
             ),
-            timeout=timeout,
         )
-        return self._wrap(obj)
 
     async def patch(
         self,
@@ -938,39 +657,31 @@ class CustomObjectResource[T_co]:
         timeout: float,
         namespace: str | None = None,
         context: str | None = None,
+        owner: Callable[..., Any] | None = None,
     ) -> T_co:
         """Patch one custom object with a raw Kubernetes patch body.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            Custom object name.
-        body : Mapping[str, object]
-            Raw Kubernetes patch body.
-        timeout : float
-            Maximum request budget in seconds.
-        namespace : str | None, optional
-            Namespace that owns the custom object.
-        context : str | None, optional
-            Kubernetes request diagnostic override.
 
         Returns
         -------
         T_co
-            Wrapped object returned by Kubernetes.
+            Wrapped patched object.
         """
-        namespace = self._single_namespace(self._namespace(namespace), action="patch")
-        obj = await self._patch(
+        namespace = self._single_namespace(namespace, action="patch")
+        label = self._object_label(name=name, namespace=namespace)
+        payload = await self._run(
             kube,
-            namespace=namespace,
-            name=name,
-            body=body,
-            context=context,
+            lambda request_timeout: self._patch(
+                kube,
+                namespace,
+                name,
+                body,
+                request_timeout,
+            ),
             timeout=timeout,
+            context=context or f"failed to patch {self.kind} {label}",
+            missing_ok=False,
         )
-        return self._wrap(obj)
+        return self._wrap_payload(payload, owner=owner, context=self.kind)
 
     async def patch_status(
         self,
@@ -989,7 +700,7 @@ class CustomObjectResource[T_co]:
             Wrapped object returned by Kubernetes.
         """
         namespace = self._single_namespace(
-            self._namespace(namespace),
+            namespace,
             action="patch status",
         )
         obj = await self._patch_status(
@@ -1001,63 +712,6 @@ class CustomObjectResource[T_co]:
         )
         return self._wrap(obj)
 
-    async def delete_by_name(
-        self,
-        kube: Kube,
-        *,
-        name: str,
-        timeout: float,
-        namespace: str | None = None,
-    ) -> None:
-        """Delete one custom object by name.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            Custom object name.
-        timeout : float
-            Maximum request budget in seconds.
-        namespace : str | None, optional
-            Namespace that owns the custom object.
-        """
-        namespace = self._single_namespace(self._namespace(namespace), action="delete")
-        label = self._object_label(name=name, namespace=namespace)
-        endpoint, api_kwargs = self._delete_endpoint(
-            kube,
-            namespace=namespace,
-            name=name,
-        )
-        await self._request(
-            kube,
-            endpoint=endpoint,
-            api_kwargs=api_kwargs,
-            timeout=timeout,
-            context=f"failed to delete {self.kind} {label}",
-            missing_ok=True,
-        )
-
-    async def wait_deleted(
-        self,
-        *,
-        label: str,
-        timeout: float,
-        refresh: Callable[[float], Awaitable[object | None]],
-    ) -> None:
-        """Wait for a custom object to disappear.
-
-        Parameters
-        ----------
-        label : str
-            Human-readable resource label for diagnostics.
-        timeout : float
-            Maximum wait budget in seconds.
-        refresh : Callable[[float], Awaitable[object | None]]
-            Callback that returns the live object or `None`.
-        """
-        await _wait_until_deleted(label=label, timeout=timeout, refresh=refresh)
-
     async def _snapshot(
         self,
         kube: Kube,
@@ -1065,7 +719,7 @@ class CustomObjectResource[T_co]:
         timeout: float,
         labels: Mapping[str, str] | None = None,
         namespace: str | None = None,
-    ) -> _CustomObjectSnapshot:
+    ) -> tuple[builtins.list[CustomObject], str]:
         namespace = self._watch_namespace(namespace)
         payload = await self._snapshot_payload(
             kube,
@@ -1073,10 +727,7 @@ class CustomObjectResource[T_co]:
             labels=labels,
             timeout=timeout,
         )
-        return _CustomObjectSnapshot(
-            items=self._snapshot_items(payload),
-            resource_version=self._snapshot_resource_version(payload),
-        )
+        return self._snapshot_items(payload), self._snapshot_resource_version(payload)
 
     async def _snapshot_payload(
         self,
@@ -1086,18 +737,14 @@ class CustomObjectResource[T_co]:
         labels: Mapping[str, str] | None,
         namespace: str | None,
     ) -> Mapping[str, object]:
-        endpoint, api_kwargs = self._list_endpoint(
+        payloads = await self._list_payloads(
             kube,
-            namespace=namespace,
-            label_selector=_label_selector(labels),
-        )
-        payload = await self._request(
-            kube,
-            endpoint=endpoint,
-            api_kwargs=api_kwargs,
+            namespaces=(namespace,) if namespace else None,
+            label_selector=self._label_selector(labels),
+            field_selector=None,
             timeout=timeout,
-            context=self._snapshot_context(namespace),
         )
+        payload = payloads[0] if payloads else None
         if payload is None:
             msg = f"Kubernetes {self.kind} list returned no payload"
             raise OSError(msg)
@@ -1141,125 +788,144 @@ class CustomObjectResource[T_co]:
 
     def _initial_watch_events(
         self,
-        snapshot: _CustomObjectSnapshot,
+        items: builtins.list[CustomObject],
+        *,
+        resource_version: str,
     ) -> tuple[WatchEvent[T_co], ...]:
         return tuple(
             WatchEvent(
                 type="ADDED",
                 object=self._wrap(item),
-                resource_version=item.resource_version or snapshot.resource_version,
+                resource_version=item.resource_version or resource_version,
                 raw_type="ADDED",
             )
-            for item in snapshot.items
+            for item in items
         )
 
-    async def _watch_once(
+    def _read(
         self,
         kube: Kube,
-        *,
-        timeout: float,
         namespace: str | None,
-        labels: Mapping[str, str] | None,
-        resource_version: str,
-    ) -> AsyncIterator[WatchEvent[CustomObject]]:
-        watch_fn, api_kwargs, context = self._watch_endpoint(
-            kube,
-            namespace=namespace,
-        )
-        async for event in kube_watch(
-            watch_fn,
-            wrapper=self._wrap_object,
-            timeout=timeout,
-            context=context,
-            resource_version=resource_version,
-            labels=labels,
-            api_kwargs=api_kwargs,
-        ):
-            yield event
-
-    async def _create(
-        self,
-        kube: Kube,
-        *,
-        namespace: str | None,
-        body: Mapping[str, object],
-        timeout: float,
-    ) -> CustomObject:
-        label = self._manifest_label(body, namespace=namespace)
-        endpoint, api_kwargs = self._create_endpoint(
-            kube,
-            namespace=namespace,
-            body=body,
-        )
-        payload = await self._request(
-            kube,
-            endpoint=endpoint,
-            api_kwargs=api_kwargs,
-            timeout=timeout,
-            context=f"failed to create {self.kind} {label}",
-        )
-        return self._wrap_object(payload)
-
-    async def _upsert(
-        self,
-        kube: Kube,
-        *,
-        namespace: str | None,
-        body: Mapping[str, object],
-        timeout: float,
-    ) -> CustomObject:
-        metadata = body.get("metadata")
-        if not isinstance(metadata, Mapping):
-            msg = "custom object body must define metadata"
-            raise OSError(msg)
-        metadata = cast("Mapping[str, object]", metadata)
-        name = str(metadata.get("name") or "").strip()
-        if not name:
-            msg = "custom object body must define metadata.name"
-            raise OSError(msg)
-        try:
-            return await self._create(
-                kube,
-                namespace=namespace,
-                body=body,
-                timeout=timeout,
-            )
-        except OSError as err:
-            if not _is_conflict(err):
-                raise
-        return await self._patch(
+        name: str,
+        request_timeout: float | None,
+    ) -> object:
+        endpoint, api_kwargs = self._read_endpoint(
             kube,
             namespace=namespace,
             name=name,
-            body=body,
-            timeout=timeout,
         )
+        return endpoint(**api_kwargs, _request_timeout=request_timeout)
 
-    async def _patch(
+    def _list_all(
         self,
         kube: Kube,
-        *,
+        label_selector: str | None,
+        field_selector: str | None,
+        request_timeout: float | None,
+    ) -> object:
+        del field_selector
+        endpoint, api_kwargs = self._list_endpoint(
+            kube,
+            namespace=None,
+            label_selector=label_selector,
+        )
+        return endpoint(**api_kwargs, _request_timeout=request_timeout)
+
+    def _list_namespace(
+        self,
+        kube: Kube,
+        namespace: str,
+        label_selector: str | None,
+        field_selector: str | None,
+        request_timeout: float | None,
+    ) -> object:
+        del field_selector
+        endpoint, api_kwargs = self._list_endpoint(
+            kube,
+            namespace=namespace,
+            label_selector=label_selector,
+        )
+        return endpoint(**api_kwargs, _request_timeout=request_timeout)
+
+    def _create(
+        self,
+        kube: Kube,
+        namespace: str | None,
+        manifest: Mapping[str, object],
+        request_timeout: float | None,
+    ) -> object:
+        endpoint, api_kwargs = self._create_endpoint(
+            kube,
+            namespace=namespace,
+            body=manifest,
+        )
+        return endpoint(**api_kwargs, _request_timeout=request_timeout)
+
+    def _patch(
+        self,
+        kube: Kube,
         namespace: str | None,
         name: str,
-        body: Mapping[str, object],
-        timeout: float,
-        context: str | None = None,
-    ) -> CustomObject:
-        label = self._object_label(name=name, namespace=namespace)
+        manifest: Mapping[str, object],
+        request_timeout: float | None,
+    ) -> object:
         endpoint, api_kwargs = self._patch_endpoint(
             kube,
             namespace=namespace,
             name=name,
-            body=body,
+            body=manifest,
         )
-        payload = await self._request(
+        return endpoint(**api_kwargs, _request_timeout=request_timeout)
+
+    def _delete(
+        self,
+        kube: Kube,
+        namespace: str | None,
+        name: str,
+        request_timeout: float | None,
+    ) -> object:
+        endpoint, api_kwargs = self._delete_endpoint(
             kube,
-            endpoint=endpoint,
-            api_kwargs=api_kwargs,
-            timeout=timeout,
-            context=context or f"failed to patch {self.kind} {label}",
+            namespace=namespace,
+            name=name,
         )
-        return self._wrap_object(payload)
+        return endpoint(**api_kwargs, _request_timeout=request_timeout)
+
+    def _watch_request(
+        self,
+        kube: Kube,
+        *,
+        namespace: str | None,
+    ) -> tuple[Callable[..., object], Mapping[str, object], str]:
+        return self._watch_endpoint(kube, namespace=namespace)
+
+    def _read_context(self, label: str) -> str:
+        return f"failed to read {self.kind} {label}"
+
+    def _read_missing_ok(self) -> bool:
+        return False
+
+    def _read_not_found(self, err: OSError) -> bool:
+        return _is_not_found(err) and not _is_missing_api_resource(err)
+
+    def _list_all_context(self, *, all_namespaces: bool) -> str:
+        del all_namespaces
+        return f"failed to list {self.kind}s"
+
+    def _validate_delete_payload(self, payload: object | None, *, label: str) -> None:
+        del payload, label
+
+    def _manifest_label(
+        self,
+        manifest: Mapping[str, object],
+        *,
+        namespace: str | None,
+        name: str | None,
+    ) -> str:
+        self._require_manifest_name(manifest)
+        metadata = cast("Mapping[str, object]", manifest["metadata"])
+        object_name = name or str(metadata.get("name") or "").strip()
+        return self._object_label(name=object_name, namespace=namespace)
 
     async def _patch_status(
         self,
@@ -1308,26 +974,6 @@ class CustomObjectResource[T_co]:
             ),
             "spec": _custom_object_fragment(spec),
         }
-
-    async def _request(
-        self,
-        kube: Kube,
-        *,
-        endpoint: Callable[..., object],
-        api_kwargs: Mapping[str, object],
-        timeout: float,
-        context: str,
-        missing_ok: bool = False,
-    ) -> object | None:
-        return await kube.run(
-            lambda request_timeout: endpoint(
-                **api_kwargs,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=context,
-            missing_ok=missing_ok,
-        )
 
     def _read_endpoint(
         self,
@@ -1494,6 +1140,40 @@ class CustomObjectResource[T_co]:
             f"failed to watch {self.kind}s in namespace {namespace!r}",
         )
 
+    def _wrap_payload(
+        self,
+        payload: object,
+        *,
+        owner: Callable[..., Any] | None,
+        context: str,
+        malformed_message: str | None = None,
+    ) -> T_co:
+        del owner, context, malformed_message
+        return self._wrap(self._wrap_object(payload))
+
+    def _wrap_list_payloads(
+        self,
+        payloads: builtins.list[object | None],
+        *,
+        owner: Callable[..., Any] | None,
+    ) -> builtins.list[T_co]:
+        del owner
+        out: builtins.list[T_co] = []
+        for payload in payloads:
+            if payload is None:
+                msg = f"Kubernetes {self.kind} list returned no payload"
+                raise OSError(msg)
+            if not isinstance(payload, Mapping):
+                msg = f"malformed Kubernetes {self.kind} list payload"
+                raise OSError(msg)
+            out.extend(
+                self._wrap(item)
+                for item in self._snapshot_items(
+                    cast("Mapping[str, object]", payload),
+                )
+            )
+        return out
+
     def _wrap_object(self, payload: object) -> CustomObject:
         return CustomObject.from_payload(
             group=self.group,
@@ -1541,36 +1221,8 @@ class CustomObjectResource[T_co]:
             overrides=self.status_schema_overrides,
         )
 
-    def _namespace(self, namespace: str | None) -> str | None:
+    def _default_namespace(self, namespace: str | None) -> str | None:
         return namespace if namespace is not None else self.default_namespace
-
-    def _selector(self, labels: Mapping[str, str] | None) -> Mapping[str, str] | None:
-        if not self.labels:
-            return labels
-        merged = dict(self.labels)
-        merged.update(labels or {})
-        return merged
-
-    def _single_namespace(self, namespace: str | None, *, action: str) -> str | None:
-        namespace = namespace.strip() if namespace is not None else ""
-        if self.scope == "cluster":
-            if namespace:
-                msg = f"{self.kind} is cluster-scoped; cannot {action} in namespace"
-                raise ValueError(msg)
-            return None
-        if not namespace:
-            msg = f"{self.kind} {action} requires a namespace"
-            raise ValueError(msg)
-        return namespace
-
-    def _watch_namespace(self, namespace: str | None) -> str | None:
-        namespace = namespace.strip() if namespace is not None else ""
-        if self.scope == "cluster":
-            if namespace:
-                msg = f"{self.kind} is cluster-scoped; cannot watch in namespace"
-                raise ValueError(msg)
-            return None
-        return namespace or None
 
     def _metadata(
         self,
@@ -1589,19 +1241,6 @@ class CustomObjectResource[T_co]:
             metadata["namespace"] = namespace
         return metadata
 
-    def _manifest_label(
-        self,
-        body: Mapping[str, object],
-        *,
-        namespace: str | None,
-    ) -> str:
-        metadata = body.get("metadata")
-        if not isinstance(metadata, Mapping):
-            return self.kind
-        metadata = cast("Mapping[str, object]", metadata)
-        name = str(metadata.get("name") or "").strip()
-        return self._object_label(name=name, namespace=namespace)
-
     def _require_manifest_name(self, body: Mapping[str, object]) -> None:
         metadata = body.get("metadata")
         if not isinstance(metadata, Mapping):
@@ -1612,9 +1251,6 @@ class CustomObjectResource[T_co]:
         if not name:
             msg = "custom object manifest must define metadata.name"
             raise OSError(msg)
-
-    def _object_label(self, *, name: str, namespace: str | None) -> str:
-        return f"{namespace}/{name}" if namespace else name
 
 
 def _custom_object_fragment(fragment: _CustomObjectFragment) -> dict[str, object]:

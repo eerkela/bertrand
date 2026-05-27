@@ -4,30 +4,22 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.cli.external._device import (
-    delete_local_device_inventory,
-    device_line,
-    device_payload,
-    local_device_inventory,
-    upsert_local_device_inventory,
-)
 from bertrand.env.cli.external._runtime import emit_json
 from bertrand.env.cli.external._storage import (
+    node_report_status_payload,
     print_node_storage_doctor,
     print_node_storage_status,
     storage_cli_snapshot,
 )
-from bertrand.env.cli.external.secret import (
-    _add_capability,
-    _list_capabilities,
-    _local_node_capability_ref,
-    _local_node_scope_targets,
-    _remove_capability,
-)
 from bertrand.env.git import INFINITY
 from bertrand.env.kube.api.bootstrap import microk8s_cluster_ready
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.capability.device import list_device_inventory
+from bertrand.env.kube.capability.device import (
+    delete_device_inventory,
+    list_device_inventory,
+    refresh_node_resource_slice,
+    upsert_device_inventory,
+)
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
 from bertrand.env.kube.ceph.capacity import read_storage_state
 from bertrand.env.kube.node import Node
@@ -38,41 +30,7 @@ from bertrand.env.kube.node_identity import (
 )
 
 if TYPE_CHECKING:
-    import argparse
-    from collections.abc import Awaitable, Callable
-
-
-async def bertrand_node(args: argparse.Namespace) -> None:
-    """Execute a ``bertrand node`` subcommand.
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed external CLI arguments.
-
-    Raises
-    ------
-    ValueError
-        If the parsed node subcommand is unsupported.
-    """
-    command = args.node_command
-    if command == "status":
-        await bertrand_node_status(json_output=args.json)
-        return
-    if command == "storage":
-        await _bertrand_node_storage(args)
-        return
-    if command == "name":
-        await _bertrand_node_name(args)
-        return
-    if command == "secret":
-        await _bertrand_node_secret(args)
-        return
-    if command == "device":
-        await _bertrand_node_device(args)
-        return
-    msg = f"unsupported node command: {command!r}"
-    raise ValueError(msg)
+    from bertrand.env.kube.capability.device import BertrandDeviceRecord
 
 
 async def bertrand_node_status(*, json_output: bool) -> None:
@@ -106,30 +64,6 @@ async def bertrand_node_status(*, json_output: bool) -> None:
         print(f"  DRA devices: {len(devices)}")
 
 
-async def _bertrand_node_storage(args: argparse.Namespace) -> None:
-    command = args.storage_command
-    if command == "status":
-        await bertrand_node_storage_status(json_output=args.json)
-        return
-    if command == "doctor":
-        await bertrand_node_storage_doctor(json_output=args.json)
-        return
-    msg = f"unsupported node storage command: {command!r}"
-    raise ValueError(msg)
-
-
-async def _bertrand_node_name(args: argparse.Namespace) -> None:
-    command = args.node_name_command
-    if command == "set":
-        await bertrand_node_name_set(display_name=args.name, timeout=args.timeout)
-        return
-    if command == "clear":
-        await bertrand_node_name_set(display_name="", timeout=args.timeout)
-        return
-    msg = f"unsupported node name command: {command!r}"
-    raise ValueError(msg)
-
-
 async def bertrand_node_name_set(*, display_name: str, timeout: float) -> None:
     """Set or clear the local Bertrand node display name.
 
@@ -150,66 +84,6 @@ async def bertrand_node_name_set(*, display_name: str, timeout: float) -> None:
     print(f"node display name: {shown}")
 
 
-async def _bertrand_node_secret(args: argparse.Namespace) -> None:
-    command = args.node_secret_command
-    if command not in {"add", "rm", "list"}:
-        msg = f"unsupported node secret command: {command!r}"
-        raise ValueError(msg)
-    with await Kube.host(timeout=args.timeout) as kube:
-        if command == "add":
-            ref = await _local_node_capability_ref(
-                kube,
-                kind=args.kind,
-                capability_id=args.id,
-                timeout=args.timeout,
-            )
-            await _add_capability(kube, ref, source=args.source, timeout=args.timeout)
-            return
-        if command == "rm":
-            ref = await _local_node_capability_ref(
-                kube,
-                kind=args.kind,
-                capability_id=args.id,
-                timeout=args.timeout,
-            )
-            await _remove_capability(kube, ref, timeout=args.timeout)
-            return
-        if command == "list":
-            await _list_capabilities(
-                kube,
-                await _local_node_scope_targets(kube, timeout=args.timeout),
-                kind=args.kind,
-                json_output=args.json,
-                timeout=args.timeout,
-            )
-            return
-
-
-async def _bertrand_node_device(args: argparse.Namespace) -> None:
-    command = args.node_device_command
-    if command == "list":
-        await bertrand_node_device_list(json_output=args.json, timeout=args.timeout)
-        return
-    if command == "add":
-        await bertrand_node_device_add(
-            capability_id=args.capability,
-            device_name=args.name,
-            cdi_selector=args.cdi,
-            attributes=_parse_attrs(args.attr),
-            timeout=args.timeout,
-        )
-        return
-    if command == "rm":
-        await bertrand_node_device_rm(
-            capability_id=args.capability,
-            device_name=args.name,
-            timeout=args.timeout,
-        )
-        return
-    msg = f"unsupported node device command: {command!r}"
-    raise ValueError(msg)
-
-
 async def bertrand_node_device_list(*, json_output: bool, timeout: float) -> None:
     """Print managed DRA inventory for the local Kubernetes node.
 
@@ -221,8 +95,13 @@ async def bertrand_node_device_list(*, json_output: bool, timeout: float) -> Non
         Maximum Kubernetes request budget in seconds.
     """
     with await Kube.host(timeout=timeout) as kube:
-        records = await local_device_inventory(kube, timeout=timeout)
-    payload = [device_payload(record) for record in records]
+        node = await ensure_local_bertrand_node(kube, timeout=timeout)
+        records = await list_device_inventory(
+            kube,
+            host_ids=(node.host_id,),
+            timeout=timeout,
+        )
+    payload = [_device_payload(record) for record in records]
     if json_output:
         emit_json(payload)
         return
@@ -230,7 +109,7 @@ async def bertrand_node_device_list(*, json_output: bool, timeout: float) -> Non
         print("no DRA devices")
         return
     for record in records:
-        print(device_line(record))
+        print(_device_line(record))
 
 
 async def bertrand_node_device_add(
@@ -257,15 +136,23 @@ async def bertrand_node_device_add(
         Maximum Kubernetes request budget in seconds.
     """
     with await Kube.host(timeout=timeout) as kube:
-        record = await upsert_local_device_inventory(
+        node = await ensure_local_bertrand_node(kube, timeout=timeout)
+        record = await upsert_device_inventory(
             kube,
             capability_id=capability_id,
+            host_id=node.host_id,
+            node_name=node.node_name,
             device_name=device_name,
             cdi_selector=cdi_selector,
             attributes=attributes,
             timeout=timeout,
         )
-    print(device_line(record))
+        await refresh_node_resource_slice(
+            kube,
+            node_name=node.node_name,
+            timeout=timeout,
+        )
+    print(_device_line(record))
 
 
 async def bertrand_node_device_rm(
@@ -286,10 +173,18 @@ async def bertrand_node_device_rm(
         Maximum Kubernetes request budget in seconds.
     """
     with await Kube.host(timeout=timeout) as kube:
-        deleted = await delete_local_device_inventory(
+        node = await ensure_local_bertrand_node(kube, timeout=timeout)
+        deleted = await delete_device_inventory(
             kube,
             capability_id=capability_id,
+            host_id=node.host_id,
+            node_name=node.node_name,
             device_name=device_name,
+            timeout=timeout,
+        )
+        await refresh_node_resource_slice(
+            kube,
+            node_name=node.node_name,
             timeout=timeout,
         )
     state = "deleted" if deleted else "not found"
@@ -331,7 +226,19 @@ async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
     print_node_storage_doctor(snapshot)
 
 
-def _parse_attrs(values: list[str]) -> dict[str, str]:
+def parse_device_attrs(values: list[str]) -> dict[str, str]:
+    """Parse repeated ``KEY=VALUE`` device attributes.
+
+    Returns
+    -------
+    dict[str, str]
+        Parsed attributes sorted by key.
+
+    Raises
+    ------
+    ValueError
+        If any attribute does not use ``KEY=VALUE`` syntax.
+    """
     attributes: dict[str, str] = {}
     for raw in values:
         if "=" not in raw:
@@ -351,11 +258,15 @@ async def _node_status_payload() -> dict[str, object]:
         host_id = current_host_id()
     except OSError:
         host_id = ""
+    try:
+        microk8s_ready = bool(await microk8s_cluster_ready(timeout=INFINITY))
+    except (OSError, TimeoutError, RuntimeError, ValueError):
+        microk8s_ready = False
     payload: dict[str, object] = {
         "host_id": host_id,
         "display_name": "",
         "phase": "",
-        "microk8s_ready": await _safe_ready(microk8s_cluster_ready),
+        "microk8s_ready": microk8s_ready,
         "rook_ceph_ready": False,
         "kubernetes": {},
         "storage_report": "",
@@ -403,21 +314,33 @@ async def _node_status_payload() -> dict[str, object]:
                 None,
             )
             if report is not None:
-                payload["storage_report"] = report.status_payload()
+                payload["storage_report"] = node_report_status_payload(report)
             devices = await list_device_inventory(
                 kube,
                 host_ids=(host_id,) if host_id else None,
                 node_names=(node.name,),
                 timeout=INFINITY,
             )
-            payload["devices"] = [device_payload(device) for device in devices]
+            payload["devices"] = [_device_payload(device) for device in devices]
     except (OSError, TimeoutError, RuntimeError, ValueError) as err:
         payload["kubernetes_error"] = str(err)
     return payload
 
 
-async def _safe_ready(fn: Callable[..., Awaitable[bool]]) -> bool:
-    try:
-        return bool(await fn(timeout=INFINITY))
-    except (OSError, TimeoutError, RuntimeError, ValueError):
-        return False
+def _device_payload(record: BertrandDeviceRecord) -> dict[str, object]:
+    return {
+        "name": record.name,
+        "capability_id": record.capability_id,
+        "host_id": record.host_id,
+        "node_name": record.node_name,
+        "device_name": record.spec.device_name,
+        "cdi_selector": record.cdi_selector,
+        "attributes": dict(record.spec.attributes),
+    }
+
+
+def _device_line(record: BertrandDeviceRecord) -> str:
+    return (
+        f"{record.capability_id} {record.spec.device_name} "
+        f"[{record.node_name}] -> {record.cdi_selector}"
+    )

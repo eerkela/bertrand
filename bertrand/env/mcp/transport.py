@@ -15,33 +15,27 @@ MCP_TRANSPORTS = ("stdio",)
 MCPTransport = Literal["stdio"]
 
 
-class _LSPToolHandlers:
-    def __init__(self, lsp: LSPManager) -> None:
-        self._lsp = lsp
-
-    def lsp_status(self, language: str | None = None) -> dict[str, Any]:
-        return self._lsp.status(language)
+def _register_lsp_tools(server: FastMCP, lsp: LSPManager) -> None:
+    def lsp_status(language: str | None = None) -> dict[str, Any]:
+        return lsp.status(language)
 
     async def lsp_hover(
-        self,
         language: str,
         path: str,
         line: int,
         column: int,
     ) -> dict[str, Any] | None:
-        return await self._lsp.hover(language, path, line, column)
+        return await lsp.hover(language, path, line, column)
 
     async def lsp_definition(
-        self,
         language: str,
         path: str,
         line: int,
         column: int,
     ) -> list[dict[str, Any]]:
-        return await self._lsp.definition(language, path, line, column)
+        return await lsp.definition(language, path, line, column)
 
     async def lsp_references(
-        self,
         language: str,
         path: str,
         line: int,
@@ -49,7 +43,7 @@ class _LSPToolHandlers:
         *,
         include_declaration: bool = True,
     ) -> list[dict[str, Any]]:
-        return await self._lsp.references(
+        return await lsp.references(
             language,
             path,
             line,
@@ -58,69 +52,63 @@ class _LSPToolHandlers:
         )
 
     async def lsp_document_symbols(
-        self,
         language: str,
         path: str,
     ) -> list[dict[str, Any]]:
-        return await self._lsp.document_symbols(language, path)
+        return await lsp.document_symbols(language, path)
 
     async def lsp_workspace_symbols(
-        self,
         language: str,
         query: str,
     ) -> list[dict[str, Any]]:
-        return await self._lsp.workspace_symbols(language, query)
+        return await lsp.workspace_symbols(language, query)
 
     async def lsp_diagnostics(
-        self,
         language: str,
         path: str,
     ) -> list[dict[str, Any]]:
-        return await self._lsp.diagnostics(language, path)
+        return await lsp.diagnostics(language, path)
 
     async def lsp_completion(
-        self,
         language: str,
         path: str,
         line: int,
         column: int,
     ) -> list[dict[str, Any]]:
-        return await self._lsp.completion(language, path, line, column)
+        return await lsp.completion(language, path, line, column)
 
-
-def _register_lsp_tools(server: FastMCP, handlers: _LSPToolHandlers) -> None:
     server.tool(
         name="lsp_status",
         description="Return status for managed Bertrand language-server sessions.",
-    )(handlers.lsp_status)
+    )(lsp_status)
     server.tool(
         name="lsp_hover",
         description="Return hover information for a workspace source position.",
-    )(handlers.lsp_hover)
+    )(lsp_hover)
     server.tool(
         name="lsp_definition",
         description="Return definition locations for a workspace source position.",
-    )(handlers.lsp_definition)
+    )(lsp_definition)
     server.tool(
         name="lsp_references",
         description="Return reference locations for a workspace source position.",
-    )(handlers.lsp_references)
+    )(lsp_references)
     server.tool(
         name="lsp_document_symbols",
         description="Return semantic symbols for one workspace source file.",
-    )(handlers.lsp_document_symbols)
+    )(lsp_document_symbols)
     server.tool(
         name="lsp_workspace_symbols",
         description="Return workspace symbols matching a query string.",
-    )(handlers.lsp_workspace_symbols)
+    )(lsp_workspace_symbols)
     server.tool(
         name="lsp_diagnostics",
         description="Return diagnostics for one workspace source file.",
-    )(handlers.lsp_diagnostics)
+    )(lsp_diagnostics)
     server.tool(
         name="lsp_completion",
         description="Return completion candidates for a workspace source position.",
-    )(handlers.lsp_completion)
+    )(lsp_completion)
 
 
 def build_server() -> FastMCP:
@@ -134,7 +122,7 @@ def build_server() -> FastMCP:
     server = FastMCP(MCP_SERVER_KEY)
     lsp = LSPManager.from_environment()
     atexit.register(lsp.close_sync)
-    _register_lsp_tools(server, _LSPToolHandlers(lsp))
+    _register_lsp_tools(server, lsp)
     return server
 
 

@@ -10,7 +10,6 @@ from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.custom_object import (
     CustomObject,
     CustomObjectResource,
-    CustomObjectWrapper,
 )
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
@@ -56,365 +55,32 @@ METALLB_CRDS = (
 METALLB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
-class IPAddressPool(CustomObjectWrapper):
-    """Wrapper around one MetalLB IPAddressPool.
-
-    Parameters
-    ----------
-    _obj : CustomObject
-        Generic MetalLB custom object payload returned by Kubernetes.
-    """
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        name: str,
-        addresses: Sequence[str],
-        auto_assign: bool,
-        timeout: float,
-    ) -> IPAddressPool:
-        """Create or patch one Bertrand-managed IPAddressPool.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            IPAddressPool name.
-        addresses : Sequence[str]
-            Address ranges delegated to MetalLB.
-        auto_assign : bool
-            Whether MetalLB may automatically allocate from this pool.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        IPAddressPool
-            Wrapped created or patched IPAddressPool.
-        """
-        name = _required_name(name, kind="IPAddressPool")
-        normalized = _required_values(addresses, kind="IPAddressPool addresses")
-        return await _managed_upsert(
-            cls.resource,
-            kube,
-            kind="IPAddressPool",
-            name=name,
-            spec={"addresses": list(normalized), "autoAssign": auto_assign},
-            timeout=timeout,
-        )
-
-    @property
-    def addresses(self) -> tuple[str, ...]:
-        """Return configured IP address ranges.
-
-        Returns
-        -------
-        tuple[str, ...]
-            Values from `spec.addresses`.
-        """
-        return _string_tuple(self._obj.spec.get("addresses", ()))
-
-    @property
-    def auto_assign(self) -> bool:
-        """Return whether MetalLB may auto-allocate from this pool.
-
-        Returns
-        -------
-        bool
-            Value of `spec.autoAssign`, defaulting to ``True``.
-        """
-        return bool(self._obj.spec.get("autoAssign", True))
-
-    @property
-    def available_ipv4(self) -> int:
-        """Return available IPv4 addresses reported by MetalLB.
-
-        Returns
-        -------
-        int
-            `status.availableIPv4`, or zero when unavailable.
-        """
-        return _int_status(self._obj.status, "availableIPv4")
-
-    @property
-    def assigned_ipv4(self) -> int:
-        """Return assigned IPv4 addresses reported by MetalLB.
-
-        Returns
-        -------
-        int
-            `status.assignedIPv4`, or zero when unavailable.
-        """
-        return _int_status(self._obj.status, "assignedIPv4")
-
-
-IPAddressPool.resource = CustomObjectResource(
+_IP_ADDRESS_POOL_RESOURCE = CustomObjectResource[CustomObject](
     group=METALLB_GROUP,
     version=METALLB_V1BETA1,
     kind="IPAddressPool",
     plural="ipaddresspools",
-    parser=IPAddressPool._from_object,
     default_namespace=METALLB_NAMESPACE,
 )
-
-
-class L2Advertisement(CustomObjectWrapper):
-    """Wrapper around one MetalLB L2Advertisement.
-
-    Parameters
-    ----------
-    _obj : CustomObject
-        Generic MetalLB custom object payload returned by Kubernetes.
-    """
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        name: str,
-        pool: str,
-        interfaces: Sequence[str],
-        timeout: float,
-    ) -> L2Advertisement:
-        """Create or patch one Bertrand-managed L2Advertisement.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            L2Advertisement name.
-        pool : str
-            IPAddressPool name to advertise.
-        interfaces : Sequence[str]
-            Optional interface names to advertise from.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        L2Advertisement
-            Wrapped created or patched L2Advertisement.
-        """
-        name = _required_name(name, kind="L2Advertisement")
-        pool = _required_name(pool, kind="IPAddressPool")
-        spec: dict[str, object] = {"ipAddressPools": [pool]}
-        normalized_interfaces = _string_tuple(interfaces)
-        if normalized_interfaces:
-            spec["interfaces"] = list(normalized_interfaces)
-        return await _managed_upsert(
-            cls.resource,
-            kube,
-            kind="L2Advertisement",
-            name=name,
-            spec=spec,
-            timeout=timeout,
-        )
-
-    @property
-    def pools(self) -> tuple[str, ...]:
-        """Return selected IPAddressPools.
-
-        Returns
-        -------
-        tuple[str, ...]
-            Values from `spec.ipAddressPools`.
-        """
-        return _string_tuple(self._obj.spec.get("ipAddressPools", ()))
-
-
-L2Advertisement.resource = CustomObjectResource(
+_L2_ADVERTISEMENT_RESOURCE = CustomObjectResource[CustomObject](
     group=METALLB_GROUP,
     version=METALLB_V1BETA1,
     kind="L2Advertisement",
     plural="l2advertisements",
-    parser=L2Advertisement._from_object,
     default_namespace=METALLB_NAMESPACE,
 )
-
-
-class BGPPeer(CustomObjectWrapper):
-    """Wrapper around one MetalLB BGPPeer.
-
-    Parameters
-    ----------
-    _obj : CustomObject
-        Generic MetalLB custom object payload returned by Kubernetes.
-    """
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        name: str,
-        peer_address: str,
-        peer_asn: int,
-        local_asn: int,
-        peer_port: int | None,
-        source_address: str | None,
-        password_secret: str | None,
-        timeout: float,
-    ) -> BGPPeer:
-        """Create or patch one Bertrand-managed BGPPeer.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            BGPPeer name.
-        peer_address : str
-            Router address MetalLB should connect to.
-        peer_asn : int
-            Remote router ASN.
-        local_asn : int
-            ASN MetalLB should use for the local side.
-        peer_port : int | None
-            Optional remote BGP port.
-        source_address : str | None
-            Optional local source address.
-        password_secret : str | None
-            Optional same-namespace basic-auth Secret for TCP MD5.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        BGPPeer
-            Wrapped created or patched BGPPeer.
-        """
-        name = _required_name(name, kind="BGPPeer")
-        peer_address = _required_name(peer_address, kind="peer address")
-        spec: dict[str, object] = {
-            "peerAddress": peer_address,
-            "peerASN": peer_asn,
-            "myASN": local_asn,
-        }
-        if peer_port is not None:
-            spec["peerPort"] = peer_port
-        if source_address:
-            spec["sourceAddress"] = source_address
-        if password_secret:
-            spec["passwordSecret"] = {"name": password_secret}
-        return await _managed_upsert(
-            cls.resource,
-            kube,
-            kind="BGPPeer",
-            name=name,
-            spec=spec,
-            timeout=timeout,
-        )
-
-    @property
-    def peer_address(self) -> str:
-        """Return the remote router address.
-
-        Returns
-        -------
-        str
-            Value from `spec.peerAddress`.
-        """
-        return str(self._obj.spec.get("peerAddress") or "").strip()
-
-
-BGPPeer.resource = CustomObjectResource(
+_BGP_PEER_RESOURCE = CustomObjectResource[CustomObject](
     group=METALLB_GROUP,
     version=METALLB_V1BETA2,
     kind="BGPPeer",
     plural="bgppeers",
-    parser=BGPPeer._from_object,
     default_namespace=METALLB_NAMESPACE,
 )
-
-
-class BGPAdvertisement(CustomObjectWrapper):
-    """Wrapper around one MetalLB BGPAdvertisement.
-
-    Parameters
-    ----------
-    _obj : CustomObject
-        Generic MetalLB custom object payload returned by Kubernetes.
-    """
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        name: str,
-        pool: str,
-        peers: Sequence[str],
-        local_pref: int | None,
-        communities: Sequence[str],
-        timeout: float,
-    ) -> BGPAdvertisement:
-        """Create or patch one Bertrand-managed BGPAdvertisement.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            BGPAdvertisement name.
-        pool : str
-            IPAddressPool name to advertise.
-        peers : Sequence[str]
-            Optional BGPPeer names to target.
-        local_pref : int | None
-            Optional BGP local preference.
-        communities : Sequence[str]
-            Optional BGP communities to attach.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        BGPAdvertisement
-            Wrapped created or patched BGPAdvertisement.
-        """
-        name = _required_name(name, kind="BGPAdvertisement")
-        pool = _required_name(pool, kind="IPAddressPool")
-        spec: dict[str, object] = {"ipAddressPools": [pool]}
-        normalized_peers = _string_tuple(peers)
-        normalized_communities = _string_tuple(communities)
-        if normalized_peers:
-            spec["peers"] = list(normalized_peers)
-        if local_pref is not None:
-            spec["localPref"] = local_pref
-        if normalized_communities:
-            spec["communities"] = list(normalized_communities)
-        return await _managed_upsert(
-            cls.resource,
-            kube,
-            kind="BGPAdvertisement",
-            name=name,
-            spec=spec,
-            timeout=timeout,
-        )
-
-    @property
-    def pools(self) -> tuple[str, ...]:
-        """Return selected IPAddressPools.
-
-        Returns
-        -------
-        tuple[str, ...]
-            Values from `spec.ipAddressPools`.
-        """
-        return _string_tuple(self._obj.spec.get("ipAddressPools", ()))
-
-
-BGPAdvertisement.resource = CustomObjectResource(
+_BGP_ADVERTISEMENT_RESOURCE = CustomObjectResource[CustomObject](
     group=METALLB_GROUP,
     version=METALLB_V1BETA1,
     kind="BGPAdvertisement",
     plural="bgpadvertisements",
-    parser=BGPAdvertisement._from_object,
     default_namespace=METALLB_NAMESPACE,
 )
 _CONFIGURATION_STATE_RESOURCE: CustomObjectResource[CustomObject] = (
@@ -441,6 +107,208 @@ _SERVICE_BGP_STATUS_RESOURCE: CustomObjectResource[CustomObject] = (
         plural="servicebgpstatuses",
     )
 )
+
+
+async def upsert_ip_address_pool(
+    kube: Kube,
+    *,
+    name: str,
+    addresses: Sequence[str],
+    auto_assign: bool,
+    timeout: float,
+) -> CustomObject:
+    """Create or patch one Bertrand-managed MetalLB IPAddressPool.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    name : str
+        IPAddressPool name.
+    addresses : Sequence[str]
+        Address ranges delegated to MetalLB.
+    auto_assign : bool
+        Whether MetalLB may automatically allocate from this pool.
+    timeout : float
+        Maximum request budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    CustomObject
+        Created or patched IPAddressPool object.
+    """
+    name = _required_name(name, kind="IPAddressPool")
+    normalized = _required_values(addresses, kind="IPAddressPool addresses")
+    return await _managed_upsert(
+        _IP_ADDRESS_POOL_RESOURCE,
+        kube,
+        kind="IPAddressPool",
+        name=name,
+        spec={"addresses": list(normalized), "autoAssign": auto_assign},
+        timeout=timeout,
+    )
+
+
+async def upsert_l2_advertisement(
+    kube: Kube,
+    *,
+    name: str,
+    pool: str,
+    interfaces: Sequence[str],
+    timeout: float,
+) -> CustomObject:
+    """Create or patch one Bertrand-managed MetalLB L2Advertisement.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    name : str
+        L2Advertisement name.
+    pool : str
+        IPAddressPool name to advertise.
+    interfaces : Sequence[str]
+        Optional interface names to advertise from.
+    timeout : float
+        Maximum request budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    CustomObject
+        Created or patched L2Advertisement object.
+    """
+    name = _required_name(name, kind="L2Advertisement")
+    pool = _required_name(pool, kind="IPAddressPool")
+    spec: dict[str, object] = {"ipAddressPools": [pool]}
+    normalized_interfaces = _string_tuple(interfaces)
+    if normalized_interfaces:
+        spec["interfaces"] = list(normalized_interfaces)
+    return await _managed_upsert(
+        _L2_ADVERTISEMENT_RESOURCE,
+        kube,
+        kind="L2Advertisement",
+        name=name,
+        spec=spec,
+        timeout=timeout,
+    )
+
+
+async def upsert_bgp_peer(
+    kube: Kube,
+    *,
+    name: str,
+    peer_address: str,
+    peer_asn: int,
+    local_asn: int,
+    peer_port: int | None,
+    source_address: str | None,
+    password_secret: str | None,
+    timeout: float,
+) -> CustomObject:
+    """Create or patch one Bertrand-managed MetalLB BGPPeer.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    name : str
+        BGPPeer name.
+    peer_address : str
+        Router address MetalLB should connect to.
+    peer_asn : int
+        Remote router ASN.
+    local_asn : int
+        ASN MetalLB should use for the local side.
+    peer_port : int | None
+        Optional remote BGP port.
+    source_address : str | None
+        Optional local source address.
+    password_secret : str | None
+        Optional same-namespace basic-auth Secret for TCP MD5.
+    timeout : float
+        Maximum request budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    CustomObject
+        Created or patched BGPPeer object.
+    """
+    name = _required_name(name, kind="BGPPeer")
+    peer_address = _required_name(peer_address, kind="peer address")
+    spec: dict[str, object] = {
+        "peerAddress": peer_address,
+        "peerASN": peer_asn,
+        "myASN": local_asn,
+    }
+    if peer_port is not None:
+        spec["peerPort"] = peer_port
+    if source_address:
+        spec["sourceAddress"] = source_address
+    if password_secret:
+        spec["passwordSecret"] = {"name": password_secret}
+    return await _managed_upsert(
+        _BGP_PEER_RESOURCE,
+        kube,
+        kind="BGPPeer",
+        name=name,
+        spec=spec,
+        timeout=timeout,
+    )
+
+
+async def upsert_bgp_advertisement(
+    kube: Kube,
+    *,
+    name: str,
+    pool: str,
+    peers: Sequence[str],
+    local_pref: int | None,
+    communities: Sequence[str],
+    timeout: float,
+) -> CustomObject:
+    """Create or patch one Bertrand-managed MetalLB BGPAdvertisement.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    name : str
+        BGPAdvertisement name.
+    pool : str
+        IPAddressPool name to advertise.
+    peers : Sequence[str]
+        Optional BGPPeer names to target.
+    local_pref : int | None
+        Optional BGP local preference.
+    communities : Sequence[str]
+        Optional BGP communities to attach.
+    timeout : float
+        Maximum request budget in seconds. If infinite, wait indefinitely.
+
+    Returns
+    -------
+    CustomObject
+        Created or patched BGPAdvertisement object.
+    """
+    name = _required_name(name, kind="BGPAdvertisement")
+    pool = _required_name(pool, kind="IPAddressPool")
+    spec: dict[str, object] = {"ipAddressPools": [pool]}
+    normalized_peers = _string_tuple(peers)
+    normalized_communities = _string_tuple(communities)
+    if normalized_peers:
+        spec["peers"] = list(normalized_peers)
+    if local_pref is not None:
+        spec["localPref"] = local_pref
+    if normalized_communities:
+        spec["communities"] = list(normalized_communities)
+    return await _managed_upsert(
+        _BGP_ADVERTISEMENT_RESOURCE,
+        kube,
+        kind="BGPAdvertisement",
+        name=name,
+        spec=spec,
+        timeout=timeout,
+    )
 
 
 async def ensure_metallb(kube: Kube, *, timeout: float) -> None:
@@ -508,22 +376,22 @@ async def metallb_status(kube: Kube, *, timeout: float) -> dict[str, object]:
     )
     crds = await _crd_status(kube, timeout=timeout)
     pools = await _safe_resource_list(
-        IPAddressPool.resource,
+        _IP_ADDRESS_POOL_RESOURCE,
         kube,
         timeout=timeout,
     )
     l2 = await _safe_resource_list(
-        L2Advertisement.resource,
+        _L2_ADVERTISEMENT_RESOURCE,
         kube,
         timeout=timeout,
     )
     peers = await _safe_resource_list(
-        BGPPeer.resource,
+        _BGP_PEER_RESOURCE,
         kube,
         timeout=timeout,
     )
     bgp = await _safe_resource_list(
-        BGPAdvertisement.resource,
+        _BGP_ADVERTISEMENT_RESOURCE,
         kube,
         timeout=timeout,
     )
@@ -818,33 +686,30 @@ def _int_status(status: Mapping[str, object], key: str) -> int:
         return 0
 
 
-def _pool_status(pool: IPAddressPool) -> dict[str, object]:
+def _pool_status(pool: CustomObject) -> dict[str, object]:
     return {
         "name": pool.name,
         "managed": _labels_managed(pool.labels),
-        "addresses": list(pool.addresses),
-        "auto_assign": pool.auto_assign,
-        "available_ipv4": pool.available_ipv4,
-        "assigned_ipv4": pool.assigned_ipv4,
+        "addresses": list(_string_tuple(pool.spec.get("addresses", ()))),
+        "auto_assign": bool(pool.spec.get("autoAssign", True)),
+        "available_ipv4": _int_status(pool.status, "availableIPv4"),
+        "assigned_ipv4": _int_status(pool.status, "assignedIPv4"),
     }
 
 
-def _bgp_peer_status(peer: BGPPeer) -> dict[str, object]:
+def _bgp_peer_status(peer: CustomObject) -> dict[str, object]:
     return {
         "name": peer.name,
         "managed": _labels_managed(peer.labels),
-        "peer_address": peer.peer_address,
+        "peer_address": str(peer.spec.get("peerAddress") or "").strip(),
     }
 
 
-def _object_summary(resource: object) -> dict[str, object]:
-    name = getattr(resource, "name", "")
-    labels = getattr(resource, "labels", {})
-    pools = getattr(resource, "pools", ())
+def _object_summary(resource: CustomObject) -> dict[str, object]:
     return {
-        "name": name,
-        "managed": _labels_managed(labels),
-        "pools": list(pools),
+        "name": resource.name,
+        "managed": _labels_managed(resource.labels),
+        "pools": list(_string_tuple(resource.spec.get("ipAddressPools", ()))),
     }
 
 

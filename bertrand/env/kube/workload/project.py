@@ -7,14 +7,14 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.config.bertrand import Bertrand, BertrandModel
 from bertrand.env.config.core import Config, _check_uuid
-from bertrand.env.git import Deadline
-from bertrand.env.kube.build.lifecycle import (
+from bertrand.env.git import Deadline, ensure_worktree_id
+from bertrand.env.kube.build.project import project_image_spec
+from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
+from bertrand.env.kube.build.request import (
     require_active_project_image,
     retire_project_images,
     worktree_identity,
 )
-from bertrand.env.kube.build.project import project_image_build, project_worktree_id
-from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
 from bertrand.env.kube.node_identity import resolve_host_id_for_node
 from bertrand.env.kube.workload.base import WorkloadIdentity
 from bertrand.env.kube.workload.config import workload_pod_from_config
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.build.request import ProjectImageIdentity
+    from bertrand.env.kube.build.request import BuildKitBuildSpec
     from bertrand.env.kube.job import Job
     from bertrand.env.kube.workload.base import WorkloadPod
 
@@ -64,7 +64,7 @@ async def ensure_project_workload_controller(
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
     image_ref : str | None, optional
         Optional digest-pinned project image reference from a just-completed build.
-        If omitted, the current active `BertrandImage` lifecycle record supplies the
+        If omitted, the current active `BuildKitBuild` lifecycle record supplies the
         immutable runtime image.
     primary_args : Sequence[str] | None, optional
         Runtime arguments to append to the primary container command.
@@ -156,7 +156,7 @@ async def create_project_workload_job_run(
         Maximum creation budget in seconds. If infinite, wait indefinitely.
     image_ref : str | None, optional
         Optional digest-pinned project image reference from a just-completed build.
-        If omitted, the current active `BertrandImage` lifecycle record supplies the
+        If omitted, the current active `BuildKitBuild` lifecycle record supplies the
         immutable runtime image.
     primary_args : Sequence[str] | None, optional
         Runtime arguments to append to the primary container command.
@@ -324,7 +324,7 @@ def _project_workload_identity(config: Config, *, repo_id: str) -> WorkloadIdent
     repo_id = _check_uuid(repo_id)
     return WorkloadIdentity(
         repo_id=repo_id,
-        worktree_id=project_worktree_id(config.root),
+        worktree_id=ensure_worktree_id(config.root),
         worktree=worktree_identity(config.worktree),
     )
 
@@ -343,17 +343,17 @@ async def _materialize_project_workload_pod(
     image_ref: str | None,
     deadline: Deadline,
 ) -> WorkloadPod | None:
-    image_identity = project_image_build(config, repo_id=repo_id).identity
+    image_spec = project_image_spec(config, repo_id=repo_id)
     image = await _project_workload_image_ref(
         kube,
-        identity=image_identity,
+        spec=image_spec,
         image_ref=image_ref,
         timeout=deadline.remaining(),
     )
     return await _render_project_workload_pod(
         kube,
         workload_config=workload_config,
-        image_identity=image_identity,
+        image_spec=image_spec,
         image=image,
         node=node,
         deadline=deadline,
@@ -364,7 +364,7 @@ async def _render_project_workload_pod(
     kube: Kube,
     *,
     workload_config: BertrandModel,
-    image_identity: ProjectImageIdentity,
+    image_spec: BuildKitBuildSpec,
     image: str,
     node: str | None,
     deadline: Deadline,
@@ -378,9 +378,9 @@ async def _render_project_workload_pod(
     return await workload_pod_from_config(
         kube,
         config=workload_config,
-        repo_id=image_identity.repo_id,
-        worktree=image_identity.worktree,
-        worktree_id=image_identity.worktree_id,
+        repo_id=image_spec.repo_id,
+        worktree=image_spec.worktree,
+        worktree_id=image_spec.worktree_id,
         image=image,
         host_id=host_id,
         timeout=deadline.remaining(),
@@ -403,15 +403,15 @@ async def _project_workload_host_id(
 async def _project_workload_image_ref(
     kube: Kube,
     *,
-    identity: ProjectImageIdentity,
+    spec: BuildKitBuildSpec,
     image_ref: str | None,
     timeout: float,
 ) -> str:
     if image_ref is not None:
-        return _validate_project_workload_image_ref(image_ref, identity=identity)
+        return _validate_project_workload_image_ref(image_ref, spec=spec)
     record = await require_active_project_image(
         kube,
-        identity=identity,
+        spec=spec,
         timeout=timeout,
     )
     return record.digest_ref
@@ -420,11 +420,11 @@ async def _project_workload_image_ref(
 def _validate_project_workload_image_ref(
     image_ref: str,
     *,
-    identity: ProjectImageIdentity,
+    spec: BuildKitBuildSpec,
 ) -> str:
     try:
         digest = digest_from_ref(image_ref, label="project workload image_ref")
-        expected = digest_ref(identity.image, digest)
+        expected = digest_ref(spec.image, digest)
     except ValueError as err:
         msg = (
             "project workload image_ref must be a digest-pinned ref for the "

@@ -49,13 +49,6 @@ class WatchExpired(OSError):  # noqa: N818
     """Raised when Kubernetes expires a watch resource version."""
 
 
-@dataclass(frozen=True)
-class _RawWatchEvent:
-    type: WatchEventType
-    object: object
-    raw_type: str
-
-
 _WATCH_END = object()
 
 
@@ -147,7 +140,12 @@ async def _read_watch_payload(
         raise TimeoutError(msg) from err
 
 
-def _raw_watch_event(payload: object, *, context: str) -> _RawWatchEvent | OSError:
+def _watch_event[T](
+    payload: object,
+    *,
+    context: str,
+    wrapper: Callable[[object], T],
+) -> WatchEvent[T] | OSError:
     if not isinstance(payload, Mapping):
         msg = f"{context} watch returned malformed event payload"
         return OSError(msg)
@@ -167,7 +165,14 @@ def _raw_watch_event(payload: object, *, context: str) -> _RawWatchEvent | OSErr
         return OSError(msg)
     if event_type == "ERROR":
         return _watch_error_event_exception(raw_object, context=context)
-    return _RawWatchEvent(type=event_type, object=raw_object, raw_type=raw_type)
+    obj = wrapper(raw_object)
+    return WatchEvent(
+        type=event_type,
+        object=obj,
+        resource_version=_watch_resource_version(obj)
+        or _watch_resource_version(raw_object),
+        raw_type=raw_type,
+    )
 
 
 def _watch_error_event_exception(raw_object: object, *, context: str) -> OSError:
@@ -180,21 +185,6 @@ def _watch_error_event_exception(raw_object: object, *, context: str) -> OSError
     else:
         msg = f"{context} watch returned an error event"
     return OSError(msg)
-
-
-def _typed_watch_event[T](
-    raw: _RawWatchEvent,
-    *,
-    wrapper: Callable[[object], T],
-) -> WatchEvent[T]:
-    obj = wrapper(raw.object)
-    return WatchEvent(
-        type=raw.type,
-        object=obj,
-        resource_version=_watch_resource_version(obj)
-        or _watch_resource_version(raw.object),
-        raw_type=raw.raw_type,
-    )
 
 
 async def watch[T](
@@ -283,14 +273,15 @@ async def watch[T](
                 raise OSError(msg) from err
             if payload is _WATCH_END:
                 return
-            raw = _raw_watch_event(payload, context=context)
-            if isinstance(raw, WatchExpired):
-                raise WatchExpired(str(raw))
-            if isinstance(raw, OSError):
-                raise OSError(str(raw))
-            yield _typed_watch_event(
-                raw,
+            event = _watch_event(
+                payload,
+                context=context,
                 wrapper=wrapper,
             )
+            if isinstance(event, WatchExpired):
+                raise WatchExpired(str(event))
+            if isinstance(event, OSError):
+                raise OSError(str(event))
+            yield event
     finally:
         watcher.stop()

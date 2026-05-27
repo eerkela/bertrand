@@ -10,11 +10,6 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.cli.external._device import (
-    cluster_device_inventory,
-    device_line,
-    device_payload,
-)
 from bertrand.env.cli.external._runtime import emit_json
 from bertrand.env.cli.external._storage import (
     print_cluster_storage_doctor,
@@ -25,13 +20,6 @@ from bertrand.env.cli.external.init import (
     _converge_host_cluster_runtime,
     ensure_shared_runtime_installed,
 )
-from bertrand.env.cli.external.secret import (
-    _add_capability,
-    _list_capabilities,
-    _remove_capability,
-    _shared_capability_ref,
-    _shared_scope_targets,
-)
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
 from bertrand.env.kube.api.bootstrap import (
     join_microk8s_cluster,
@@ -39,14 +27,21 @@ from bertrand.env.kube.api.bootstrap import (
     microk8s_join_token,
 )
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.build.daemon import BUILDKIT_POOL
-from bertrand.env.kube.build.repository import IMAGES
+from bertrand.env.kube.build.daemon import (
+    buildkit_pool_status,
+    ensure_buildkit_pool,
+)
+from bertrand.env.kube.build.repository import (
+    current_buildkit_config_hash,
+    ensure_image_repository,
+    image_repository_status,
+)
+from bertrand.env.kube.capability.device import list_device_inventory
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
 from bertrand.env.kube.ceph.capacity import read_storage_state
 from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.dev.mailbox import CODE_OPEN_PLURAL, DEV_GROUP
-from bertrand.env.kube.gateway import Gateway, GatewayClass, HTTPRoute
 from bertrand.env.kube.namespace import Namespace
 from bertrand.env.kube.network.bootstrap import (
     ENVOY_GATEWAY_DEPLOYMENT,
@@ -56,23 +51,35 @@ from bertrand.env.kube.network.cni import inspect_cni
 from bertrand.env.kube.network.gateway import (
     BERTRAND_GATEWAY,
     BERTRAND_GATEWAY_CLASS,
+    GATEWAY_CLASS_RESOURCE,
+    GATEWAY_RESOURCE,
     HTTP_ROUTE_LABEL,
     HTTP_ROUTE_LABEL_VALUE,
+    HTTP_ROUTE_RESOURCE,
+    gateway_addresses,
+    gateway_class_acceptance_message,
+    gateway_class_accepted,
+    http_route_hostnames,
 )
 from bertrand.env.kube.network.load_balancer import (
-    BGPAdvertisement,
-    BGPPeer,
-    IPAddressPool,
-    L2Advertisement,
     ensure_metallb,
     metallb_status,
+    upsert_bgp_advertisement,
+    upsert_bgp_peer,
+    upsert_ip_address_pool,
+    upsert_l2_advertisement,
 )
 from bertrand.env.kube.network.profile import NETWORK_PROFILE_NAME, NetworkProfile
+from bertrand.env.kube.node_identity import (
+    BertrandNodeRecord,
+    list_bertrand_nodes,
+)
 from bertrand.env.kube.volume import StorageClass
 
 if TYPE_CHECKING:
-    import argparse
     from collections.abc import Awaitable, Callable
+
+    from bertrand.env.kube.capability.device import BertrandDeviceRecord
 
 JOIN_BUNDLE_VERSION = 1
 
@@ -81,53 +88,6 @@ def _flatten(values: Sequence[Sequence[str]] | None) -> tuple[str, ...]:
     if values is None:
         return ()
     return tuple(item for group in values for item in group)
-
-
-async def bertrand_cluster(args: argparse.Namespace) -> None:
-    """Execute a ``bertrand cluster`` subcommand.
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed external CLI arguments.
-
-    Raises
-    ------
-    ValueError
-        If the parsed cluster subcommand is unsupported.
-    """
-    command = args.cluster_command
-    if command == "status":
-        await bertrand_cluster_status(json_output=args.json)
-        return
-    if command == "invite":
-        await bertrand_cluster_invite(
-            name=args.name,
-            worker=args.worker,
-            timeout=args.timeout,
-        )
-        return
-    if command == "join":
-        await bertrand_cluster_join(
-            token=args.token,
-            worker=args.worker,
-            timeout=args.timeout,
-        )
-        return
-    if command == "secret":
-        await _bertrand_cluster_secret(args)
-        return
-    if command == "device":
-        await _bertrand_cluster_device(args)
-        return
-    if command == "storage":
-        await _bertrand_cluster_storage(args)
-        return
-    if command == "network":
-        await _bertrand_cluster_network(args)
-        return
-    msg = f"unsupported cluster command: {command!r}"
-    raise ValueError(msg)
 
 
 async def bertrand_cluster_status(*, json_output: bool) -> None:
@@ -140,14 +100,27 @@ async def bertrand_cluster_status(*, json_output: bool) -> None:
     """
     status: dict[str, object] = {
         "microk8s": await _probe_bool(lambda: microk8s_cluster_ready(timeout=INFINITY)),
-        "rook_ceph": await _probe_kube(_rook_ceph_status),
-        "namespace": await _probe_kube(_namespace_status),
-        "buildkit": await _probe_kube(_buildkit_status),
-        "gateway": await _probe_kube(_gateway_status),
-        "ceph_csi": await _probe_kube(_ceph_csi_status),
-        "storage": await _probe_kube(_storage_status),
-        "dev": await _probe_kube(_dev_status),
     }
+    kube_checks = (
+        ("rook_ceph", _rook_ceph_status),
+        ("namespace", _namespace_status),
+        ("buildkit", _buildkit_status),
+        ("gateway", _gateway_status),
+        ("ceph_csi", _ceph_csi_status),
+        ("storage", _storage_status),
+        ("dev", _dev_status),
+    )
+    try:
+        with await Kube.host(timeout=INFINITY) as kube:
+            for name, probe in kube_checks:
+                try:
+                    status[name] = await probe(kube)
+                except (OSError, TimeoutError, RuntimeError, ValueError) as err:
+                    status[name] = {"ready": False, "message": str(err)}
+    except (OSError, TimeoutError, RuntimeError, ValueError) as err:
+        failure = {"ready": False, "message": str(err)}
+        for name, _probe in kube_checks:
+            status[name] = dict(failure)
     if json_output:
         emit_json(status)
         return
@@ -246,57 +219,6 @@ async def bertrand_cluster_join(
     print("Bertrand cluster join complete.")
 
 
-async def _bertrand_cluster_secret(args: argparse.Namespace) -> None:
-    command = args.cluster_secret_command
-    if command not in {"add", "rm", "list"}:
-        msg = f"unsupported cluster secret command: {command!r}"
-        raise ValueError(msg)
-    with await Kube.host(timeout=args.timeout) as kube:
-        if command == "add":
-            ref = _shared_capability_ref(kind=args.kind, capability_id=args.id)
-            await _add_capability(kube, ref, source=args.source, timeout=args.timeout)
-            return
-        if command == "rm":
-            ref = _shared_capability_ref(kind=args.kind, capability_id=args.id)
-            await _remove_capability(kube, ref, timeout=args.timeout)
-            return
-        if command == "list":
-            await _list_capabilities(
-                kube,
-                _shared_scope_targets(),
-                kind=args.kind,
-                json_output=args.json,
-                timeout=args.timeout,
-            )
-            return
-
-
-async def _bertrand_cluster_device(args: argparse.Namespace) -> None:
-    command = args.cluster_device_command
-    if command == "list":
-        await bertrand_cluster_device_list(
-            node=args.node,
-            capability_id=args.capability,
-            json_output=args.json,
-            timeout=args.timeout,
-        )
-        return
-    msg = f"unsupported cluster device command: {command!r}"
-    raise ValueError(msg)
-
-
-async def _bertrand_cluster_storage(args: argparse.Namespace) -> None:
-    command = args.cluster_storage_command
-    if command == "status":
-        await bertrand_cluster_storage_status(json_output=args.json, doctor=False)
-        return
-    if command == "doctor":
-        await bertrand_cluster_storage_status(json_output=args.json, doctor=True)
-        return
-    msg = f"unsupported cluster storage command: {command!r}"
-    raise ValueError(msg)
-
-
 async def bertrand_cluster_device_list(
     *,
     node: str | None,
@@ -318,17 +240,20 @@ async def bertrand_cluster_device_list(
         Maximum Kubernetes request budget in seconds.
     """
     with await Kube.host(timeout=timeout) as kube:
-        records, nodes = await cluster_device_inventory(
+        records = await list_device_inventory(
             kube,
-            node=node,
             capability_id=capability_id,
+            host_ids=None if node is None else (node,),
             timeout=timeout,
         )
+        nodes = {
+            item.host_id: item
+            for item in await list_bertrand_nodes(kube, timeout=timeout)
+        }
     payload = [
-        device_payload(
+        _cluster_device_payload(
             record,
             owner=nodes.get(record.host_id),
-            include_display_name=True,
         )
         for record in records
     ]
@@ -339,13 +264,13 @@ async def bertrand_cluster_device_list(
         print("no DRA devices")
         return
     for record in records:
-        print(device_line(record, owner=nodes.get(record.host_id), cluster=True))
+        print(_cluster_device_line(record, owner=nodes.get(record.host_id)))
 
 
 async def bertrand_cluster_storage_status(
     *,
     json_output: bool,
-    doctor: bool,
+    doctor: bool = False,
 ) -> None:
     """Print cluster-wide Rook/Ceph storage status and diagnostics.
 
@@ -367,22 +292,9 @@ async def bertrand_cluster_storage_status(
         print_cluster_storage_doctor(snapshot)
 
 
-async def _bertrand_cluster_network(args: argparse.Namespace) -> None:
-    command = args.network_command
-    if command == "status":
-        await bertrand_cluster_network_status(json_output=args.json)
-        return
-    if command == "doctor":
-        await bertrand_cluster_network_doctor(json_output=args.json)
-        return
-    if command == "lb":
-        await _bertrand_cluster_network_lb(args)
-        return
-    if command == "dns":
-        await _bertrand_cluster_network_dns(args)
-        return
-    msg = f"unsupported cluster network command: {command!r}"
-    raise ValueError(msg)
+async def bertrand_cluster_storage_doctor(*, json_output: bool) -> None:
+    """Print cluster-wide Rook/Ceph storage status and diagnostics."""
+    await bertrand_cluster_storage_status(json_output=json_output, doctor=True)
 
 
 async def bertrand_cluster_network_status(*, json_output: bool) -> None:
@@ -422,27 +334,6 @@ async def bertrand_cluster_network_doctor(*, json_output: bool) -> None:
         print(f"  - {issue}")
 
 
-async def _bertrand_cluster_network_lb(args: argparse.Namespace) -> None:
-    command = args.lb_command
-    if command == "status":
-        await bertrand_cluster_network_lb_status(json_output=args.json)
-        return
-    if command == "install":
-        await bertrand_cluster_network_lb_install(timeout=args.timeout)
-        return
-    if command == "pool":
-        await _bertrand_cluster_network_lb_pool(args)
-        return
-    if command == "l2":
-        await _bertrand_cluster_network_lb_l2(args)
-        return
-    if command == "bgp":
-        await _bertrand_cluster_network_lb_bgp(args)
-        return
-    msg = f"unsupported cluster network lb command: {command!r}"
-    raise ValueError(msg)
-
-
 async def bertrand_cluster_network_lb_status(*, json_output: bool) -> None:
     """Print MetalLB status.
 
@@ -480,88 +371,90 @@ async def bertrand_cluster_network_lb_install(*, timeout: float) -> None:
     print("MetalLB installed and ready.")
 
 
-async def _bertrand_cluster_network_lb_pool(args: argparse.Namespace) -> None:
-    command = args.lb_pool_command
-    if command != "upsert":
-        msg = f"unsupported cluster network lb pool command: {command!r}"
-        raise ValueError(msg)
-    with await Kube.host(timeout=args.timeout) as kube:
-        pool = await IPAddressPool.upsert(
+async def bertrand_cluster_network_lb_pool_upsert(
+    *,
+    name: str,
+    address: Sequence[Sequence[str]] | None,
+    auto_assign: bool,
+    timeout: float,
+) -> None:
+    """Create or patch a Bertrand-managed MetalLB IPAddressPool."""
+    with await Kube.host(timeout=timeout) as kube:
+        pool = await upsert_ip_address_pool(
             kube,
-            name=args.name,
-            addresses=_flatten(args.address),
-            auto_assign=args.auto_assign,
-            timeout=args.timeout,
+            name=name,
+            addresses=_flatten(address),
+            auto_assign=auto_assign,
+            timeout=timeout,
         )
     print(f"MetalLB IPAddressPool {pool.name!r} converged.")
 
 
-async def _bertrand_cluster_network_lb_l2(args: argparse.Namespace) -> None:
-    command = args.lb_l2_command
-    if command != "upsert":
-        msg = f"unsupported cluster network lb l2 command: {command!r}"
-        raise ValueError(msg)
-    with await Kube.host(timeout=args.timeout) as kube:
-        advertisement = await L2Advertisement.upsert(
+async def bertrand_cluster_network_lb_l2_upsert(
+    *,
+    name: str,
+    pool: str,
+    interface: Sequence[str],
+    timeout: float,
+) -> None:
+    """Create or patch a Bertrand-managed L2Advertisement."""
+    with await Kube.host(timeout=timeout) as kube:
+        advertisement = await upsert_l2_advertisement(
             kube,
-            name=args.name,
-            pool=args.pool,
-            interfaces=tuple(args.interface or ()),
-            timeout=args.timeout,
+            name=name,
+            pool=pool,
+            interfaces=tuple(interface or ()),
+            timeout=timeout,
         )
     print(f"MetalLB L2Advertisement {advertisement.name!r} converged.")
 
 
-async def _bertrand_cluster_network_lb_bgp(args: argparse.Namespace) -> None:
-    command = args.lb_bgp_command
-    if command == "peer":
-        await _bertrand_cluster_network_lb_bgp_peer(args)
-        return
-    if command == "advertise":
-        await _bertrand_cluster_network_lb_bgp_advertise(args)
-        return
-    msg = f"unsupported cluster network lb bgp command: {command!r}"
-    raise ValueError(msg)
-
-
-async def _bertrand_cluster_network_lb_bgp_peer(
-    args: argparse.Namespace,
+async def bertrand_cluster_network_lb_bgp_peer_upsert(
+    *,
+    name: str,
+    peer_address: str,
+    peer_asn: int,
+    local_asn: int,
+    peer_port: int | None,
+    source_address: str | None,
+    password_secret: str | None,
+    timeout: float,
 ) -> None:
-    command = args.lb_bgp_peer_command
-    if command != "upsert":
-        msg = f"unsupported cluster network lb bgp peer command: {command!r}"
-        raise ValueError(msg)
-    with await Kube.host(timeout=args.timeout) as kube:
-        peer = await BGPPeer.upsert(
+    """Create or patch a Bertrand-managed BGPPeer."""
+    with await Kube.host(timeout=timeout) as kube:
+        peer = await upsert_bgp_peer(
             kube,
-            name=args.name,
-            peer_address=args.peer_address,
-            peer_asn=args.peer_asn,
-            local_asn=args.local_asn,
-            peer_port=args.peer_port,
-            source_address=args.source_address,
-            password_secret=args.password_secret,
-            timeout=args.timeout,
+            name=name,
+            peer_address=peer_address,
+            peer_asn=peer_asn,
+            local_asn=local_asn,
+            peer_port=peer_port,
+            source_address=source_address,
+            password_secret=password_secret,
+            timeout=timeout,
         )
     print(f"MetalLB BGPPeer {peer.name!r} converged.")
 
 
-async def _bertrand_cluster_network_lb_bgp_advertise(
-    args: argparse.Namespace,
+async def bertrand_cluster_network_lb_bgp_advertise_upsert(
+    *,
+    name: str,
+    pool: str,
+    peer: Sequence[str],
+    local_pref: int | None,
+    community: Sequence[str],
+    timeout: float,
 ) -> None:
-    command = args.lb_bgp_advertise_command
-    if command != "upsert":
-        msg = f"unsupported cluster network lb bgp advertise command: {command!r}"
-        raise ValueError(msg)
-    with await Kube.host(timeout=args.timeout) as kube:
-        advertisement = await BGPAdvertisement.upsert(
+    """Create or patch a Bertrand-managed BGPAdvertisement."""
+    with await Kube.host(timeout=timeout) as kube:
+        advertisement = await upsert_bgp_advertisement(
             kube,
-            name=args.name,
-            pool=args.pool,
-            peers=tuple(args.peer or ()),
-            local_pref=args.local_pref,
-            communities=tuple(args.community or ()),
-            timeout=args.timeout,
+            name=name,
+            pool=pool,
+            peers=tuple(peer or ()),
+            local_pref=local_pref,
+            communities=tuple(community or ()),
+            timeout=timeout,
         )
     print(f"MetalLB BGPAdvertisement {advertisement.name!r} converged.")
 
@@ -569,12 +462,12 @@ async def _bertrand_cluster_network_lb_bgp_advertise(
 async def _network_report() -> dict[str, object]:
     with await Kube.host(timeout=INFINITY) as kube:
         profile = await NetworkProfile.get(kube, timeout=INFINITY)
-        config_hash = await IMAGES.current_buildkit_config_hash(
+        config_hash = await current_buildkit_config_hash(
             kube,
             timeout=INFINITY,
         )
-        registry = await IMAGES.status(kube, timeout=INFINITY)
-        buildkit = await BUILDKIT_POOL.status(
+        registry = await image_repository_status(kube, timeout=INFINITY)
+        buildkit = await buildkit_pool_status(
             kube,
             timeout=INFINITY,
             config_hash=config_hash,
@@ -599,7 +492,7 @@ async def _network_report() -> dict[str, object]:
             "pool_ready": buildkit.ready,
             "failures": [*registry.failures, *buildkit.failures],
         },
-        "cni": cni.model_dump(),
+        "cni": cni,
         "gateway": gateway,
         "load_balancer": load_balancer,
         "routes": routes,
@@ -652,12 +545,12 @@ def _print_network_report(report: Mapping[str, object]) -> None:
 
 async def _network_gateway_status(kube: Kube) -> dict[str, object]:
     try:
-        gateway_class = await GatewayClass.get(
+        gateway_class = await GATEWAY_CLASS_RESOURCE.get(
             kube,
             name=BERTRAND_GATEWAY_CLASS,
             timeout=INFINITY,
         )
-        gateway = await Gateway.get(
+        gateway = await GATEWAY_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BERTRAND_GATEWAY,
@@ -670,15 +563,18 @@ async def _network_gateway_status(kube: Kube) -> dict[str, object]:
             "addresses": [],
             "message": str(err),
         }
-    addresses = gateway.addresses if gateway is not None else ()
-    class_accepted = gateway_class is not None and gateway_class.accepted
+    addresses = gateway_addresses(gateway) if gateway is not None else ()
+    class_accepted = (
+        gateway_class is not None and gateway_class_accepted(gateway_class)
+    )
     ready = bool(class_accepted and addresses)
     message = ""
     if gateway_class is None:
         message = "Bertrand GatewayClass is missing"
     elif not class_accepted:
         message = (
-            gateway_class.acceptance_message or "Bertrand GatewayClass is not accepted"
+            gateway_class_acceptance_message(gateway_class)
+            or "Bertrand GatewayClass is not accepted"
         )
     elif gateway is None:
         message = "Bertrand Gateway is missing"
@@ -701,7 +597,7 @@ async def _route_dns_status(
     gateway_addresses: tuple[str, ...],
 ) -> dict[str, object]:
     try:
-        routes = await HTTPRoute.list(
+        routes = await HTTP_ROUTE_RESOURCE.list(
             kube,
             namespace=BERTRAND_NAMESPACE,
             labels={HTTP_ROUTE_LABEL: HTTP_ROUTE_LABEL_VALUE},
@@ -721,7 +617,7 @@ async def _route_dns_status(
     mismatched: list[str] = []
     gateway_set = {address.lower() for address in gateway_addresses}
     for route in routes:
-        for host in route.hostnames:
+        for host in http_route_hostnames(route):
             resolved = await _resolve_host(host)
             if not resolved:
                 unresolved.append(host)
@@ -824,24 +720,28 @@ def _ready(*, value: bool) -> str:
     return "ready" if value else "not ready"
 
 
-async def _bertrand_cluster_network_dns(args: argparse.Namespace) -> None:
-    command = args.dns_command
-    if command == "set":
-        profile = NetworkProfile(
-            nameservers=_flatten(args.server),
-            search_domains=_flatten(args.search),
-            options=_flatten(args.option),
-        )
-        await _apply_network_profile(profile, timeout=args.timeout)
-        _print_dns_profile(profile)
-        return
-    if command == "clear":
-        cleared = NetworkProfile()
-        await _apply_network_profile(cleared, timeout=args.timeout)
-        _print_dns_profile(cleared)
-        return
-    msg = f"unsupported cluster network dns command: {command!r}"
-    raise ValueError(msg)
+async def bertrand_cluster_network_dns_set(
+    *,
+    server: Sequence[Sequence[str]] | None,
+    search: Sequence[Sequence[str]] | None,
+    option: Sequence[Sequence[str]] | None,
+    timeout: float,
+) -> None:
+    """Replace BuildKit/container DNS overrides and roll builders."""
+    profile = NetworkProfile(
+        nameservers=_flatten(server),
+        search_domains=_flatten(search),
+        options=_flatten(option),
+    )
+    await _apply_network_profile(profile, timeout=timeout)
+    _print_dns_profile(profile)
+
+
+async def bertrand_cluster_network_dns_clear(*, timeout: float) -> None:
+    """Clear BuildKit/container DNS overrides and roll builders."""
+    cleared = NetworkProfile()
+    await _apply_network_profile(cleared, timeout=timeout)
+    _print_dns_profile(cleared)
 
 
 async def _apply_network_profile(profile: NetworkProfile, *, timeout: float) -> None:
@@ -856,12 +756,12 @@ async def _apply_network_profile(profile: NetworkProfile, *, timeout: float) -> 
             timeout=deadline.remaining(),
         )
         await profile.upsert(kube, timeout=deadline.remaining())
-        await IMAGES.ensure(kube, timeout=deadline.remaining())
-        config_hash = await IMAGES.current_buildkit_config_hash(
+        await ensure_image_repository(kube, timeout=deadline.remaining())
+        config_hash = await current_buildkit_config_hash(
             kube,
             timeout=deadline.remaining(),
         )
-        await BUILDKIT_POOL.ensure(
+        await ensure_buildkit_pool(
             kube,
             timeout=deadline.remaining(),
             config_hash=config_hash,
@@ -897,16 +797,6 @@ async def _probe_bool(fn: Callable[[], Awaitable[bool]]) -> dict[str, object]:
         return {"ready": False, "message": str(err)}
 
 
-async def _probe_kube(
-    fn: Callable[[Kube], Awaitable[dict[str, object]]],
-) -> dict[str, object]:
-    try:
-        with await Kube.host(timeout=INFINITY) as kube:
-            return await fn(kube)
-    except (OSError, TimeoutError, RuntimeError, ValueError) as err:
-        return {"ready": False, "message": str(err)}
-
-
 async def _namespace_status(kube: Kube) -> dict[str, object]:
     namespace = await Namespace.get(kube, name=BERTRAND_NAMESPACE, timeout=INFINITY)
     return {
@@ -916,9 +806,9 @@ async def _namespace_status(kube: Kube) -> dict[str, object]:
 
 
 async def _buildkit_status(kube: Kube) -> dict[str, object]:
-    config_hash = await IMAGES.current_buildkit_config_hash(kube, timeout=INFINITY)
-    registry = await IMAGES.status(kube, timeout=INFINITY)
-    buildkit = await BUILDKIT_POOL.status(
+    config_hash = await current_buildkit_config_hash(kube, timeout=INFINITY)
+    registry = await image_repository_status(kube, timeout=INFINITY)
+    buildkit = await buildkit_pool_status(
         kube,
         timeout=INFINITY,
         config_hash=config_hash,
@@ -997,6 +887,38 @@ def _status_line(value: object) -> tuple[str, str]:
     ready = bool(status.get("ready"))
     detail = str(status.get("message") or "")
     return ("ready" if ready else "not ready", detail)
+
+
+def _cluster_device_payload(
+    record: BertrandDeviceRecord,
+    *,
+    owner: BertrandNodeRecord | None,
+) -> dict[str, object]:
+    return {
+        "name": record.name,
+        "capability_id": record.capability_id,
+        "host_id": record.host_id,
+        "node_name": record.node_name,
+        "device_name": record.spec.device_name,
+        "cdi_selector": record.cdi_selector,
+        "attributes": dict(record.spec.attributes),
+        "display_name": "" if owner is None else owner.display_name,
+    }
+
+
+def _cluster_device_line(
+    record: BertrandDeviceRecord,
+    *,
+    owner: BertrandNodeRecord | None,
+) -> str:
+    if owner is None or not owner.display_name:
+        location = f"{record.host_id}; kube={record.node_name}"
+    else:
+        location = f"{owner.display_name} ({record.host_id}); kube={record.node_name}"
+    return (
+        f"{record.capability_id} {record.spec.device_name} "
+        f"[{location}] -> {record.cdi_selector}"
+    )
 
 
 def _display_tuple(values: tuple[str, ...]) -> str:

@@ -25,7 +25,7 @@ from pydantic import (
 )
 
 from bertrand.env.git import METADATA_DIR, Scalar, atomic_write_text, ensure_worktree_id
-from bertrand.env.kube.build.lifecycle import worktree_identity
+from bertrand.env.kube.build.request import worktree_identity
 from bertrand.env.kube.ceph.volume import ensure_repository_worktree_record
 
 from .core import (

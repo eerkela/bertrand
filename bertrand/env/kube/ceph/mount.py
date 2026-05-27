@@ -33,12 +33,14 @@ from bertrand.env.kube.ceph.volume import (
     REPOSITORY_MOUNT_PATH_HASH_LABEL,
     REPOSITORY_MOUNT_PHASE_LABEL,
     REPOSITORY_STATE_RESOURCE,
-    RepoVolume,
     ensure_repository_mount_record,
+    ensure_repository_volume_claim,
     ensure_repository_volume_record,
+    list_repository_volume_claims,
     mark_repository_volume_ready,
     repository_mount_host_hash,
     repository_mount_path_hash,
+    resolve_repository_volume_ceph_path,
     retire_repository_mount,
     retire_repository_mount_record,
 )
@@ -48,6 +50,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from bertrand.env.kube.api.client import Kube
+    from bertrand.env.kube.volume import PersistentVolumeClaim
 
 DEFAULT_REPO_FS_NAME = "ceph"
 if not DEFAULT_REPO_FS_NAME:
@@ -111,13 +114,13 @@ async def _record_repository_mount(
 
 def _single_repository_volume(
     repo_id: str,
-    volumes: Sequence[RepoVolume],
-) -> RepoVolume | None:
+    volumes: Sequence[PersistentVolumeClaim],
+) -> PersistentVolumeClaim | None:
     if not volumes:
         return None
     if len(volumes) == 1:
         return volumes[0]
-    names = ", ".join(sorted(volume.pvc.name for volume in volumes))
+    names = ", ".join(sorted(volume.name for volume in volumes))
     msg = (
         "repository identity maps to multiple cluster claims and cannot be "
         f"disambiguated safely for {repo_id!r}: {names}"
@@ -751,34 +754,6 @@ class MountInfo:
         return self.Aliases(self, timeout=timeout)
 
 
-@dataclass(frozen=True)
-class RepositoryMount:
-    """Converged host mount for a CephFS-backed repository volume.
-
-    Attributes
-    ----------
-    repo_id : UUIDHex
-        Stable repository identity.
-    volume : RepoVolume
-        Cluster PersistentVolumeClaim wrapper backing the repository.
-    ceph_path : PosixPath
-        Absolute CephFS path backing the claim.
-    credentials : RepoCredentials
-        CephX credentials used to mount the repository path.
-    alias : Path
-        Host path linked to the hidden managed mount.
-    mount : MountInfo
-        Active hidden host mount.
-    """
-
-    repo_id: UUIDHex
-    volume: RepoVolume
-    ceph_path: PosixPath
-    credentials: RepoCredentials
-    alias: Path
-    mount: MountInfo
-
-
 async def ensure_repository_mount(
     kube: Kube,
     *,
@@ -786,8 +761,8 @@ async def ensure_repository_mount(
     target: Path,
     timeout: float,
     size_request: str,
-    volumes: Sequence[RepoVolume] | None = None,
-) -> RepositoryMount:
+    volumes: Sequence[PersistentVolumeClaim] | None = None,
+) -> Path:
     """Converge a repository claim, credentials, hidden mount, and host alias.
 
     Parameters
@@ -802,13 +777,13 @@ async def ensure_repository_mount(
         Maximum convergence budget in seconds.
     size_request : str
         Storage request used when a new repository claim must be created.
-    volumes : Sequence[RepoVolume] | None, optional
-        Optional preloaded repository volumes for `repo_id`.
+    volumes : Sequence[PersistentVolumeClaim] | None, optional
+        Optional preloaded repository volume claims for `repo_id`.
 
     Returns
     -------
-    RepositoryMount
-        Converged repository storage and host mount state.
+    Path
+        Host alias path linked to the hidden managed mount.
 
     Raises
     ------
@@ -827,13 +802,18 @@ async def ensure_repository_mount(
     candidates = (
         list(volumes)
         if volumes is not None
-        else await RepoVolume.list(kube, repo_id, timeout=deadline.remaining())
+        else await list_repository_volume_claims(
+            kube,
+            repo_id,
+            timeout=deadline.remaining(),
+        )
     )
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
     volume = _single_repository_volume(repo_id, candidates)
     if volume is not None:
-        ceph_path = await volume.resolve_ceph_path(
+        ceph_path = await resolve_repository_volume_ceph_path(
             kube,
+            pvc=volume,
             timeout=deadline.remaining(),
         )
         mounted = MountInfo.search(hidden_mount)
@@ -846,14 +826,15 @@ async def ensure_repository_mount(
             )
             raise OSError(msg)
     else:
-        volume = await RepoVolume.ensure(
+        volume = await ensure_repository_volume_claim(
             kube,
             repo_id=repo_id,
             timeout=deadline.remaining(),
             size_request=size_request,
         )
-        ceph_path = await volume.resolve_ceph_path(
+        ceph_path = await resolve_repository_volume_ceph_path(
             kube,
+            pvc=volume,
             timeout=deadline.remaining(),
         )
     await ensure_repository_volume_record(
@@ -898,14 +879,7 @@ async def ensure_repository_mount(
         alias_path=alias,
         timeout=deadline.remaining(),
     )
-    return RepositoryMount(
-        repo_id=repo_id,
-        volume=volume,
-        ceph_path=ceph_path,
-        credentials=credentials,
-        alias=alias,
-        mount=mount,
-    )
+    return alias
 
 
 def _path_exists(path: Path) -> bool:
@@ -1174,7 +1148,7 @@ async def _mount_repository_volume(
         timeout,
         message="timed out before repository volume remount started",
     )
-    volumes = await RepoVolume.list(
+    volumes = await list_repository_volume_claims(
         kube,
         repo_id,
         timeout=deadline.remaining(),
@@ -1187,7 +1161,11 @@ async def _mount_repository_volume(
         )
         raise OSError(msg)
 
-    ceph_path = await volume.resolve_ceph_path(kube, timeout=deadline.remaining())
+    ceph_path = await resolve_repository_volume_ceph_path(
+        kube,
+        pvc=volume,
+        timeout=deadline.remaining(),
+    )
     credentials: RepoCredentials = await RepoCredentials.ensure(
         repo_id=repo_id,
         ceph_path=ceph_path,

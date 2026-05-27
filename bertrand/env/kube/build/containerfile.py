@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import packaging.version
@@ -19,12 +18,6 @@ if TYPE_CHECKING:
 
     from bertrand.env.config.bertrand import BertrandModel
     from bertrand.env.kube.workload.capability import CapabilityRequest
-
-
-@dataclass(frozen=True)
-class _DependencyCopy:
-    image: str
-    target: str
 
 
 def project_containerfile(
@@ -106,7 +99,7 @@ def _render_containerfile(model: BertrandModel) -> str:
         )
     )
     lines.extend(
-        f"COPY --from={copy.image} / {copy.target}" for copy in dependency_copies
+        f"COPY --from={image} / {target}" for image, target in dependency_copies
     )
     if dependency_copies:
         lines.append("")
@@ -143,13 +136,13 @@ def _capability_mount_specs(
     return out
 
 
-def _dependency_copy_specs(from_images: Sequence[str]) -> list[_DependencyCopy]:
-    out: list[_DependencyCopy] = []
+def _dependency_copy_specs(from_images: Sequence[str]) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
     for index, image_ref in enumerate(from_images, start=1):
         token = re.sub(r"[^a-z0-9]+", "-", image_ref.lower()).strip("-")
         if not token:
             token = "dependency"
         token = token[:64].rstrip("-")
         target = f"/opt/bertrand/deps/{index:02d}-{token}"
-        out.append(_DependencyCopy(image=image_ref, target=target))
+        out.append((image_ref, target))
     return out

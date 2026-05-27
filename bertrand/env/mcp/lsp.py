@@ -815,148 +815,154 @@ class LSPManager:
         return _read_document(checked, workspace=self.workspace)
 
 
-class _Daemon:
-    def __init__(self, *, socket: Path, manager: LSPManager) -> None:
-        self.socket = socket
-        self.manager = manager
-        self._stop = asyncio.Event()
-
-    async def run(self) -> None:
-        self._prepare_socket()
-        server = await asyncio.start_unix_server(self._handle_client, path=self.socket)
-        try:
-            await self._warm_servers()
-            async with server:
-                await self._stop.wait()
-        finally:
-            server.close()
-            await server.wait_closed()
-            await self.manager.aclose()
-            with suppress(OSError):
-                self.socket.unlink()
-
-    async def _warm_servers(self) -> None:
-        try:
-            await self.manager.warm("python")
-        except LSPError as err:
-            _warn(f"Python LSP startup failed: {err}")
-
-        status = self.manager.status("cpp")
-        missing = status.get("missing_artifacts")
-        if isinstance(missing, list) and missing:
-            paths = ", ".join(str(path) for path in missing)
-            _warn(f"C++ LSP artifacts are missing; clangd was not started: {paths}")
-            return
-        try:
-            await self.manager.warm("cpp")
-        except LSPError as err:
-            _warn(f"C++ LSP startup failed: {err}")
-
-    async def _handle_client(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        try:
-            while line := await reader.readline():
-                response = await self._dispatch_line(line)
-                writer.write(json.dumps(response, separators=(",", ":")).encode())
-                writer.write(b"\n")
-                await writer.drain()
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    async def _dispatch_line(self, line: bytes) -> JSON:
-        request_id: object = None
-        try:
-            request_id, method, request_params = _decode_request(line)
-            result = await self._dispatch(method, request_params)
-        except (
-            json.JSONDecodeError,
-            LSPError,
-            OSError,
-            TimeoutError,
-            TypeError,
-            UnicodeDecodeError,
-            ValueError,
-        ) as err:
-            return {
-                "id": request_id,
-                "error": {
-                    "message": str(err),
-                    "type": type(err).__name__,
-                },
-            }
-        return {"id": request_id, "result": result}
-
-    async def _dispatch(self, method: str, request_params: JSON) -> Any:
-        match method.removeprefix("lsp_"):
-            case "status":
-                language = request_params.get("language")
-                return self.manager.status(
-                    language if isinstance(language, str) else None
-                )
-            case "hover":
-                return await self.manager.hover(**_position_params(request_params))
-            case "definition":
-                return await self.manager.definition(**_position_params(request_params))
-            case "references":
-                return await self.manager.references(
-                    **_position_params(request_params),
-                    include_declaration=bool(
-                        request_params.get("include_declaration", True),
-                    ),
-                )
-            case "document_symbols":
-                return await self.manager.document_symbols(
-                    **_path_params(request_params)
-                )
-            case "workspace_symbols":
-                return await self.manager.workspace_symbols(
-                    _language(request_params),
-                    _string(request_params, "query"),
-                )
-            case "diagnostics":
-                return await self.manager.diagnostics(**_path_params(request_params))
-            case "completion":
-                return await self.manager.completion(**_position_params(request_params))
-            case "shutdown":
-                self._stop.set()
-                return {"ok": True}
-            case _:
-                msg = f"unsupported LSP daemon method: {method}"
-                raise ValueError(msg)
-
-    def _prepare_socket(self) -> None:
-        self.socket.parent.mkdir(parents=True, exist_ok=True)
-        if not self.socket.exists():
-            return
-        if self.socket.is_socket():
-            self.socket.unlink()
-            return
-        msg = f"refusing to replace non-socket LSP daemon path: {self.socket}"
-        raise OSError(msg)
+async def _run_daemon(
+    *,
+    socket: Path,
+    manager: LSPManager,
+    stop: asyncio.Event,
+) -> None:
+    _prepare_daemon_socket(socket)
+    server = await asyncio.start_unix_server(
+        lambda reader, writer: _handle_daemon_client(
+            reader,
+            writer,
+            manager=manager,
+            stop=stop,
+        ),
+        path=socket,
+    )
+    try:
+        await _warm_daemon_servers(manager)
+        async with server:
+            await stop.wait()
+    finally:
+        server.close()
+        await server.wait_closed()
+        await manager.aclose()
+        with suppress(OSError):
+            socket.unlink()
 
 
-class _DaemonParser:
-    def __init__(self) -> None:
-        self._parser = argparse.ArgumentParser(
-            prog="bertrand-lsp-daemon",
-            description="Run Bertrand's internal shell-scoped LSP daemon.",
+async def _warm_daemon_servers(manager: LSPManager) -> None:
+    try:
+        await manager.warm("python")
+    except LSPError as err:
+        _warn(f"Python LSP startup failed: {err}")
+
+    status = manager.status("cpp")
+    missing = status.get("missing_artifacts")
+    if isinstance(missing, list) and missing:
+        paths = ", ".join(str(path) for path in missing)
+        _warn(f"C++ LSP artifacts are missing; clangd was not started: {paths}")
+        return
+    try:
+        await manager.warm("cpp")
+    except LSPError as err:
+        _warn(f"C++ LSP startup failed: {err}")
+
+
+async def _handle_daemon_client(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    *,
+    manager: LSPManager,
+    stop: asyncio.Event,
+) -> None:
+    try:
+        while line := await reader.readline():
+            response = await _dispatch_daemon_line(line, manager=manager, stop=stop)
+            writer.write(json.dumps(response, separators=(",", ":")).encode())
+            writer.write(b"\n")
+            await writer.drain()
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def _dispatch_daemon_line(
+    line: bytes,
+    *,
+    manager: LSPManager,
+    stop: asyncio.Event,
+) -> JSON:
+    request_id: object = None
+    try:
+        request_id, method, request_params = _decode_request(line)
+        result = await _dispatch_daemon_request(
+            method,
+            request_params,
+            manager=manager,
+            stop=stop,
         )
-        self.socket()
+    except (
+        json.JSONDecodeError,
+        LSPError,
+        OSError,
+        TimeoutError,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+    ) as err:
+        return {
+            "id": request_id,
+            "error": {
+                "message": str(err),
+                "type": type(err).__name__,
+            },
+        }
+    return {"id": request_id, "result": result}
 
-    def socket(self) -> None:
-        self._parser.add_argument(
-            "--socket",
-            type=Path,
-            default=LSP_SOCKET_PATH,
-            help="Unix socket path for normalized LSP requests.",
-        )
 
-    def __call__(self, argv: list[str] | None = None) -> argparse.Namespace:
-        return self._parser.parse_args(argv)
+async def _dispatch_daemon_request(
+    method: str,
+    request_params: JSON,
+    *,
+    manager: LSPManager,
+    stop: asyncio.Event,
+) -> Any:
+    match method.removeprefix("lsp_"):
+        case "status":
+            language = request_params.get("language")
+            return manager.status(language if isinstance(language, str) else None)
+        case "hover":
+            return await manager.hover(**_position_params(request_params))
+        case "definition":
+            return await manager.definition(**_position_params(request_params))
+        case "references":
+            return await manager.references(
+                **_position_params(request_params),
+                include_declaration=bool(
+                    request_params.get("include_declaration", True),
+                ),
+            )
+        case "document_symbols":
+            return await manager.document_symbols(**_path_params(request_params))
+        case "workspace_symbols":
+            return await manager.workspace_symbols(
+                _language(request_params),
+                _string(request_params, "query"),
+            )
+        case "diagnostics":
+            return await manager.diagnostics(**_path_params(request_params))
+        case "completion":
+            return await manager.completion(**_position_params(request_params))
+        case "shutdown":
+            stop.set()
+            return {"ok": True}
+        case _:
+            msg = f"unsupported LSP daemon method: {method}"
+            raise ValueError(msg)
+
+
+def _prepare_daemon_socket(socket: Path) -> None:
+    socket.parent.mkdir(parents=True, exist_ok=True)
+    if not socket.exists():
+        return
+    if socket.is_socket():
+        socket.unlink()
+        return
+    msg = f"refusing to replace non-socket LSP daemon path: {socket}"
+    raise OSError(msg)
 
 
 def daemon_main(argv: list[str] | None = None) -> None:
@@ -967,19 +973,31 @@ def daemon_main(argv: list[str] | None = None) -> None:
     argv : list[str] | None
         Command-line arguments. Defaults to None, which means ``sys.argv``.
     """
-    args = _DaemonParser()(argv)
+    parser = argparse.ArgumentParser(
+        prog="bertrand-lsp-daemon",
+        description="Run Bertrand's internal shell-scoped LSP daemon.",
+    )
+    parser.add_argument(
+        "--socket",
+        type=Path,
+        default=LSP_SOCKET_PATH,
+        help="Unix socket path for normalized LSP requests.",
+    )
+    args = parser.parse_args(argv)
     manager = LSPManager(
         workspace=Path(os.environ.get(MCP_WORKSPACE_ENV, WORKTREE_MOUNT.as_posix())),
         artifacts=Path(
             os.environ.get(MCP_ARTIFACTS_ENV, CONTAINER_ARTIFACT_MOUNT.as_posix())
         ),
     )
-    daemon = _Daemon(socket=args.socket, manager=manager)
+    stop = asyncio.Event()
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        _install_signal_handlers(loop, daemon)
-        loop.run_until_complete(daemon.run())
+        _install_signal_handlers(loop, stop)
+        loop.run_until_complete(
+            _run_daemon(socket=args.socket, manager=manager, stop=stop)
+        )
     finally:
         asyncio.set_event_loop(None)
         loop.close()
@@ -1360,12 +1378,15 @@ def _server_request_result(method: str, request_params: Any) -> Any:
     return None
 
 
-def _install_signal_handlers(loop: asyncio.AbstractEventLoop, daemon: _Daemon) -> None:
+def _install_signal_handlers(
+    loop: asyncio.AbstractEventLoop,
+    stop: asyncio.Event,
+) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, daemon._stop.set)
+            loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:
-            signal.signal(sig, lambda *_: daemon._stop.set())
+            signal.signal(sig, lambda *_: stop.set())
 
 
 def _decode_request(line: bytes) -> tuple[object, str, JSON]:

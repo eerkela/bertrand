@@ -14,7 +14,7 @@ from .api._helpers import (
 )
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
-from .job import JobCompletionMode, _job_spec_manifest, _JobExecutionFields
+from .job import JobCompletionMode, _job_spec_manifest, _validate_job_execution
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -69,7 +69,12 @@ class CronJob(
         pod_template: PodTemplateSpec,
         schedule: str,
         annotations: Mapping[str, str] | None,
-        execution: _JobExecutionFields,
+        backoff_limit: int,
+        ttl_seconds_after_finished: int | None,
+        active_deadline_seconds: int | None,
+        parallelism: int | None,
+        completions: int | None,
+        completion_mode: JobCompletionMode | None,
         concurrency_policy: CronJobConcurrencyPolicy,
         suspend: bool | None,
         starting_deadline_seconds: int | None,
@@ -88,7 +93,12 @@ class CronJob(
                 "spec": _job_spec_manifest(
                     labels=labels,
                     pod_template=pod_template,
-                    execution=execution,
+                    backoff_limit=backoff_limit,
+                    ttl_seconds_after_finished=ttl_seconds_after_finished,
+                    active_deadline_seconds=active_deadline_seconds,
+                    parallelism=parallelism,
+                    completions=completions,
+                    completion_mode=completion_mode,
                 ),
             },
         }
@@ -214,7 +224,7 @@ class CronJob(
             if value is not None and value < 0:
                 msg = f"CronJob {label} cannot be negative"
                 raise ValueError(msg)
-        execution = _JobExecutionFields.validate(
+        _validate_job_execution(
             owner="CronJob",
             template_owner="CronJob Job",
             backoff_limit=backoff_limit,
@@ -232,7 +242,12 @@ class CronJob(
             pod_template=pod_template,
             schedule=schedule,
             annotations=annotations,
-            execution=execution,
+            backoff_limit=backoff_limit,
+            ttl_seconds_after_finished=ttl_seconds_after_finished,
+            active_deadline_seconds=active_deadline_seconds,
+            parallelism=parallelism,
+            completions=completions,
+            completion_mode=completion_mode,
             concurrency_policy=concurrency_policy,
             suspend=suspend,
             starting_deadline_seconds=starting_deadline_seconds,

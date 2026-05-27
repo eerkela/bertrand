@@ -10,8 +10,9 @@ import re
 import shutil
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Any, Literal, TypedDict, overload
 
 from bertrand.env.git import (
     INFINITY,
@@ -43,19 +44,7 @@ class CephCapacitySnapshot:
     used_ratio: float
 
 
-@dataclass(frozen=True)
-class NodeCapacitySnapshot:
-    """Host-local capacity snapshot for one storage-agent node."""
-
-    free_bytes: int
-    path: Path
-    lvm_free_bytes: int = 0
-    lvm_pvs: tuple[LvmPhysicalVolume, ...] = ()
-    loop_fallback_active: bool = False
-
-
-@dataclass(frozen=True)
-class LvmPhysicalVolume:
+class _LvmPV(TypedDict):
     """One physical volume belonging to Bertrand's preferred LVM volume group."""
 
     pv_name: str
@@ -77,23 +66,6 @@ class PreparedOSD:
     lv_path: str = ""
     loop_file: Path | None = None
     loop_device: str = ""
-
-
-@dataclass(frozen=True)
-class DiscoveredOSD:
-    """Host-local OSD substrate recovered from durable Bertrand host metadata."""
-
-    name: str
-    prepared: PreparedOSD
-
-
-@dataclass(frozen=True)
-class CephHealthSnapshot:
-    """Cluster health state used by capacity safety planning."""
-
-    status: str
-    clean: bool
-    detail: str
 
 
 @dataclass(frozen=True)
@@ -249,13 +221,13 @@ async def ceph_df(*, timeout: float) -> CephCapacitySnapshot:
     )
 
 
-async def ceph_health(*, timeout: float) -> CephHealthSnapshot:
+async def ceph_health(*, timeout: float) -> tuple[bool, str, str]:
     """Inspect Ceph health and recovery state.
 
     Returns
     -------
-    CephHealthSnapshot
-        Cluster health summary.
+    tuple[bool, str, str]
+        Clean flag, detail text, and raw health status.
 
     Raises
     ------
@@ -277,7 +249,7 @@ async def ceph_health(*, timeout: float) -> CephHealthSnapshot:
     states = str(pgmap.get("states") or "")
     blocked = ("recover", "degraded", "undersized", "peering", "backfill")
     clean = status == "HEALTH_OK" and not any(token in states for token in blocked)
-    return CephHealthSnapshot(status=status, clean=clean, detail=detail or states)
+    return clean, detail or states, status
 
 
 async def ceph_osds(*, timeout: float) -> tuple[CephOSD, ...]:
@@ -421,12 +393,12 @@ def _fallback_loop_active(path: Path = LOOP_FALLBACK_STORAGE_PATH) -> bool:
     return any(root.glob("*.img")) if root.exists() else False
 
 
-async def lvm_inventory(*, timeout: float = 5.0) -> tuple[LvmPhysicalVolume, ...]:
+async def _lvm_inventory(*, timeout: float = 5.0) -> tuple[_LvmPV, ...]:
     """Return concrete PV inventory for the ``bertrand`` LVM VG.
 
     Returns
     -------
-    tuple[LvmPhysicalVolume, ...]
+    tuple[_LvmPV, ...]
         Physical volumes in the Bertrand VG, sorted by stable UUID.
     """
     if not (shutil.which("pvs") or HOST_ROOT.exists()):
@@ -453,7 +425,7 @@ async def lvm_inventory(*, timeout: float = 5.0) -> tuple[LvmPhysicalVolume, ...
         for report in reports:
             if isinstance(report, dict) and isinstance(report.get("pv"), list):
                 rows.extend(row for row in report["pv"] if isinstance(row, dict))
-    pvs: list[LvmPhysicalVolume] = []
+    pvs: list[_LvmPV] = []
     for row in rows:
         if str(row.get("vg_name") or "").strip() != BERTRAND_LVM_VG:
             continue
@@ -463,39 +435,50 @@ async def lvm_inventory(*, timeout: float = 5.0) -> tuple[LvmPhysicalVolume, ...
         pv_size = _parse_lvm_int(row.get("pv_size"))
         if pv_name and pv_uuid:
             pvs.append(
-                LvmPhysicalVolume(
-                    pv_name=pv_name,
-                    pv_uuid=pv_uuid,
-                    size_bytes=pv_size,
-                    free_bytes=pv_free,
-                )
+                {
+                    "pv_name": pv_name,
+                    "pv_uuid": pv_uuid,
+                    "size_bytes": pv_size,
+                    "free_bytes": pv_free,
+                }
             )
-    return tuple(sorted(pvs, key=lambda item: (item.pv_uuid, item.pv_name)))
+    return tuple(sorted(pvs, key=lambda item: (item["pv_uuid"], item["pv_name"])))
 
 
 async def host_capacity_snapshot(
     path: Path = LOOP_FALLBACK_STORAGE_PATH,
     *,
     timeout: float,
-) -> NodeCapacitySnapshot:
+) -> dict[str, object]:
     """Inspect host capacity from async controller code.
 
     Returns
     -------
-    NodeCapacitySnapshot
-        Loop fallback filesystem and Bertrand LVM capacity summary.
+    dict[str, object]
+        Node-report status payload for loop fallback and Bertrand LVM capacity.
     """
     root = _local_path(path)
     root.mkdir(parents=True, exist_ok=True)
     stats = os.statvfs(root)
-    lvm_pvs = await lvm_inventory(timeout=timeout)
-    return NodeCapacitySnapshot(
-        free_bytes=stats.f_bavail * stats.f_frsize,
-        path=path,
-        lvm_free_bytes=sum(pv.free_bytes for pv in lvm_pvs),
-        lvm_pvs=lvm_pvs,
-        loop_fallback_active=_fallback_loop_active(path),
-    )
+    lvm_pvs = await _lvm_inventory(timeout=timeout)
+    return {
+        "free_bytes": stats.f_bavail * stats.f_frsize,
+        "path": path.as_posix(),
+        "lvm_free_bytes": sum(pv["free_bytes"] for pv in lvm_pvs),
+        "lvm_pvs": [pv["pv_name"] for pv in lvm_pvs],
+        "lvm_pv_inventory": [
+            {
+                "pv_name": pv["pv_name"],
+                "pv_uuid": pv["pv_uuid"],
+                "pv_size_bytes": pv["size_bytes"],
+                "pv_free_bytes": pv["free_bytes"],
+            }
+            for pv in lvm_pvs
+        ],
+        "loop_fallback_active": _fallback_loop_active(path),
+        "heartbeat_at": datetime.now(UTC).isoformat(),
+        "last_error": "",
+    }
 
 
 async def _lvs(*, timeout: float) -> list[dict[str, object]]:
@@ -624,17 +607,17 @@ async def prepare_lvm_osd(
         raise ValueError(msg)
     deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     async with _host_lock(deadline.remaining()):
-        inventory = await lvm_inventory(timeout=deadline.remaining())
-        pv = next((item for item in inventory if item.pv_name == pv_name), None)
+        inventory = await _lvm_inventory(timeout=deadline.remaining())
+        pv = next((item for item in inventory if item["pv_name"] == pv_name), None)
         if pv is None:
             msg = f"PV {pv_name!r} is not part of the {BERTRAND_LVM_VG!r} VG"
             raise OSError(msg)
         lv_name = (lv_name or f"bertrand-osd-{_safe_name(name)[-32:]}").strip()
         existing = await _find_lv(lv_name, timeout=deadline.remaining())
         if existing is None:
-            if pv.free_bytes < target_bytes:
+            if pv["free_bytes"] < target_bytes:
                 msg = (
-                    f"PV {pv_name!r} has only {pv.free_bytes} bytes free; "
+                    f"PV {pv_name!r} has only {pv['free_bytes']} bytes free; "
                     f"{target_bytes} bytes are required"
                 )
                 raise OSError(msg)
@@ -660,9 +643,9 @@ async def prepare_lvm_osd(
         else:
             current = _parse_lvm_int(existing.get("lv_size"))
             if current < target_bytes:
-                if pv.free_bytes < target_bytes - current:
+                if pv["free_bytes"] < target_bytes - current:
                     msg = (
-                        f"PV {pv_name!r} has only {pv.free_bytes} bytes free; "
+                        f"PV {pv_name!r} has only {pv['free_bytes']} bytes free; "
                         f"{target_bytes - current} bytes are required"
                     )
                     raise OSError(msg)
@@ -692,27 +675,27 @@ async def prepare_lvm_osd(
         return PreparedOSD(
             block_path=block_path,
             observed_bytes=observed,
-            pv_name=pv.pv_name,
-            pv_uuid=pv.pv_uuid,
-            pv_device=pv.pv_name,
+            pv_name=pv["pv_name"],
+            pv_uuid=pv["pv_uuid"],
+            pv_device=pv["pv_name"],
             lv_name=lv_name,
             lv_path=lv_path,
         )
 
 
-async def discover_lvm_osds(*, timeout: float) -> tuple[DiscoveredOSD, ...]:
+async def discover_lvm_osds(*, timeout: float) -> tuple[tuple[str, PreparedOSD], ...]:
     """Discover Bertrand-tagged LVM OSD substrates on this host.
 
     Returns
     -------
-    tuple[DiscoveredOSD, ...]
+    tuple[tuple[str, PreparedOSD], ...]
         Prepared LVM OSD substrates recovered from host LVM tags.
     """
     deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     async with _host_lock(deadline.remaining()):
-        pvs = await lvm_inventory(timeout=deadline.remaining())
-        inventory = {item.pv_name: item for item in pvs}
-        discoveries: list[DiscoveredOSD] = []
+        pvs = await _lvm_inventory(timeout=deadline.remaining())
+        inventory = {item["pv_name"]: item for item in pvs}
+        discoveries: list[tuple[str, PreparedOSD]] = []
         for row in await _lvs(timeout=deadline.remaining()):
             if str(row.get("vg_name") or "").strip() != BERTRAND_LVM_VG:
                 continue
@@ -735,20 +718,20 @@ async def discover_lvm_osds(*, timeout: float) -> tuple[DiscoveredOSD, ...]:
             block_path = _device_link(name)
             _ensure_link(block_path, lv_path)
             discoveries.append(
-                DiscoveredOSD(
-                    name=name,
-                    prepared=PreparedOSD(
+                (
+                    name,
+                    PreparedOSD(
                         block_path=block_path,
                         observed_bytes=_parse_lvm_int(live.get("lv_size")),
-                        pv_name=pv.pv_name,
-                        pv_uuid=pv.pv_uuid,
-                        pv_device=pv.pv_name,
+                        pv_name=pv["pv_name"],
+                        pv_uuid=pv["pv_uuid"],
+                        pv_device=pv["pv_name"],
                         lv_name=lv_name,
                         lv_path=lv_path,
                     ),
                 )
             )
-        return tuple(sorted(discoveries, key=lambda item: item.name))
+        return tuple(sorted(discoveries, key=lambda item: item[0]))
 
 
 async def _loop_devices(*, timeout: float) -> list[dict[str, object]]:

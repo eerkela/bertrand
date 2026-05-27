@@ -14,10 +14,11 @@ from bertrand.env.config.bertrand import SHELLS, Bertrand
 from bertrand.env.config.vscode import DEV_SHELL_ENTRYPOINT
 from bertrand.env.git import INFINITY
 from bertrand.env.kube.dev import (
-    CodeOpenBridge,
+    code_open_bridge,
     create_project_dev_session,
     current_host_id,
     new_session_id,
+    wait_dev_session_running,
 )
 
 if TYPE_CHECKING:
@@ -52,10 +53,15 @@ async def bertrand_enter(
 
     session_id = new_session_id()
     host_id = current_host_id()
-    async with _project_command_context(target, timeout=INFINITY) as context:
-        bertrand = context.config.get(Bertrand)
+    async with _project_command_context(target, timeout=INFINITY) as (
+        kube,
+        _repo,
+        worktree,
+        config,
+    ):
+        bertrand = config.get(Bertrand)
         if bertrand is None:
-            msg = f"missing Bertrand configuration for worktree: {context.worktree}"
+            msg = f"missing Bertrand configuration for worktree: {worktree}"
             raise OSError(msg)
         shell_name = shell or bertrand.shell
         shell_cmd = SHELLS.get(shell_name)
@@ -65,29 +71,34 @@ async def bertrand_enter(
         dev_shell_cmd = [DEV_SHELL_ENTRYPOINT.as_posix(), *shell_cmd]
 
         publication = await _publish_project_image(
-            context.kube,
-            config=context.config,
-            repo_id=context.config.repo.repo_id,
+            kube,
+            config=config,
+            repo_id=config.repo.repo_id,
             timeout=INFINITY,
         )
-        session = await create_project_dev_session(
-            context.kube,
-            config=context.config,
-            repo_id=context.config.repo.repo_id,
-            image_ref=publication.record.digest_ref,
+        pod, primary_container = await create_project_dev_session(
+            kube,
+            config=config,
+            repo_id=config.repo.repo_id,
+            image_ref=publication.digest_ref,
             session_id=session_id,
             host_id=host_id,
             command=dev_shell_cmd,
             interactive=True,
             timeout=INFINITY,
         )
-        async with CodeOpenBridge(context.kube, session_id=session_id, host_id=host_id):
+        async with code_open_bridge(kube, session_id=session_id, host_id=host_id):
             try:
-                pod = await session.wait_running(context.kube, timeout=INFINITY)
-                await _attach_pod(
-                    context.kube,
+                running = await wait_dev_session_running(
+                    kube,
                     pod,
-                    primary_container=session.primary_container,
+                    primary_container=primary_container,
+                    timeout=INFINITY,
+                )
+                await _attach_pod(
+                    kube,
+                    running,
+                    primary_container=primary_container,
                 )
             finally:
-                await session.delete(context.kube, timeout=INFINITY)
+                await pod.delete(kube, timeout=INFINITY, grace_period_seconds=1)

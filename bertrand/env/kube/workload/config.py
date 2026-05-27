@@ -9,7 +9,6 @@ from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.workload.base import (
     WorkloadIdentity,
     WorkloadPod,
-    WorkloadRepository,
 )
 from bertrand.env.kube.workload.capability import resolve_workload_capabilities
 
@@ -92,11 +91,7 @@ async def workload_pod_from_config(
     )
     rendered: list[ContainerSpec] = []
     for container in containers:
-        claims = tuple(
-            claim.claim_name
-            for claim in capabilities.resource_claims
-            if claim.container_name == container.name
-        )
+        claims = capabilities.claim_names_by_container.get(container.name, ())
         rendered.append(
             ContainerSpec(
                 name=container.name,
@@ -119,9 +114,7 @@ async def workload_pod_from_config(
         template=PodTemplateSpec(
             containers=rendered_containers,
             volumes=capabilities.volumes,
-            resource_claims=tuple(
-                claim.pod_claim() for claim in capabilities.resource_claims
-            ),
+            resource_claims=capabilities.resource_claims,
             restart_policy=_restart_policy(config),
             service_account_name=config.service_account,
             node_selector=config.node_selector or None,
@@ -131,12 +124,10 @@ async def workload_pod_from_config(
             termination_grace_period_seconds=config.termination_grace,
         ),
         primary_container=containers[0].name,
-        repository=WorkloadRepository(
-            repo_id=repo_id,
-            worktree_id=worktree_id,
-            worktree=worktree,
+        identity=identity,
+        resource_claim_capabilities_by_container=(
+            capabilities.claim_capabilities_by_container
         ),
-        resource_claim_templates=capabilities.resource_claims,
         runtime_env={WORKTREE_ID_ENV: worktree_id},
     )
 

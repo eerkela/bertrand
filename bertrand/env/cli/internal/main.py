@@ -18,7 +18,7 @@ from bertrand.env.git import (
     WORKTREE_MOUNT,
     inside_container,
 )
-from bertrand.env.kube.dev import CodeOpen
+from bertrand.env.kube.dev import send_code_open_request
 from bertrand.env.version import __version__
 
 
@@ -220,10 +220,10 @@ class Internal:
             raise RuntimeError(msg)
         with asyncio.Runner() as runner:
             runner.run(
-                CodeOpen(
+                send_code_open_request(
                     editor=args.editor or None,
                     block=args.block,
-                ).send()
+                )
             )
 
     @staticmethod
@@ -388,8 +388,8 @@ class Internal:
 
 
 async def _refresh_artifacts(command: str) -> None:
-    async with live_project_context(command) as context:
-        await context.config.sync(image_build=True)
+    async with live_project_context(command) as (_kube, config, _repo_id):
+        await config.sync(image_build=True)
 
 
 def _compile_command_sources() -> list[Path]:

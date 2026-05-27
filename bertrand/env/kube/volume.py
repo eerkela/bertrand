@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import PosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import kubernetes
 
@@ -183,31 +183,16 @@ class StorageClass(
         return MappingProxyType(self._obj.parameters or {})
 
 
-@dataclass(frozen=True)
-class _PVCIntent:
-    """Normalized PersistentVolumeClaim creation intent."""
-
-    namespace: str
-    name: str
-    access_modes: tuple[str, ...]
-    storage_class: str
-    storage_request: str
-    labels: Mapping[str, str] | None
-    annotations: Mapping[str, str] | None
-
-
-def _pvc_intent(
+def _normalize_pvc_fields(
     *,
-    operation: Literal["PVC upsert", "snapshot PVC creation"],
+    operation: str,
     namespace: str,
     name: str,
     access_modes: Collection[str],
     storage_class: str,
     storage_request: str,
-    labels: Mapping[str, str] | None,
-    annotations: Mapping[str, str] | None,
     validate_size: bool = True,
-) -> _PVCIntent:
+) -> tuple[str, str, tuple[str, ...], str, str]:
     namespace = namespace.strip()
     name = name.strip()
     storage_class = storage_class.strip()
@@ -227,15 +212,7 @@ def _pvc_intent(
         raise OSError(msg)
     if validate_size:
         parse_pvc_size(storage_request)
-    return _PVCIntent(
-        namespace=namespace,
-        name=name,
-        access_modes=modes,
-        storage_class=storage_class,
-        storage_request=storage_request,
-        labels=labels,
-        annotations=annotations,
-    )
+    return namespace, name, modes, storage_class, storage_request
 
 
 @dataclass(frozen=True)
@@ -273,15 +250,21 @@ class PersistentVolumeClaim(
     @staticmethod
     def _manifest(
         *,
-        intent: _PVCIntent,
+        namespace: str,
+        name: str,
+        access_modes: Collection[str],
+        storage_class: str,
+        storage_request: str,
+        labels: Mapping[str, str] | None,
+        annotations: Mapping[str, str] | None,
         data_source: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         spec: dict[str, object] = {
-            "accessModes": list(intent.access_modes),
-            "storageClassName": intent.storage_class,
+            "accessModes": list(access_modes),
+            "storageClassName": storage_class,
             "resources": {
                 "requests": {
-                    "storage": intent.storage_request,
+                    "storage": storage_request,
                 },
             },
         }
@@ -291,10 +274,10 @@ class PersistentVolumeClaim(
             "apiVersion": "v1",
             "kind": "PersistentVolumeClaim",
             "metadata": {
-                "name": intent.name,
-                "namespace": intent.namespace,
-                "labels": dict(intent.labels or {}),
-                "annotations": dict(intent.annotations or {}),
+                "name": name,
+                "namespace": namespace,
+                "labels": dict(labels or {}),
+                "annotations": dict(annotations or {}),
             },
             "spec": spec,
         }
@@ -347,30 +330,36 @@ class PersistentVolumeClaim(
         OSError
             If Kubernetes returns malformed data or the API call fails.
         """
-        intent = _pvc_intent(
+        namespace, name, modes, storage_class, storage_request = _normalize_pvc_fields(
             operation="PVC upsert",
             namespace=namespace,
             name=name,
             access_modes=access_modes,
             storage_class=storage_class,
             storage_request=storage_request,
+        )
+        deadline = _deadline_from_budget(timeout)
+        manifest = cls._manifest(
+            namespace=namespace,
+            name=name,
+            access_modes=modes,
+            storage_class=storage_class,
+            storage_request=storage_request,
             labels=labels,
             annotations=annotations,
         )
-        deadline = _deadline_from_budget(timeout)
-        manifest = cls._manifest(intent=intent)
 
         try:
             return await cls.resource.create_manifest(
                 kube,
                 owner=cls,
-                namespace=intent.namespace,
-                name=intent.name,
+                namespace=namespace,
+                name=name,
                 manifest=manifest,
                 timeout=deadline.remaining(),
                 malformed_message=(
                     "malformed Kubernetes PVC payload while creating "
-                    f"{intent.namespace}/{intent.name}"
+                    f"{namespace}/{name}"
                 ),
                 missing_ok=False,
             )
@@ -380,21 +369,21 @@ class PersistentVolumeClaim(
 
         live = await cls.get(
             kube,
-            namespace=intent.namespace,
+            namespace=namespace,
             timeout=deadline.remaining(),
-            name=intent.name,
+            name=name,
         )
         if live is None:
-            msg = f"PVC {intent.namespace}/{intent.name} disappeared during upsert"
+            msg = f"PVC {namespace}/{name} disappeared during upsert"
             raise OSError(msg)
         live._assert_upsert_compatible(
-            storage_class=intent.storage_class,
-            access_modes=intent.access_modes,
-            labels=intent.labels,
-            annotations=intent.annotations,
+            storage_class=storage_class,
+            access_modes=modes,
+            labels=labels,
+            annotations=annotations,
         )
         return await live._grow(
-            intent.storage_request,
+            storage_request,
             kube=kube,
             timeout=deadline.remaining(),
         )
@@ -450,25 +439,29 @@ class PersistentVolumeClaim(
             If intent fields are empty, creation fails, or Kubernetes returns a
             malformed payload.
         """
-        intent = _pvc_intent(
+        namespace, name, modes, storage_class, storage_request = _normalize_pvc_fields(
             operation="snapshot PVC creation",
             namespace=namespace,
             name=name,
             access_modes=access_modes,
             storage_class=storage_class,
             storage_request=storage_request,
-            labels=labels,
-            annotations=annotations,
             validate_size=False,
         )
         snapshot_name = snapshot_name.strip()
         if not snapshot_name:
             msg = "snapshot PVC creation requires a non-empty snapshot name"
             raise OSError(msg)
-        parse_pvc_size(intent.storage_request)
+        parse_pvc_size(storage_request)
 
         manifest = cls._manifest(
-            intent=intent,
+            namespace=namespace,
+            name=name,
+            access_modes=modes,
+            storage_class=storage_class,
+            storage_request=storage_request,
+            labels=labels,
+            annotations=annotations,
             data_source={
                 "apiGroup": "snapshot.storage.k8s.io",
                 "kind": "VolumeSnapshot",
@@ -478,19 +471,19 @@ class PersistentVolumeClaim(
         return await cls.resource.create_manifest(
             kube,
             owner=cls,
-            namespace=intent.namespace,
-            name=intent.name,
+            namespace=namespace,
+            name=name,
             manifest=manifest,
             timeout=timeout,
             context=(
                 "failed to create PersistentVolumeClaim "
-                f"{intent.namespace}/{intent.name} from VolumeSnapshot "
+                f"{namespace}/{name} from VolumeSnapshot "
                 f"{snapshot_name!r}"
             ),
             missing_ok=False,
             malformed_message=(
                 "malformed Kubernetes PVC payload while creating "
-                f"{intent.namespace}/{intent.name} from VolumeSnapshot "
+                f"{namespace}/{name} from VolumeSnapshot "
                 f"{snapshot_name!r}"
             ),
         )

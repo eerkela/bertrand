@@ -8,21 +8,21 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 
 from bertrand.env.config.bertrand import EDITORS, Editor
 from bertrand.env.git import CommandError, run
 from bertrand.env.kube.dev.mailbox import (
+    CODE_OPEN_RESOURCE,
     CodeOpenRecord,
     code_open_session_labels,
-    list_code_open_requests,
     patch_code_open_request_status,
 )
 
 if TYPE_CHECKING:
-    from types import TracebackType
+    from collections.abc import AsyncIterator
 
     from bertrand.env.kube.api.client import Kube
 
@@ -38,9 +38,14 @@ _BRIDGE_STATUS_PATCH_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
-@dataclass
-class CodeOpenBridge:
-    """Host bridge that services editor-open mailbox requests for one dev session.
+@asynccontextmanager
+async def code_open_bridge(
+    kube: Kube,
+    *,
+    session_id: str,
+    host_id: str,
+) -> AsyncIterator[None]:
+    """Run a host bridge for editor-open mailbox requests in one dev session.
 
     Parameters
     ----------
@@ -51,126 +56,114 @@ class CodeOpenBridge:
     host_id : str
         Durable Bertrand host identity.
     """
-
-    kube: Kube
-    session_id: str
-    host_id: str
-    _task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
-    _seen: set[str] = field(default_factory=set, init=False, repr=False)
-    _handlers: set[asyncio.Task[None]] = field(
-        default_factory=set,
-        init=False,
-        repr=False,
+    seen: set[str] = set()
+    handlers: set[asyncio.Task[None]] = set()
+    task = asyncio.create_task(
+        _run_bridge(
+            kube,
+            session_id=session_id,
+            host_id=host_id,
+            seen=seen,
+            handlers=handlers,
+        )
     )
-
-    async def __aenter__(self) -> Self:
-        """Start the host bridge.
-
-        Returns
-        -------
-        CodeOpenBridge
-            Running bridge instance.
-        """
-        await self.start()
-        return self
-
-    async def __aexit__(
-        self,
-        _exc_type: type[BaseException] | None,
-        _exc: BaseException | None,
-        _tb: TracebackType | None,
-    ) -> None:
-        """Stop the host bridge."""
-        await self.close()
-
-    async def start(self) -> None:
-        """Start watching mailbox requests in the background."""
-        if self._task is None:
-            self._task = asyncio.create_task(self._run())
-
-    async def close(self) -> None:
-        """Stop watching mailbox requests."""
-        task = self._task
-        self._task = None
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        for handler in tuple(self._handlers):
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        for handler in tuple(handlers):
             handler.cancel()
-        for handler in tuple(self._handlers):
+        for handler in tuple(handlers):
             with contextlib.suppress(asyncio.CancelledError):
                 await handler
 
-    async def _run(self) -> None:
-        labels = code_open_session_labels(self.session_id)
-        while True:
-            try:
-                records = await list_code_open_requests(
-                    self.kube,
-                    labels=labels,
-                    timeout=BRIDGE_API_TIMEOUT_SECONDS,
-                )
-            except (OSError, RuntimeError, TimeoutError, ValueError) as err:
-                print(
-                    f"bertrand: warning: failed to poll editor mailbox: {err}",
-                    file=sys.stderr,
-                )
-                await asyncio.sleep(BRIDGE_POLL_SECONDS)
-                continue
-            for record in records:
-                if record.name in self._seen or record.status.terminal:
-                    continue
-                if record.spec.session_id != self.session_id:
-                    continue
-                self._seen.add(record.name)
-                handler = asyncio.create_task(self._handle(record))
-                self._handlers.add(handler)
-                handler.add_done_callback(self._handlers.discard)
-            await asyncio.sleep(BRIDGE_POLL_SECONDS)
 
-    async def _handle(self, record: CodeOpenRecord) -> None:
+async def _run_bridge(
+    kube: Kube,
+    *,
+    session_id: str,
+    host_id: str,
+    seen: set[str],
+    handlers: set[asyncio.Task[None]],
+) -> None:
+    labels = code_open_session_labels(session_id)
+    while True:
         try:
-            if record.spec.expired:
-                await patch_code_open_request_status(
-                    self.kube,
-                    record=record,
-                    phase="Expired",
-                    host_id=self.host_id,
-                    message="request deadline expired before host bridge accepted it",
-                    timeout=BRIDGE_API_TIMEOUT_SECONDS,
-                )
-                return
-            record = await patch_code_open_request_status(
-                self.kube,
-                record=record,
-                phase="Accepted",
-                host_id=self.host_id,
-                message="host editor bridge accepted the request",
+            records = await CODE_OPEN_RESOURCE.list(
+                kube,
+                labels=labels,
                 timeout=BRIDGE_API_TIMEOUT_SECONDS,
             )
-            await _open_editor(record)
         except (OSError, RuntimeError, TimeoutError, ValueError) as err:
-            message = str(err)
-            with contextlib.suppress(*_BRIDGE_STATUS_PATCH_ERRORS):
-                await patch_code_open_request_status(
-                    self.kube,
-                    record=record,
-                    phase="Failed",
-                    host_id=self.host_id,
-                    message=message,
-                    timeout=BRIDGE_API_TIMEOUT_SECONDS,
-                )
+            print(
+                f"bertrand: warning: failed to poll editor mailbox: {err}",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(BRIDGE_POLL_SECONDS)
+            continue
+        for record in records:
+            if record.name in seen or record.status.terminal:
+                continue
+            if record.spec.session_id != session_id:
+                continue
+            seen.add(record.name)
+            handler = asyncio.create_task(
+                _handle_bridge_record(kube, record=record, host_id=host_id)
+            )
+            handlers.add(handler)
+            handler.add_done_callback(handlers.discard)
+        await asyncio.sleep(BRIDGE_POLL_SECONDS)
+
+
+async def _handle_bridge_record(
+    kube: Kube,
+    *,
+    record: CodeOpenRecord,
+    host_id: str,
+) -> None:
+    try:
+        if record.spec.expired:
+            await patch_code_open_request_status(
+                kube,
+                record=record,
+                phase="Expired",
+                host_id=host_id,
+                message="request deadline expired before host bridge accepted it",
+                timeout=BRIDGE_API_TIMEOUT_SECONDS,
+            )
             return
+        record = await patch_code_open_request_status(
+            kube,
+            record=record,
+            phase="Accepted",
+            host_id=host_id,
+            message="host editor bridge accepted the request",
+            timeout=BRIDGE_API_TIMEOUT_SECONDS,
+        )
+        await _open_editor(record)
+    except (OSError, RuntimeError, TimeoutError, ValueError) as err:
+        message = str(err)
         with contextlib.suppress(*_BRIDGE_STATUS_PATCH_ERRORS):
             await patch_code_open_request_status(
-                self.kube,
+                kube,
                 record=record,
-                phase="Succeeded",
-                host_id=self.host_id,
-                message="editor request completed",
+                phase="Failed",
+                host_id=host_id,
+                message=message,
                 timeout=BRIDGE_API_TIMEOUT_SECONDS,
             )
+        return
+    with contextlib.suppress(*_BRIDGE_STATUS_PATCH_ERRORS):
+        await patch_code_open_request_status(
+            kube,
+            record=record,
+            phase="Succeeded",
+            host_id=host_id,
+            message="editor request completed",
+            timeout=BRIDGE_API_TIMEOUT_SECONDS,
+        )
 
 
 async def _open_editor(record: CodeOpenRecord) -> None:

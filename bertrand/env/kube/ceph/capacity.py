@@ -7,9 +7,8 @@ import hashlib
 import math
 import uuid
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict
 
 from pydantic import (
     BaseModel,
@@ -348,7 +347,7 @@ class CephStoragePolicyStatus(BaseModel):
     last_error: str = ""
 
 
-class _CephStorageActionSpec(BaseModel):
+class CephStorageActionSpec(BaseModel):
     """Desired node-local storage action contract."""
 
     model_config = ConfigDict(extra="forbid")
@@ -364,7 +363,7 @@ class _CephStorageActionSpec(BaseModel):
     reason: Annotated[str, Field(min_length=1)]
 
     @model_validator(mode="after")
-    def _validate_operation_contract(self) -> _CephStorageActionSpec:
+    def _validate_operation_contract(self) -> CephStorageActionSpec:
         if self.operation in ("expand-lvm", "expand-loop"):
             if self.target_bytes is None or self.osd_id is not None:
                 msg = f"{self.operation} actions require target_bytes only"
@@ -416,7 +415,7 @@ class CephStorageActionRecord(BaseModel):
     api_version: str = Field(alias="apiVersion")
     kind: Literal["CephStorageAction"]
     metadata: CustomObjectMetadata
-    spec: _CephStorageActionSpec
+    spec: CephStorageActionSpec
     status: _CephStorageActionStatus = Field(default_factory=_CephStorageActionStatus)
 
     @property
@@ -470,45 +469,6 @@ class CephStorageReservation(BaseModel):
         """
         return self.phase in {"Pending", "Ready"} and self.expires_at_utc() > now
 
-    def spec_payload(self) -> dict[str, object]:
-        """Return the legacy reservation spec payload.
-
-        Returns
-        -------
-        dict[str, object]
-            JSON-serializable reservation spec.
-        """
-        return self.model_dump(
-            mode="json",
-            include={
-                "owner_kind",
-                "owner_name",
-                "request_id",
-                "requested_bytes",
-                "reason",
-                "expires_at",
-            },
-        )
-
-    def status_payload(self) -> dict[str, object]:
-        """Return the legacy reservation status payload.
-
-        Returns
-        -------
-        dict[str, object]
-            JSON-serializable reservation status.
-        """
-        return self.model_dump(
-            mode="json",
-            include={
-                "phase",
-                "ready_at",
-                "released_at",
-                "observed_free_bytes",
-                "last_error",
-            },
-        )
-
 
 class _CephStorageNodePVStatus(BaseModel):
     """Observed free capacity for one physical volume in the Bertrand VG."""
@@ -535,38 +495,6 @@ class CephStorageNodeReport(BaseModel):
     loop_fallback_active: bool = False
     heartbeat_at: datetime | None = None
     last_error: str = ""
-
-    def spec_payload(self) -> dict[str, object]:
-        """Return the legacy node-report spec payload.
-
-        Returns
-        -------
-        dict[str, object]
-            JSON-serializable node-report spec.
-        """
-        return self.model_dump(mode="json", include={"node_name", "host_id"})
-
-    def status_payload(self) -> dict[str, object]:
-        """Return the legacy node-report status payload.
-
-        Returns
-        -------
-        dict[str, object]
-            JSON-serializable node-report status.
-        """
-        return self.model_dump(
-            mode="json",
-            include={
-                "free_bytes",
-                "path",
-                "lvm_free_bytes",
-                "lvm_pvs",
-                "lvm_pv_inventory",
-                "loop_fallback_active",
-                "heartbeat_at",
-                "last_error",
-            },
-        )
 
 
 class CephStorageOSD(BaseModel):
@@ -618,59 +546,6 @@ class CephStorageOSD(BaseModel):
             raise ValueError(msg)
         return self
 
-    def spec_payload(self) -> dict[str, object]:
-        """Return the legacy OSD spec payload.
-
-        Returns
-        -------
-        dict[str, object]
-            JSON-serializable OSD spec.
-        """
-        return self.model_dump(
-            mode="json",
-            include={
-                "origin",
-                "node_name",
-                "host_id",
-                "pv_name",
-                "pv_uuid",
-                "pv_device",
-                "lv_name",
-                "lv_path",
-                "loop_file",
-                "loop_device",
-                "block_path",
-                "csi_volume_id",
-                "persistent_volume_name",
-                "persistent_volume_claim_namespace",
-                "persistent_volume_claim_name",
-                "device_set_name",
-                "target_bytes",
-            },
-        )
-
-    def status_payload(self) -> dict[str, object]:
-        """Return the legacy OSD status payload.
-
-        Returns
-        -------
-        dict[str, object]
-            JSON-serializable OSD status.
-        """
-        return self.model_dump(
-            mode="json",
-            include={
-                "phase",
-                "observed_bytes",
-                "ceph_osd_id",
-                "created_at",
-                "phase_changed_at",
-                "last_seen_at",
-                "retired_at",
-                "last_error",
-            },
-        )
-
 
 class CephStorageStateStatus(BaseModel):
     """Collapsed Ceph storage controller state."""
@@ -708,1119 +583,737 @@ class CephStorageStateRecord(BaseModel):
         return self.status.policy
 
 
-@dataclass(frozen=True)
-class PlannedStorageAction:
-    """One node-scoped Rook/LVM storage action selected by policy planning."""
-
-    operation: StorageActionOperation
-    node_name: str
-    reason: str
-    host_id: str = ""
-    osd_id: int | None = None
-    target_bytes: int | None = None
-    pv_name: str | None = None
-    lv_name: str | None = None
-    storage_osd_name: str | None = None
-
-
-@dataclass(frozen=True)
-class _EligibleStorageNode:
-    """One node-local storage growth target selected from agent reports."""
-
+class _EligibleStorageTarget(TypedDict):
     node_name: str
     operation: StorageActionOperation
-    host_id: str = ""
-    pv_name: str | None = None
-    pv_uuid: str | None = None
-    pv_free_bytes: int = 0
-    lv_name: str | None = None
-    storage_osd_name: str | None = None
-    current_bytes: int = 0
-    available_bytes: int = 0
-    target_bytes: int = 0
-
-
-@dataclass(frozen=True)
-class _ManagedOSD:
-    """Autoscaler-created loop fallback OSD that is eligible for retirement."""
-
-    osd_id: int
-    node_name: str
     host_id: str
-    size_bytes: int
-    created_at: datetime | None
+    storage_osd_name: str
+    current_bytes: int
+    available_bytes: int
+    target_bytes: int
+    pv_name: NotRequired[str]
+    pv_uuid: NotRequired[str]
+    pv_free_bytes: NotRequired[int]
+    lv_name: NotRequired[str]
 
 
-@dataclass(frozen=True)
-class _ManagedLVMOSD:
-    """PV-pinned LVM OSD that may be safely drain/recreated smaller."""
-
-    name: str
-    osd_id: int
-    node_name: str
-    host_id: str
-    pv_name: str
-    pv_uuid: str
-    lv_name: str
-    size_bytes: int
-    created_at: datetime | None
+def _storage_action_counts(
+    actions: Collection[CephStorageActionRecord],
+) -> dict[str, int]:
+    counts: dict[str, int] = dict.fromkeys(STORAGE_ACTION_PHASES, 0)
+    for action in actions:
+        counts[action.status.phase] += 1
+    return counts
 
 
-@dataclass(frozen=True)
-class StoragePlan:
-    """Storage actions and status inputs selected by one planning pass."""
-
-    actions: list[PlannedStorageAction]
-    managed_osd_count: int
-    loop_osd_count: int
-    lvm_osd_count: int
-    elastic_bytes: int
-    durable_bytes: int
-    shrink_candidate_count: int
-    missing_lvm_osd_pvs: int
-    lvm_reclaimable_bytes: int
-    lvm_shrink_candidate: str
-    lvm_shrink_target_bytes: int
-    last_shrink_at: datetime | None
-    free_bytes: int
-    headroom_target_bytes: int
-    reserved_bytes: int
-    write_rate_ewma_bytes_per_second: float
-    projected_seconds_to_headroom_floor: float | None
-    growth_recommendation_bytes: int
+def _storage_actions_in_flight(actions: Collection[CephStorageActionRecord]) -> int:
+    counts = _storage_action_counts(actions)
+    return counts["Pending"] + counts["Running"]
 
 
-@dataclass(frozen=True)
-class StorageGrowthRecommendation:
-    """Adaptive growth inputs selected from observed capacity and reservations."""
-
-    free_bytes: int
-    headroom_target_bytes: int
-    reserved_bytes: int
-    write_rate_ewma_bytes_per_second: float
-    projected_seconds_to_headroom_floor: float | None
-    growth_recommendation_bytes: int
+def _storage_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
-@dataclass(frozen=True)
-class StorageOSDInventory:
-    """Quality-oriented OSD inventory inferred from durable OSD records.
-
-    Attributes
-    ----------
-    loop_osd_ids : frozenset[int]
-        Autoscaler-created loop OSD IDs still present in managed inventory.
-    lvm_osd_ids : frozenset[int]
-        LVM-backed OSD IDs present in managed inventory.
-    elastic_bytes : int
-        Approximate autoscaled loop-backed raw bytes tracked by Bertrand.
-    durable_bytes : int
-        Approximate LVM-backed raw bytes tracked by Bertrand.
-    """
-
-    loop_osd_ids: frozenset[int]
-    lvm_osd_ids: frozenset[int]
-    elastic_bytes: int
-    durable_bytes: int
+def _last_storage_shrink_at(
+    actions: Collection[CephStorageActionRecord],
+) -> datetime | None:
+    timestamps = [
+        _storage_utc(action.status.finished_at or action.status.started_at)
+        for action in actions
+        if action.spec.operation in {"retire-loop", "shrink-lvm"}
+        and action.status.phase in ("Running", "Succeeded", "Failed")
+    ]
+    return max((item for item in timestamps if item is not None), default=None)
 
 
-@dataclass
-class CephStoragePlanner:
-    """Pure Ceph capacity planning state for controller reconciliation."""
+def _storage_osd_counts(
+    osds: Collection[CephStorageOSD],
+) -> tuple[int, int, int, int, int]:
+    ready = [record for record in osds if record.phase == "Ready"]
+    loop_ids = {
+        record.ceph_osd_id
+        for record in ready
+        if record.origin == "loop-fallback" and record.ceph_osd_id is not None
+    }
+    lvm_ids = {
+        record.ceph_osd_id
+        for record in ready
+        if record.origin == "lvm-pv" and record.ceph_osd_id is not None
+    }
+    elastic_bytes = sum(
+        record.observed_bytes or record.target_bytes
+        for record in ready
+        if record.origin == "loop-fallback"
+    )
+    durable_bytes = sum(
+        record.observed_bytes or record.target_bytes
+        for record in ready
+        if record.origin == "lvm-pv"
+    )
+    return (
+        len(loop_ids) + len(lvm_ids),
+        len(loop_ids),
+        len(lvm_ids),
+        elastic_bytes,
+        durable_bytes,
+    )
 
-    offset: int = 0
 
-    @staticmethod
-    def action_counts(
-        actions: Collection[CephStorageActionRecord],
-    ) -> dict[str, int]:
-        """Return storage action phase counts.
+def _storage_osd_admission_in_flight(osds: Collection[CephStorageOSD]) -> bool:
+    return any(record.phase in STORAGE_OSD_IN_FLIGHT_PHASES for record in osds)
 
-        Parameters
-        ----------
-        actions : Collection[CephStorageActionRecord]
-            Storage actions to summarize.
 
-        Returns
-        -------
-        dict[str, int]
-            Counts keyed by action phase.
-        """
-        counts: dict[str, int] = dict.fromkeys(STORAGE_ACTION_PHASES, 0)
-        for action in actions:
-            counts[action.status.phase] += 1
-        return counts
+def _storage_osd_id(record: CephStorageOSD) -> int:
+    osd_id = record.ceph_osd_id
+    if osd_id is None:
+        msg = f"storage OSD record {record.name!r} is missing Ceph OSD id"
+        raise ValueError(msg)
+    return osd_id
 
-    def in_flight(self, actions: Collection[CephStorageActionRecord]) -> int:
-        """Return pending or running storage action count.
 
-        Parameters
-        ----------
-        actions : Collection[CephStorageActionRecord]
-            Storage actions to inspect.
+def _storage_osd_bytes(record: CephStorageOSD) -> int:
+    return record.observed_bytes or record.target_bytes
 
-        Returns
-        -------
-        int
-            Number of pending or running actions.
-        """
-        counts = self.action_counts(actions)
-        return counts["Pending"] + counts["Running"]
 
-    @staticmethod
-    def utc(value: datetime | None) -> datetime | None:
-        """Normalize a timestamp to UTC.
+def _managed_loop_osds(
+    *,
+    osd_records: Collection[CephStorageOSD],
+    osds: Collection[CephOSD],
+) -> list[CephStorageOSD]:
+    live = {
+        osd.osd_id: osd for osd in osds if osd.up and osd.in_cluster and osd.node_name
+    }
+    candidates: list[CephStorageOSD] = []
+    for record in osd_records:
+        if record.origin != "loop-fallback" or record.phase != "Ready":
+            continue
+        osd_id = record.ceph_osd_id
+        if osd_id is None:
+            continue
+        osd = live.get(osd_id)
+        if osd is None:
+            continue
+        candidates.append(record)
+    return candidates
 
-        Parameters
-        ----------
-        value : datetime | None
-            Timestamp to normalize.
 
-        Returns
-        -------
-        datetime | None
-            UTC-normalized timestamp, or `None`.
-        """
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value.astimezone(UTC)
-
-    def last_shrink_at(
-        self,
-        actions: Collection[CephStorageActionRecord],
-    ) -> datetime | None:
-        """Return the latest shrink action attempt timestamp.
-
-        Parameters
-        ----------
-        actions : Collection[CephStorageActionRecord]
-            Storage actions to inspect.
-
-        Returns
-        -------
-        datetime | None
-            Latest shrink attempt timestamp, if one exists.
-        """
-        timestamps = [
-            self.utc(action.status.finished_at or action.status.started_at)
-            for action in actions
-            if action.spec.operation in {"retire-loop", "shrink-lvm"}
-            and action.status.phase in ("Running", "Succeeded", "Failed")
-        ]
-        return max((item for item in timestamps if item is not None), default=None)
-
-    def osd_inventory(
-        self,
-        osds: Collection[CephStorageOSD],
-    ) -> StorageOSDInventory:
-        """Return loop/LVM OSD inventory inferred from durable OSD records.
-
-        Parameters
-        ----------
-        osds : Collection[CephStorageOSD]
-            OSD records to inspect.
-
-        Returns
-        -------
-        StorageOSDInventory
-            Quality-oriented OSD inventory.
-        """
-        ready = [record for record in osds if record.phase == "Ready"]
-        loop_ids = {
-            record.ceph_osd_id
-            for record in ready
-            if record.origin == "loop-fallback"
-            and record.ceph_osd_id is not None
-        }
-        lvm_ids = {
-            record.ceph_osd_id
-            for record in ready
-            if record.origin == "lvm-pv" and record.ceph_osd_id is not None
-        }
-        elastic_bytes = sum(
-            record.observed_bytes or record.target_bytes
-            for record in ready
-            if record.origin == "loop-fallback"
-        )
-        durable_bytes = sum(
-            record.observed_bytes or record.target_bytes
-            for record in ready
-            if record.origin == "lvm-pv"
-        )
-        return StorageOSDInventory(
-            loop_osd_ids=frozenset(loop_ids),
-            lvm_osd_ids=frozenset(lvm_ids),
-            elastic_bytes=elastic_bytes,
-            durable_bytes=durable_bytes,
-        )
-
-    @staticmethod
-    def lvm_actions_in_flight(
-        actions: Collection[CephStorageActionRecord],
-    ) -> bool:
-        """Return whether preferred LVM capacity is currently being expanded.
-
-        Parameters
-        ----------
-        actions : Collection[CephStorageActionRecord]
-            Storage actions to inspect.
-
-        Returns
-        -------
-        bool
-            True when an LVM OSD action is pending or running.
-        """
-        return any(
-            action.spec.operation == "expand-lvm"
-            and action.status.phase in ("Pending", "Running")
-            for action in actions
-        )
-
-    @staticmethod
-    def osd_admission_in_flight(
-        osds: Collection[CephStorageOSD],
-    ) -> bool:
-        """Return whether Rook is still admitting or retiring a managed OSD.
-
-        Parameters
-        ----------
-        osds : Collection[CephStorageOSD]
-            Durable OSD inventory records to inspect.
-
-        Returns
-        -------
-        bool
-            True when any active OSD record is not yet terminal or ready.
-        """
-        return any(
-            record.phase in STORAGE_OSD_IN_FLIGHT_PHASES for record in osds
-        )
-
-    def managed_osds(
-        self,
-        *,
-        osd_records: Collection[CephStorageOSD],
-        osds: Collection[CephOSD],
-    ) -> list[_ManagedOSD]:
-        """Return shrink-eligible managed OSD inventory.
-
-        Parameters
-        ----------
-        osd_records : Collection[CephStorageOSD]
-            Durable OSD records that identify autoscaler-created OSDs.
-        osds : Collection[CephOSD]
-            Live Ceph OSD inventory.
-
-        Returns
-        -------
-        list[_ManagedOSD]
-            Live managed OSDs eligible for shrink consideration.
-        """
-        live = {
-            osd.osd_id: osd
-            for osd in osds
-            if osd.up and osd.in_cluster and osd.node_name
-        }
-        candidates: list[_ManagedOSD] = []
-        for record in osd_records:
-            if record.origin != "loop-fallback" or record.phase != "Ready":
+def _eligible_storage_nodes(
+    *,
+    ready_nodes: Collection[str],
+    reports: Collection[CephStorageNodeReport],
+    actions: Collection[CephStorageActionRecord],
+    osds: Collection[CephStorageOSD],
+    growth_bytes: int,
+) -> list[_EligibleStorageTarget]:
+    ready = frozenset(ready_nodes)
+    now = datetime.now(UTC)
+    lvm: list[_EligibleStorageTarget] = []
+    loop: list[_EligibleStorageTarget] = []
+    active_osds = [
+        record
+        for record in osds
+        if record.phase not in {"Failed", "Retired", "Retiring"}
+    ]
+    failed_targets = _failed_osd_targets_in_cooldown(
+        osds, now=now
+    ) | _failed_action_targets_in_cooldown(actions, now=now)
+    lvm_by_pv = {
+        (record.host_id, record.pv_uuid): record
+        for record in active_osds
+        if record.origin == "lvm-pv" and record.pv_uuid
+    }
+    loop_by_host = {
+        record.host_id: record
+        for record in active_osds
+        if record.origin == "loop-fallback"
+    }
+    for report in reports:
+        if report.node_name not in ready:
+            continue
+        heartbeat = report.heartbeat_at
+        if heartbeat is None:
+            continue
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=UTC)
+        heartbeat = heartbeat.astimezone(UTC)
+        if (now - heartbeat).total_seconds() > STORAGE_NODE_REPORT_MAX_AGE_SECONDS:
+            continue
+        for pv in report.lvm_pv_inventory:
+            if pv.pv_free_bytes < growth_bytes:
                 continue
-            osd_id = record.ceph_osd_id
-            if osd_id is None:
-                continue
-            osd = live.get(osd_id)
-            if osd is None:
-                continue
-            candidates.append(
-                _ManagedOSD(
-                    osd_id=osd_id,
-                    node_name=record.node_name or osd.node_name,
-                    host_id=record.host_id,
-                    size_bytes=record.observed_bytes or record.target_bytes,
-                    created_at=self.utc(record.created_at),
-                )
+            existing = lvm_by_pv.get((report.host_id, pv.pv_uuid))
+            target_name = (
+                existing.name
+                if existing is not None
+                else storage_lvm_osd_name(report.host_id, pv.pv_uuid)
             )
-        return candidates
-
-    @staticmethod
-    def eligible_nodes(
-        *,
-        ready_nodes: Collection[str],
-        reports: Collection[CephStorageNodeReport],
-        actions: Collection[CephStorageActionRecord],
-        osds: Collection[CephStorageOSD],
-        growth_bytes: int,
-    ) -> list[_EligibleStorageNode]:
-        """Return deterministic node slots eligible for storage expansion.
-
-        Parameters
-        ----------
-        ready_nodes : Collection[str]
-            Kubernetes nodes currently ready for Bertrand registry pulls.
-        reports : Collection[CephStorageNodeReport]
-            Node-local free-space reports.
-        actions : Collection[CephStorageActionRecord]
-            Existing storage actions used to apply failed-target retry cooldowns.
-        osds : Collection[CephStorageOSD]
-            Durable managed OSD inventory.
-        growth_bytes : int
-            Bytes required by one fallback growth step.
-
-        Returns
-        -------
-        list[_EligibleStorageNode]
-            Sorted storage targets, preferring LVM PVs before loop fallback.
-        """
-        ready = frozenset(ready_nodes)
-        now = datetime.now(UTC)
-        lvm: list[_EligibleStorageNode] = []
-        loop: list[_EligibleStorageNode] = []
-        active_osds = [
-            record
-            for record in osds
-            if record.phase not in {"Failed", "Retired", "Retiring"}
-        ]
-        failed_targets = CephStoragePlanner._failed_osd_targets_in_cooldown(
-            osds, now=now
-        ) | CephStoragePlanner._failed_action_targets_in_cooldown(actions, now=now)
-        lvm_by_pv = {
-            (record.host_id, record.pv_uuid): record
-            for record in active_osds
-            if record.origin == "lvm-pv" and record.pv_uuid
-        }
-        loop_by_host = {
-            record.host_id: record
-            for record in active_osds
-            if record.origin == "loop-fallback"
-        }
-        for report in reports:
-            if report.node_name not in ready:
+            if target_name in failed_targets:
                 continue
-            heartbeat = report.heartbeat_at
-            if heartbeat is None:
-                continue
-            if heartbeat.tzinfo is None:
-                heartbeat = heartbeat.replace(tzinfo=UTC)
-            heartbeat = heartbeat.astimezone(UTC)
-            if (now - heartbeat).total_seconds() > STORAGE_NODE_REPORT_MAX_AGE_SECONDS:
-                continue
-            for pv in report.lvm_pv_inventory:
-                if pv.pv_free_bytes < growth_bytes:
-                    continue
-                existing = lvm_by_pv.get((report.host_id, pv.pv_uuid))
-                target_name = (
-                    existing.name
+            target: _EligibleStorageTarget = {
+                "node_name": report.node_name,
+                "host_id": report.host_id,
+                "operation": "expand-lvm",
+                "pv_name": pv.pv_name,
+                "pv_uuid": pv.pv_uuid,
+                "pv_free_bytes": pv.pv_free_bytes,
+                "storage_osd_name": target_name,
+                "current_bytes": existing.target_bytes if existing is not None else 0,
+                "available_bytes": pv.pv_free_bytes,
+                "target_bytes": (
+                    existing.target_bytes + growth_bytes
                     if existing is not None
-                    else storage_lvm_osd_name(report.host_id, pv.pv_uuid)
-                )
-                if target_name in failed_targets:
-                    continue
-                lvm.append(
-                    _EligibleStorageNode(
-                        node_name=report.node_name,
-                        host_id=report.host_id,
-                        operation="expand-lvm",
-                        pv_name=pv.pv_name,
-                        pv_uuid=pv.pv_uuid,
-                        pv_free_bytes=pv.pv_free_bytes,
-                        lv_name=existing.lv_name if existing is not None else None,
-                        storage_osd_name=target_name,
-                        current_bytes=(
-                            existing.target_bytes if existing is not None else 0
-                        ),
-                        available_bytes=pv.pv_free_bytes,
-                        target_bytes=(
-                            existing.target_bytes + growth_bytes
-                            if existing is not None
-                            else growth_bytes
-                        ),
-                    )
-                )
-            if report.free_bytes >= growth_bytes:
-                existing = loop_by_host.get(report.host_id)
-                target_name = (
-                    existing.name
-                    if existing is not None
-                    else storage_loop_osd_name(report.host_id)
-                )
-                if target_name in failed_targets:
-                    continue
-                loop.append(
-                    _EligibleStorageNode(
-                        node_name=report.node_name,
-                        host_id=report.host_id,
-                        operation="expand-loop",
-                        storage_osd_name=target_name,
-                        current_bytes=(
-                            existing.target_bytes if existing is not None else 0
-                        ),
-                        available_bytes=report.free_bytes,
-                        target_bytes=(
-                            existing.target_bytes + growth_bytes
-                            if existing is not None
-                            else growth_bytes
-                        ),
-                    )
-                )
-        lvm = sorted(
-            lvm,
-            key=lambda item: (
-                0 if not item.lv_name else 1,
-                item.node_name,
-                item.pv_name or "",
-            ),
-        )
-        return [
-            *lvm,
-            *sorted(
-                loop,
-                key=lambda item: (item.node_name, item.storage_osd_name or ""),
-            ),
-        ]
-
-    @staticmethod
-    def _failed_osd_targets_in_cooldown(
-        osds: Collection[CephStorageOSD],
-        *,
-        now: datetime,
-    ) -> frozenset[str]:
-        """Return failed OSD targets that should not be retried yet.
-
-        Returns
-        -------
-        frozenset[str]
-            OSD inventory names still inside their retry cooldown.
-        """
-        names: set[str] = set()
-        for record in osds:
-            if record.phase != "Failed":
-                continue
-            failed_at = (
-                CephStoragePlanner.utc(record.phase_changed_at)
-                or CephStoragePlanner.utc(record.last_seen_at)
-                or CephStoragePlanner.utc(record.created_at)
+                    else growth_bytes
+                ),
+            }
+            if existing is not None and existing.lv_name:
+                target["lv_name"] = existing.lv_name
+            lvm.append(target)
+        if report.free_bytes >= growth_bytes:
+            existing = loop_by_host.get(report.host_id)
+            target_name = (
+                existing.name
+                if existing is not None
+                else storage_loop_osd_name(report.host_id)
             )
-            if failed_at is None:
+            if target_name in failed_targets:
                 continue
-            if (
-                now - failed_at
-            ).total_seconds() < STORAGE_TARGET_RETRY_COOLDOWN_SECONDS:
-                names.add(record.name)
-        return frozenset(names)
-
-    @staticmethod
-    def _failed_action_targets_in_cooldown(
-        actions: Collection[CephStorageActionRecord],
-        *,
-        now: datetime,
-    ) -> frozenset[str]:
-        """Return recently failed action targets that should not be retried.
-
-        Returns
-        -------
-        frozenset[str]
-            OSD inventory names from failed expand actions still cooling down.
-        """
-        names: set[str] = set()
-        for action in actions:
-            if (
-                action.status.phase != "Failed"
-                or action.spec.operation
-                not in {"expand-lvm", "expand-loop", "shrink-lvm"}
-                or not action.spec.storage_osd_name
-            ):
-                continue
-            failed_at = CephStoragePlanner.utc(
-                action.status.finished_at or action.status.started_at
+            loop.append(
+                {
+                    "node_name": report.node_name,
+                    "host_id": report.host_id,
+                    "operation": "expand-loop",
+                    "storage_osd_name": target_name,
+                    "current_bytes": (
+                        existing.target_bytes if existing is not None else 0
+                    ),
+                    "available_bytes": report.free_bytes,
+                    "target_bytes": (
+                        existing.target_bytes + growth_bytes
+                        if existing is not None
+                        else growth_bytes
+                    ),
+                }
             )
-            if failed_at is None:
-                continue
-            if (
-                now - failed_at
-            ).total_seconds() < STORAGE_TARGET_RETRY_COOLDOWN_SECONDS:
-                names.add(action.spec.storage_osd_name)
-        return frozenset(names)
+    lvm = sorted(
+        lvm,
+        key=lambda item: (
+            0 if not item.get("lv_name") else 1,
+            item["node_name"],
+            item.get("pv_name", ""),
+        ),
+    )
+    return [
+        *lvm,
+        *sorted(loop, key=lambda item: (item["node_name"], item["storage_osd_name"])),
+    ]
 
-    @staticmethod
-    def active_reservation_bytes(
-        reservations: Collection[CephStorageReservation],
-        *,
-        now: datetime,
-    ) -> int:
-        """Return bytes reserved by active storage reservations.
 
-        Returns
-        -------
-        int
-            Sum of unexpired pending and ready reservation bytes.
-        """
-        return sum(
-            reservation.requested_bytes
-            for reservation in reservations
-            if reservation.is_active(now)
+def _failed_osd_targets_in_cooldown(
+    osds: Collection[CephStorageOSD],
+    *,
+    now: datetime,
+) -> frozenset[str]:
+    names: set[str] = set()
+    for record in osds:
+        if record.phase != "Failed":
+            continue
+        failed_at = (
+            _storage_utc(record.phase_changed_at)
+            or _storage_utc(record.last_seen_at)
+            or _storage_utc(record.created_at)
         )
+        if failed_at is None:
+            continue
+        if (now - failed_at).total_seconds() < STORAGE_TARGET_RETRY_COOLDOWN_SECONDS:
+            names.add(record.name)
+    return frozenset(names)
 
-    def growth_recommendation(
-        self,
-        *,
-        policy: CephStorageStateRecord,
-        capacity: CephCapacitySnapshot,
-        reservations: Collection[CephStorageReservation],
-        now: datetime,
-    ) -> StorageGrowthRecommendation:
-        """Return adaptive headroom and growth demand for one reconcile pass.
 
-        Returns
-        -------
-        StorageGrowthRecommendation
-            Computed free-space, trend, reservation, and growth demand values.
-        """
-        spec = policy.spec
-        free_bytes = max(0, capacity.total_bytes - capacity.used_bytes)
-        previous_rate = (
-            policy.policy_status.write_rate_ewma_bytes_per_second
-            if policy.policy_status is not None
-            else 0.0
-        )
-        instantaneous_rate = 0.0
+def _failed_action_targets_in_cooldown(
+    actions: Collection[CephStorageActionRecord],
+    *,
+    now: datetime,
+) -> frozenset[str]:
+    names: set[str] = set()
+    for action in actions:
         if (
-            policy.policy_status is not None
-            and policy.policy_status.used_bytes is not None
-            and policy.policy_status.last_reconciled_at is not None
+            action.status.phase != "Failed"
+            or action.spec.operation not in {"expand-lvm", "expand-loop", "shrink-lvm"}
+            or not action.spec.storage_osd_name
         ):
-            previous_time = self.utc(policy.policy_status.last_reconciled_at)
-            if previous_time is not None:
-                elapsed = max(0.0, (now - previous_time).total_seconds())
-                if elapsed > 0:
-                    delta = max(
-                        0,
-                        capacity.used_bytes - policy.policy_status.used_bytes,
-                    )
-                    instantaneous_rate = delta / elapsed
-        alpha = spec.write_rate_ewma_alpha
-        ewma_rate = (alpha * instantaneous_rate) + ((1 - alpha) * previous_rate)
-        reserved_bytes = self.active_reservation_bytes(reservations, now=now)
-        burst_bytes = math.ceil(
-            ewma_rate * spec.burst_window_seconds * spec.burst_multiplier
+            continue
+        failed_at = _storage_utc(action.status.finished_at or action.status.started_at)
+        if failed_at is None:
+            continue
+        if (now - failed_at).total_seconds() < STORAGE_TARGET_RETRY_COOLDOWN_SECONDS:
+            names.add(action.spec.storage_osd_name)
+    return frozenset(names)
+
+
+def _active_storage_reservation_bytes(
+    reservations: Collection[CephStorageReservation],
+    *,
+    now: datetime,
+) -> int:
+    return sum(
+        reservation.requested_bytes
+        for reservation in reservations
+        if reservation.is_active(now)
+    )
+
+
+def _storage_growth_status(
+    *,
+    policy: CephStorageStateRecord,
+    capacity: CephCapacitySnapshot,
+    reservations: Collection[CephStorageReservation],
+    now: datetime,
+) -> CephStoragePolicyStatus:
+    spec = policy.spec
+    free_bytes = max(0, capacity.total_bytes - capacity.used_bytes)
+    previous_rate = (
+        policy.policy_status.write_rate_ewma_bytes_per_second
+        if policy.policy_status is not None
+        else 0.0
+    )
+    instantaneous_rate = 0.0
+    if (
+        policy.policy_status is not None
+        and policy.policy_status.used_bytes is not None
+        and policy.policy_status.last_reconciled_at is not None
+    ):
+        previous_time = _storage_utc(policy.policy_status.last_reconciled_at)
+        if previous_time is not None:
+            elapsed = max(0.0, (now - previous_time).total_seconds())
+            if elapsed > 0:
+                delta = max(0, capacity.used_bytes - policy.policy_status.used_bytes)
+                instantaneous_rate = delta / elapsed
+    alpha = spec.write_rate_ewma_alpha
+    ewma_rate = (alpha * instantaneous_rate) + ((1 - alpha) * previous_rate)
+    reserved_bytes = _active_storage_reservation_bytes(reservations, now=now)
+    burst_bytes = math.ceil(
+        ewma_rate * spec.burst_window_seconds * spec.burst_multiplier
+    )
+    headroom_target = max(
+        parse_size_bytes(spec.min_headroom),
+        math.ceil(capacity.total_bytes * spec.target_headroom_ratio),
+        burst_bytes,
+    )
+    required_free = headroom_target + reserved_bytes
+    raw_growth = max(0, required_free - free_bytes)
+    min_step = parse_size_bytes(spec.min_growth_step)
+    max_growth = parse_size_bytes(spec.max_growth_per_reconcile)
+    recommendation = 0
+    if raw_growth > 0:
+        recommendation = min(
+            max_growth,
+            _round_up(max(raw_growth, min_step), min_step),
         )
-        headroom_target = max(
-            parse_size_bytes(spec.min_headroom),
-            math.ceil(capacity.total_bytes * spec.target_headroom_ratio),
-            burst_bytes,
-        )
-        required_free = headroom_target + reserved_bytes
-        raw_growth = max(0, required_free - free_bytes)
-        min_step = parse_size_bytes(spec.min_growth_step)
-        max_growth = parse_size_bytes(spec.max_growth_per_reconcile)
-        recommendation = 0
-        if raw_growth > 0:
-            recommendation = min(
-                max_growth,
-                self._round_up(max(raw_growth, min_step), min_step),
-            )
-        projected_seconds: float | None = None
-        headroom_floor = headroom_target + reserved_bytes
-        if ewma_rate > 0 and free_bytes > headroom_floor:
-            projected_seconds = (free_bytes - headroom_floor) / ewma_rate
-        elif ewma_rate > 0:
-            projected_seconds = 0.0
-        return StorageGrowthRecommendation(
-            free_bytes=free_bytes,
-            headroom_target_bytes=headroom_target,
-            reserved_bytes=reserved_bytes,
-            write_rate_ewma_bytes_per_second=ewma_rate,
-            projected_seconds_to_headroom_floor=projected_seconds,
-            growth_recommendation_bytes=recommendation,
-        )
+    projected_seconds: float | None = None
+    headroom_floor = headroom_target + reserved_bytes
+    if ewma_rate > 0 and free_bytes > headroom_floor:
+        projected_seconds = (free_bytes - headroom_floor) / ewma_rate
+    elif ewma_rate > 0:
+        projected_seconds = 0.0
+    return CephStoragePolicyStatus(
+        free_bytes=free_bytes,
+        headroom_target_bytes=headroom_target,
+        reserved_bytes=reserved_bytes,
+        write_rate_ewma_bytes_per_second=ewma_rate,
+        projected_seconds_to_headroom_floor=projected_seconds,
+        growth_recommendation_bytes=recommendation,
+    )
 
-    @staticmethod
-    def _round_up(value: int, step: int) -> int:
-        return int(math.ceil(value / step) * step) if value > 0 else 0
 
-    def plan_grow_actions(
-        self,
-        *,
-        policy: CephStorageStateRecord,
-        capacity: CephCapacitySnapshot,
-        actions: Collection[CephStorageActionRecord],
-        osd_records: Collection[CephStorageOSD],
-        eligible_nodes: list[_EligibleStorageNode],
-        growth: StorageGrowthRecommendation,
-        min_growth_bytes: int,
-    ) -> list[PlannedStorageAction]:
-        """Return expand actions needed to reach the policy target watermark.
+def _round_up(value: int, step: int) -> int:
+    return int(math.ceil(value / step) * step) if value > 0 else 0
 
-        Parameters
-        ----------
-        policy : CephStorageStateRecord
-            Active storage policy.
-        capacity : CephCapacitySnapshot
-            Current Ceph capacity snapshot.
-        actions : Collection[CephStorageActionRecord]
-            Existing storage action records.
-        osd_records : Collection[CephStorageOSD]
-            Durable OSD inventory used to gate overlapping admission.
-        eligible_nodes : list[_EligibleStorageNode]
-            Node-local growth targets, ordered by storage preference.
-        growth : StorageGrowthRecommendation
-            Adaptive growth recommendation for this reconcile pass.
-        min_growth_bytes : int
-            Minimum bytes requested by one capacity expansion.
 
-        Returns
-        -------
-        list[PlannedStorageAction]
-            Grow actions selected for this reconcile pass.
-        """
-        spec = policy.spec
-        if (
-            not spec.enabled
-            or not eligible_nodes
-            or self.osd_admission_in_flight(osd_records)
-        ):
-            return []
-        if capacity.total_bytes <= 0:
-            budget = spec.max_actions_per_reconcile - self.in_flight(actions)
-            if budget <= 0:
-                return []
-            target = eligible_nodes[0]
-            allocation = min(
-                max(min_growth_bytes, growth.growth_recommendation_bytes),
-                target.available_bytes,
-            )
-            return [
-                PlannedStorageAction(
-                    operation=target.operation,
-                    node_name=target.node_name,
-                    host_id=target.host_id,
-                    target_bytes=target.current_bytes + allocation,
-                    pv_name=target.pv_name,
-                    lv_name=target.lv_name,
-                    storage_osd_name=target.storage_osd_name,
-                    reason="cluster has no usable OSD capacity yet",
-                )
-            ]
-        if growth.growth_recommendation_bytes <= 0:
-            return []
-
-        budget = spec.max_actions_per_reconcile - self.in_flight(actions)
+def _plan_storage_grow_actions(
+    *,
+    policy: CephStorageStateRecord,
+    capacity: CephCapacitySnapshot,
+    actions: Collection[CephStorageActionRecord],
+    osd_records: Collection[CephStorageOSD],
+    eligible_nodes: list[_EligibleStorageTarget],
+    growth: CephStoragePolicyStatus,
+    min_growth_bytes: int,
+) -> list[CephStorageActionSpec]:
+    spec = policy.spec
+    if (
+        not spec.enabled
+        or not eligible_nodes
+        or _storage_osd_admission_in_flight(osd_records)
+    ):
+        return []
+    if capacity.total_bytes <= 0:
+        budget = spec.max_actions_per_reconcile - _storage_actions_in_flight(actions)
         if budget <= 0:
             return []
-
-        remaining = growth.growth_recommendation_bytes
-        preferred_targets = [
-            target for target in eligible_nodes if target.operation == "expand-lvm"
-        ]
-        fallback_targets = [
-            target for target in eligible_nodes if target.operation == "expand-loop"
-        ]
-        planned: list[PlannedStorageAction] = []
-        for target in [*preferred_targets, *fallback_targets]:
-            if remaining <= 0 or len(planned) >= budget:
-                break
-            allocation = min(remaining, target.available_bytes)
-            if allocation <= 0:
-                continue
-            allocation = max(allocation, min_growth_bytes)
-            allocation = min(allocation, target.available_bytes)
-            if allocation <= 0:
-                continue
-            planned.append(
-                PlannedStorageAction(
-                    operation=target.operation,
-                    node_name=target.node_name,
-                    host_id=target.host_id,
-                    target_bytes=target.current_bytes + allocation,
-                    pv_name=target.pv_name,
-                    lv_name=target.lv_name,
-                    storage_osd_name=target.storage_osd_name,
-                    reason=(
-                        "free Ceph capacity is below adaptive headroom target "
-                        f"({growth.free_bytes} < "
-                        f"{growth.headroom_target_bytes + growth.reserved_bytes})"
-                    ),
-                )
-            )
-            remaining -= allocation
-        return planned
-
-    def plan_lvm_coverage_actions(
-        self,
-        *,
-        policy: CephStorageStateRecord,
-        actions: Collection[CephStorageActionRecord],
-        osd_records: Collection[CephStorageOSD],
-        eligible_nodes: list[_EligibleStorageNode],
-    ) -> list[PlannedStorageAction]:
-        """Return actions that preserve one LVM OSD per usable PV.
-
-        Returns
-        -------
-        list[PlannedStorageAction]
-            Minimum-size LVM OSD creation actions for uncovered PVs.
-        """
-        spec = policy.spec
-        if (
-            not spec.enabled
-            or self.in_flight(actions) > 0
-            or self.osd_admission_in_flight(osd_records)
-        ):
-            return []
-        min_lvm_size = parse_size_bytes(spec.min_lvm_osd_size)
-        budget = spec.max_actions_per_reconcile
-        planned: list[PlannedStorageAction] = []
-        for target in eligible_nodes:
-            if target.operation != "expand-lvm" or target.current_bytes > 0:
-                continue
-            allocation = min(min_lvm_size, target.available_bytes)
-            if allocation < min_lvm_size:
-                continue
-            planned.append(
-                PlannedStorageAction(
-                    operation="expand-lvm",
-                    node_name=target.node_name,
-                    host_id=target.host_id,
-                    target_bytes=allocation,
-                    pv_name=target.pv_name,
-                    lv_name=target.lv_name,
-                    storage_osd_name=target.storage_osd_name,
-                    reason=(
-                        "usable Bertrand LVM PV is missing steady-state OSD coverage"
-                    ),
-                )
-            )
-            if len(planned) >= budget:
-                break
-        return planned
-
-    def lvm_osds_for_shrink(
-        self,
-        *,
-        osd_records: Collection[CephStorageOSD],
-        osds: Collection[CephOSD],
-    ) -> list[_ManagedLVMOSD]:
-        """Return live LVM OSDs eligible for drain/recreate shrink planning.
-
-        Returns
-        -------
-        list[_ManagedLVMOSD]
-            Ready LVM-backed OSDs verified as live by Ceph.
-        """
-        live = {
-            osd.osd_id: osd
-            for osd in osds
-            if osd.up and osd.in_cluster and osd.node_name
-        }
-        candidates: list[_ManagedLVMOSD] = []
-        for record in osd_records:
-            if record.origin != "lvm-pv" or record.phase != "Ready":
-                continue
-            osd_id = record.ceph_osd_id
-            if osd_id is None or osd_id not in live:
-                continue
-            candidates.append(
-                _ManagedLVMOSD(
-                    name=record.name,
-                    osd_id=osd_id,
-                    node_name=record.node_name,
-                    host_id=record.host_id,
-                    pv_name=record.pv_name,
-                    pv_uuid=record.pv_uuid,
-                    lv_name=record.lv_name,
-                    size_bytes=record.observed_bytes or record.target_bytes,
-                    created_at=self.utc(record.created_at),
-                )
-            )
-        return candidates
-
-    def lvm_shrink_preview(
-        self,
-        *,
-        policy: CephStorageStateRecord,
-        capacity: CephCapacitySnapshot,
-        growth: StorageGrowthRecommendation,
-        lvm_osds: Collection[_ManagedLVMOSD],
-    ) -> tuple[int, str, int]:
-        """Return reclaimable bytes and selected LVM shrink candidate.
-
-        Returns
-        -------
-        tuple[int, str, int]
-            Total reclaimable bytes, selected OSD record name, and selected
-            target bytes.
-        """
-        if not lvm_osds:
-            return 0, "", 0
-        min_lvm_size = parse_size_bytes(policy.spec.min_lvm_osd_size)
-        min_reclaim = parse_size_bytes(policy.spec.lvm_shrink_min_reclaim)
-        desired_total = max(
-            capacity.used_bytes + growth.headroom_target_bytes + growth.reserved_bytes,
-            min_lvm_size * len(lvm_osds),
-        )
-        per_osd_target = max(
-            min_lvm_size,
-            self._round_up(desired_total, len(lvm_osds)) // len(lvm_osds),
-        )
-        reclaimable: list[tuple[int, _ManagedLVMOSD]] = []
-        for candidate in lvm_osds:
-            reclaim = candidate.size_bytes - per_osd_target
-            if reclaim >= min_reclaim:
-                reclaimable.append((reclaim, candidate))
-        if not reclaimable:
-            return 0, "", per_osd_target
-        total_reclaimable = sum(item[0] for item in reclaimable)
-        _, selected = max(
-            reclaimable,
-            key=lambda item: (
-                item[0],
-                item[1].size_bytes,
-                item[1].created_at or datetime.min.replace(tzinfo=UTC),
-                item[1].name,
-            ),
-        )
-        return total_reclaimable, selected.name, per_osd_target
-
-    def plan_lvm_shrink_action(
-        self,
-        *,
-        policy: CephStorageStateRecord,
-        capacity: CephCapacitySnapshot,
-        actions: Collection[CephStorageActionRecord],
-        osd_records: Collection[CephStorageOSD],
-        growth: StorageGrowthRecommendation,
-        lvm_candidates: Collection[_ManagedLVMOSD],
-        loop_candidates: Collection[_ManagedOSD],
-    ) -> list[PlannedStorageAction]:
-        """Return one safe LVM drain/recreate shrink action.
-
-        Returns
-        -------
-        list[PlannedStorageAction]
-            Empty or single-element LVM shrink action.
-        """
-        spec = policy.spec
-        if (
-            not spec.enabled
-            or not spec.shrink_enabled
-            or growth.growth_recommendation_bytes > 0
-            or growth.reserved_bytes > 0
-            or loop_candidates
-            or self.in_flight(actions) > 0
-            or self.osd_admission_in_flight(osd_records)
-        ):
-            return []
-        last_shrink_at = self.last_shrink_at(actions)
-        if (
-            last_shrink_at is not None
-            and (datetime.now(UTC) - last_shrink_at).total_seconds()
-            < spec.shrink_cooldown_seconds
-        ):
-            return []
-        reclaimable, selected_name, target_bytes = self.lvm_shrink_preview(
-            policy=policy,
-            capacity=capacity,
-            growth=growth,
-            lvm_osds=lvm_candidates,
-        )
-        if not selected_name or reclaimable <= 0:
-            return []
-        selected = next(
-            candidate for candidate in lvm_candidates if candidate.name == selected_name
+        target = eligible_nodes[0]
+        allocation = min(
+            max(min_growth_bytes, growth.growth_recommendation_bytes),
+            target["available_bytes"],
         )
         return [
-            PlannedStorageAction(
-                operation="shrink-lvm",
-                node_name=selected.node_name,
-                host_id=selected.host_id,
-                osd_id=selected.osd_id,
-                target_bytes=target_bytes,
-                pv_name=selected.pv_name,
-                lv_name=selected.lv_name,
-                storage_osd_name=selected.name,
-                reason=(
-                    "LVM-backed raw capacity exceeds adaptive headroom; "
-                    f"drain/recreate osd.{selected.osd_id} from "
-                    f"{selected.size_bytes} to {target_bytes} bytes"
-                ),
+            CephStorageActionSpec(
+                policy_generation=policy.generation,
+                operation=target["operation"],
+                node_name=target["node_name"],
+                host_id=target["host_id"],
+                target_bytes=target["current_bytes"] + allocation,
+                pv_name=target.get("pv_name"),
+                lv_name=target.get("lv_name"),
+                storage_osd_name=target["storage_osd_name"],
+                reason="cluster has no usable OSD capacity yet",
             )
         ]
+    if growth.growth_recommendation_bytes <= 0:
+        return []
 
-    def plan_shrink_action(
-        self,
-        *,
-        policy: CephStorageStateRecord,
-        capacity: CephCapacitySnapshot,
-        actions: Collection[CephStorageActionRecord],
-        candidates: Collection[_ManagedOSD],
-    ) -> list[PlannedStorageAction]:
-        """Return one conservative shrink action when every safety gate passes.
+    budget = spec.max_actions_per_reconcile - _storage_actions_in_flight(actions)
+    if budget <= 0:
+        return []
 
-        Parameters
-        ----------
-        policy : CephStorageStateRecord
-            Active storage policy.
-        capacity : CephCapacitySnapshot
-            Current Ceph capacity snapshot.
-        actions : Collection[CephStorageActionRecord]
-            Existing storage action records.
-        candidates : Collection[_ManagedOSD]
-            Managed OSDs eligible for shrink planning.
+    remaining = growth.growth_recommendation_bytes
+    preferred_targets = [
+        target for target in eligible_nodes if target["operation"] == "expand-lvm"
+    ]
+    fallback_targets = [
+        target for target in eligible_nodes if target["operation"] == "expand-loop"
+    ]
+    planned: list[CephStorageActionSpec] = []
+    for target in [*preferred_targets, *fallback_targets]:
+        if remaining <= 0 or len(planned) >= budget:
+            break
+        allocation = min(remaining, target["available_bytes"])
+        if allocation <= 0:
+            continue
+        allocation = max(allocation, min_growth_bytes)
+        allocation = min(allocation, target["available_bytes"])
+        if allocation <= 0:
+            continue
+        planned.append(
+            CephStorageActionSpec(
+                policy_generation=policy.generation,
+                operation=target["operation"],
+                node_name=target["node_name"],
+                host_id=target["host_id"],
+                target_bytes=target["current_bytes"] + allocation,
+                pv_name=target.get("pv_name"),
+                lv_name=target.get("lv_name"),
+                storage_osd_name=target["storage_osd_name"],
+                reason=(
+                    "free Ceph capacity is below adaptive headroom target "
+                    f"({growth.free_bytes} < "
+                    f"{growth.headroom_target_bytes + growth.reserved_bytes})"
+                ),
+            )
+        )
+        remaining -= allocation
+    return planned
 
-        Returns
-        -------
-        list[PlannedStorageAction]
-            Empty or single-element shrink plan.
-        """
-        spec = policy.spec
-        if (
-            not spec.enabled
-            or not spec.shrink_enabled
-            or capacity.used_ratio >= spec.low_watermark
-            or self.in_flight(actions) > 0
-        ):
-            return []
-        last_shrink_at = self.last_shrink_at(actions)
-        if (
-            last_shrink_at is not None
-            and (datetime.now(UTC) - last_shrink_at).total_seconds()
-            < spec.shrink_cooldown_seconds
-        ):
-            return []
-        candidate = self._select_shrink_candidate(candidates)
-        if candidate is None:
-            return []
-        projected_total = capacity.total_bytes - candidate.size_bytes
-        if projected_total <= 0:
-            return []
+
+def _plan_lvm_coverage_actions(
+    *,
+    policy: CephStorageStateRecord,
+    actions: Collection[CephStorageActionRecord],
+    osd_records: Collection[CephStorageOSD],
+    eligible_nodes: list[_EligibleStorageTarget],
+) -> list[CephStorageActionSpec]:
+    spec = policy.spec
+    if (
+        not spec.enabled
+        or _storage_actions_in_flight(actions) > 0
+        or _storage_osd_admission_in_flight(osd_records)
+    ):
+        return []
+    min_lvm_size = parse_size_bytes(spec.min_lvm_osd_size)
+    budget = spec.max_actions_per_reconcile
+    planned: list[CephStorageActionSpec] = []
+    for target in eligible_nodes:
+        if target["operation"] != "expand-lvm" or target["current_bytes"] > 0:
+            continue
+        allocation = min(min_lvm_size, target["available_bytes"])
+        if allocation < min_lvm_size:
+            continue
+        planned.append(
+            CephStorageActionSpec(
+                policy_generation=policy.generation,
+                operation="expand-lvm",
+                node_name=target["node_name"],
+                host_id=target["host_id"],
+                target_bytes=allocation,
+                pv_name=target.get("pv_name"),
+                lv_name=target.get("lv_name"),
+                storage_osd_name=target["storage_osd_name"],
+                reason="usable Bertrand LVM PV is missing steady-state OSD coverage",
+            )
+        )
+        if len(planned) >= budget:
+            break
+    return planned
+
+
+def _lvm_osds_for_shrink(
+    *,
+    osd_records: Collection[CephStorageOSD],
+    osds: Collection[CephOSD],
+) -> list[CephStorageOSD]:
+    live = {
+        osd.osd_id: osd for osd in osds if osd.up and osd.in_cluster and osd.node_name
+    }
+    candidates: list[CephStorageOSD] = []
+    for record in osd_records:
+        if record.origin != "lvm-pv" or record.phase != "Ready":
+            continue
+        osd_id = record.ceph_osd_id
+        if osd_id is None or osd_id not in live:
+            continue
+        candidates.append(record)
+    return candidates
+
+
+def _lvm_shrink_preview(
+    *,
+    policy: CephStorageStateRecord,
+    capacity: CephCapacitySnapshot,
+    growth: CephStoragePolicyStatus,
+    lvm_osds: Collection[CephStorageOSD],
+) -> tuple[int, str, int]:
+    if not lvm_osds:
+        return 0, "", 0
+    min_lvm_size = parse_size_bytes(policy.spec.min_lvm_osd_size)
+    min_reclaim = parse_size_bytes(policy.spec.lvm_shrink_min_reclaim)
+    desired_total = max(
+        capacity.used_bytes + growth.headroom_target_bytes + growth.reserved_bytes,
+        min_lvm_size * len(lvm_osds),
+    )
+    per_osd_target = max(
+        min_lvm_size,
+        _round_up(desired_total, len(lvm_osds)) // len(lvm_osds),
+    )
+    reclaimable: list[tuple[int, CephStorageOSD]] = []
+    for candidate in lvm_osds:
+        reclaim = _storage_osd_bytes(candidate) - per_osd_target
+        if reclaim >= min_reclaim:
+            reclaimable.append((reclaim, candidate))
+    if not reclaimable:
+        return 0, "", per_osd_target
+    total_reclaimable = sum(item[0] for item in reclaimable)
+    _, selected = max(
+        reclaimable,
+        key=lambda item: (
+            item[0],
+            _storage_osd_bytes(item[1]),
+            _storage_utc(item[1].created_at) or datetime.min.replace(tzinfo=UTC),
+            item[1].name,
+        ),
+    )
+    return total_reclaimable, selected.name, per_osd_target
+
+
+def _plan_lvm_shrink_action(
+    *,
+    policy: CephStorageStateRecord,
+    capacity: CephCapacitySnapshot,
+    actions: Collection[CephStorageActionRecord],
+    osd_records: Collection[CephStorageOSD],
+    growth: CephStoragePolicyStatus,
+    lvm_candidates: Collection[CephStorageOSD],
+    loop_candidates: Collection[CephStorageOSD],
+) -> list[CephStorageActionSpec]:
+    spec = policy.spec
+    if (
+        not spec.enabled
+        or not spec.shrink_enabled
+        or growth.growth_recommendation_bytes > 0
+        or growth.reserved_bytes > 0
+        or loop_candidates
+        or _storage_actions_in_flight(actions) > 0
+        or _storage_osd_admission_in_flight(osd_records)
+    ):
+        return []
+    last_shrink_at = _last_storage_shrink_at(actions)
+    if (
+        last_shrink_at is not None
+        and (datetime.now(UTC) - last_shrink_at).total_seconds()
+        < spec.shrink_cooldown_seconds
+    ):
+        return []
+    reclaimable, selected_name, target_bytes = _lvm_shrink_preview(
+        policy=policy,
+        capacity=capacity,
+        growth=growth,
+        lvm_osds=lvm_candidates,
+    )
+    if not selected_name or reclaimable <= 0:
+        return []
+    selected = next(
+        candidate for candidate in lvm_candidates if candidate.name == selected_name
+    )
+    return [
+        CephStorageActionSpec(
+            policy_generation=policy.generation,
+            operation="shrink-lvm",
+            node_name=selected.node_name,
+            host_id=selected.host_id,
+            osd_id=_storage_osd_id(selected),
+            target_bytes=target_bytes,
+            pv_name=selected.pv_name,
+            lv_name=selected.lv_name,
+            storage_osd_name=selected.name,
+            reason=(
+                "LVM-backed raw capacity exceeds adaptive headroom; "
+                f"drain/recreate osd.{_storage_osd_id(selected)} from "
+                f"{_storage_osd_bytes(selected)} to {target_bytes} bytes"
+            ),
+        )
+    ]
+
+
+def _plan_loop_shrink_action(
+    *,
+    policy: CephStorageStateRecord,
+    capacity: CephCapacitySnapshot,
+    actions: Collection[CephStorageActionRecord],
+    candidates: Collection[CephStorageOSD],
+) -> list[CephStorageActionSpec]:
+    spec = policy.spec
+    if (
+        not spec.enabled
+        or not spec.shrink_enabled
+        or capacity.used_ratio >= spec.low_watermark
+        or _storage_actions_in_flight(actions) > 0
+    ):
+        return []
+    last_shrink_at = _last_storage_shrink_at(actions)
+    if (
+        last_shrink_at is not None
+        and (datetime.now(UTC) - last_shrink_at).total_seconds()
+        < spec.shrink_cooldown_seconds
+    ):
+        return []
+    candidate = _select_shrink_candidate(candidates)
+    if candidate is None:
+        return []
+    projected_total = capacity.total_bytes - _storage_osd_bytes(candidate)
+    if projected_total <= 0:
+        return []
+    projected_ratio = capacity.used_bytes / projected_total
+    if projected_ratio > spec.shrink_target_watermark:
+        return []
+    return [
+        CephStorageActionSpec(
+            policy_generation=policy.generation,
+            operation="retire-loop",
+            node_name=candidate.node_name,
+            host_id=candidate.host_id,
+            osd_id=_storage_osd_id(candidate),
+            reason=(
+                "cluster usage "
+                f"{capacity.used_ratio:.2%} <= low watermark "
+                f"{spec.low_watermark:.2%}; projected usage after removing "
+                f"osd.{_storage_osd_id(candidate)} is {projected_ratio:.2%}"
+            ),
+        )
+    ]
+
+
+def _plan_loop_offload_action(
+    *,
+    policy: CephStorageStateRecord,
+    capacity: CephCapacitySnapshot,
+    actions: Collection[CephStorageActionRecord],
+    eligible_nodes: list[_EligibleStorageTarget],
+    candidates: Collection[CephStorageOSD],
+    growth_bytes: int,
+    offset: int,
+) -> tuple[list[CephStorageActionSpec], int]:
+    spec = policy.spec
+    if (
+        not spec.enabled
+        or not spec.shrink_enabled
+        or _storage_actions_in_flight(actions) > 0
+        or capacity.total_bytes <= 0
+    ):
+        return [], offset
+    candidate = _select_shrink_candidate(candidates)
+    if candidate is None:
+        return [], offset
+    projected_total = capacity.total_bytes - _storage_osd_bytes(candidate)
+    if projected_total > 0:
         projected_ratio = capacity.used_bytes / projected_total
-        if projected_ratio > spec.shrink_target_watermark:
-            return []
-        return [
-            PlannedStorageAction(
-                operation="retire-loop",
-                node_name=candidate.node_name,
-                host_id=candidate.host_id,
-                osd_id=candidate.osd_id,
-                reason=(
-                    "cluster usage "
-                    f"{capacity.used_ratio:.2%} <= low watermark "
-                    f"{spec.low_watermark:.2%}; projected usage after removing "
-                    f"osd.{candidate.osd_id} is {projected_ratio:.2%}"
-                ),
-            )
-        ]
-
-    def plan_loop_offload_action(
-        self,
-        *,
-        policy: CephStorageStateRecord,
-        capacity: CephCapacitySnapshot,
-        actions: Collection[CephStorageActionRecord],
-        eligible_nodes: list[_EligibleStorageNode],
-        candidates: Collection[_ManagedOSD],
-        growth_bytes: int,
-    ) -> list[PlannedStorageAction]:
-        """Return LVM growth or loop retirement needed to evacuate fallback OSDs.
-
-        Parameters
-        ----------
-        policy : CephStorageStateRecord
-            Active storage policy.
-        capacity : CephCapacitySnapshot
-            Current Ceph capacity snapshot.
-        actions : Collection[CephStorageActionRecord]
-            Existing storage action records.
-        eligible_nodes : list[_EligibleStorageNode]
-            Node-local growth targets, ordered by storage preference.
-        candidates : Collection[_ManagedOSD]
-            Managed loop OSDs eligible for retirement.
-        growth_bytes : int
-            Bytes requested by one capacity expansion.
-
-        Returns
-        -------
-        list[PlannedStorageAction]
-            Empty, one retire action, or preferred LVM expansion actions.
-        """
-        spec = policy.spec
-        if (
-            not spec.enabled
-            or not spec.shrink_enabled
-            or self.in_flight(actions) > 0
-            or capacity.total_bytes <= 0
-        ):
-            return []
-        candidate = self._select_shrink_candidate(candidates)
-        if candidate is None:
-            return []
-        projected_total = capacity.total_bytes - candidate.size_bytes
-        if projected_total > 0:
-            projected_ratio = capacity.used_bytes / projected_total
-            if projected_ratio <= spec.shrink_target_watermark:
-                return [
-                    PlannedStorageAction(
-                        operation="retire-loop",
-                        node_name=candidate.node_name,
-                        host_id=candidate.host_id,
-                        osd_id=candidate.osd_id,
-                        reason=(
-                            "LVM-backed capacity can absorb loop fallback "
-                            f"osd.{candidate.osd_id}; projected usage after "
-                            f"retirement is {projected_ratio:.2%}"
-                        ),
-                    )
-                ]
-        lvm_targets = [
-            target for target in eligible_nodes if target.operation == "expand-lvm"
-        ]
-        if not lvm_targets:
-            return []
-        target_total = math.ceil(capacity.used_bytes / spec.shrink_target_watermark)
-        missing = max(0, target_total - max(0, projected_total))
-        desired = max(1, math.ceil(missing / growth_bytes))
-        budget = spec.max_actions_per_reconcile - self.in_flight(actions)
-        count = max(0, min(desired, budget, len(lvm_targets)))
-        planned: list[PlannedStorageAction] = []
-        for index in range(count):
-            target = lvm_targets[(self.offset + index) % len(lvm_targets)]
-            planned.append(
-                PlannedStorageAction(
-                    operation="expand-lvm",
-                    node_name=target.node_name,
-                    host_id=target.host_id,
-                    target_bytes=target.target_bytes or growth_bytes,
-                    pv_name=target.pv_name,
-                    lv_name=target.lv_name,
-                    storage_osd_name=target.storage_osd_name,
+        if projected_ratio <= spec.shrink_target_watermark:
+            return [
+                CephStorageActionSpec(
+                    policy_generation=policy.generation,
+                    operation="retire-loop",
+                    node_name=candidate.node_name,
+                    host_id=candidate.host_id,
+                    osd_id=_storage_osd_id(candidate),
                     reason=(
-                        "LVM capacity is available while loop fallback "
-                        f"osd.{candidate.osd_id} is active"
+                        "LVM-backed capacity can absorb loop fallback "
+                        f"osd.{_storage_osd_id(candidate)}; projected usage after "
+                        f"retirement is {projected_ratio:.2%}"
                     ),
                 )
+            ], offset
+    lvm_targets = [
+        target for target in eligible_nodes if target["operation"] == "expand-lvm"
+    ]
+    if not lvm_targets:
+        return [], offset
+    target_total = math.ceil(capacity.used_bytes / spec.shrink_target_watermark)
+    missing = max(0, target_total - max(0, projected_total))
+    desired = max(1, math.ceil(missing / growth_bytes))
+    budget = spec.max_actions_per_reconcile - _storage_actions_in_flight(actions)
+    count = max(0, min(desired, budget, len(lvm_targets)))
+    planned: list[CephStorageActionSpec] = []
+    for index in range(count):
+        target = lvm_targets[(offset + index) % len(lvm_targets)]
+        planned.append(
+            CephStorageActionSpec(
+                policy_generation=policy.generation,
+                operation="expand-lvm",
+                node_name=target["node_name"],
+                host_id=target["host_id"],
+                target_bytes=target["target_bytes"] or growth_bytes,
+                pv_name=target.get("pv_name"),
+                lv_name=target.get("lv_name"),
+                storage_osd_name=target["storage_osd_name"],
+                reason=(
+                    "LVM capacity is available while loop fallback "
+                    f"osd.{_storage_osd_id(candidate)} is active"
+                ),
             )
-        if lvm_targets and count:
-            self.offset = (self.offset + count) % len(lvm_targets)
-        return planned
-
-    @staticmethod
-    def _select_shrink_candidate(
-        candidates: Collection[_ManagedOSD],
-    ) -> _ManagedOSD | None:
-        groups: dict[str, list[_ManagedOSD]] = {}
-        for candidate in candidates:
-            groups.setdefault(candidate.node_name, []).append(candidate)
-        if not groups:
-            return None
-        node = min(groups, key=lambda item: (-len(groups[item]), item))
-        return max(
-            groups[node],
-            key=lambda item: (
-                item.created_at or datetime.min.replace(tzinfo=UTC),
-                item.osd_id,
-            ),
         )
+    if count:
+        offset = (offset + count) % len(lvm_targets)
+    return planned, offset
+
+
+def _select_shrink_candidate(
+    candidates: Collection[CephStorageOSD],
+) -> CephStorageOSD | None:
+    groups: dict[str, list[CephStorageOSD]] = {}
+    for candidate in candidates:
+        groups.setdefault(candidate.node_name, []).append(candidate)
+    if not groups:
+        return None
+    node = min(groups, key=lambda item: (-len(groups[item]), item))
+    return max(
+        groups[node],
+        key=lambda item: (
+            _storage_utc(item.created_at) or datetime.min.replace(tzinfo=UTC),
+            _storage_osd_id(item),
+        ),
+    )
 
 
 STORAGE_STATE_RESOURCE = CustomObjectResource[CephStorageStateRecord](
@@ -1847,7 +1340,7 @@ STORAGE_ACTION_RESOURCE = CustomObjectResource[CephStorageActionRecord](
     short_names=("csact",),
     payload_parser=CephStorageActionRecord.model_validate,
     payload_error_context=f"{STORAGE_ACTION_KIND} custom object",
-    spec_model=_CephStorageActionSpec,
+    spec_model=CephStorageActionSpec,
     status_model=_CephStorageActionStatus,
     status_schema_overrides={
         "properties": {
@@ -1962,45 +1455,6 @@ async def read_storage_state(kube: Kube, *, timeout: float) -> CephStorageStateR
     return record
 
 
-async def _patch_storage_state_status(
-    kube: Kube,
-    *,
-    status: CephStorageStateStatus,
-    timeout: float,
-) -> CephStorageStateRecord:
-    return await STORAGE_STATE_RESOURCE.patch_status(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        status=status,
-        timeout=timeout,
-    )
-
-
-async def list_storage_actions(
-    kube: Kube, *, timeout: float
-) -> list[CephStorageActionRecord]:
-    """List and validate storage action resources.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum request budget in seconds.
-
-    Returns
-    -------
-    list[CephStorageActionRecord]
-        Validated storage action records.
-    """
-    return await STORAGE_ACTION_RESOURCE.list(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
-    )
-
-
 async def upsert_storage_reservation(
     kube: Kube,
     *,
@@ -2042,8 +1496,10 @@ async def upsert_storage_reservation(
     status = state.status.model_copy(
         update={"reservations": {**state.status.reservations, name: entry}},
     )
-    refreshed = await _patch_storage_state_status(
+    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
         status=status,
         timeout=timeout,
     )
@@ -2068,8 +1524,10 @@ async def patch_storage_reservation_status(
         {**reservation.model_dump(mode="python"), **dict(status)}
     )
     state = await read_storage_state(kube, timeout=timeout)
-    refreshed = await _patch_storage_state_status(
+    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
         status=state.status.model_copy(
             update={
                 "reservations": {
@@ -2202,8 +1660,7 @@ async def reserve_ceph_storage(
 async def create_storage_actions(
     kube: Kube,
     *,
-    policy_generation: int,
-    actions: Collection[PlannedStorageAction],
+    actions: Collection[CephStorageActionSpec],
     timeout: float,
 ) -> None:
     """Create node-scoped storage action resources.
@@ -2212,31 +1669,17 @@ async def create_storage_actions(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    policy_generation : int
-        Policy generation that selected the actions.
-    actions : Collection[PlannedStorageAction]
-        Planned storage actions to create.
+    actions : Collection[CephStorageActionSpec]
+        Storage action specs to create.
     timeout : float
         Maximum creation budget in seconds.
     """
     for action in actions:
-        spec = _CephStorageActionSpec(
-            policy_generation=policy_generation,
-            operation=action.operation,
-            node_name=action.node_name,
-            host_id=action.host_id,
-            osd_id=action.osd_id,
-            target_bytes=action.target_bytes,
-            pv_name=action.pv_name,
-            lv_name=action.lv_name,
-            storage_osd_name=action.storage_osd_name,
-            reason=action.reason,
-        )
         await STORAGE_ACTION_RESOURCE.create(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=f"{STORAGE_STATE_NAME}-{uuid.uuid4().hex[:12]}",
-            spec=spec,
+            spec=action,
             timeout=timeout,
         )
 
@@ -2245,7 +1688,7 @@ async def upsert_storage_osd(
     kube: Kube,
     *,
     name: str,
-    spec: Mapping[str, object],
+    spec: Mapping[str, object] | CephStorageOSD,
     phase: StorageOSDPhase,
     timeout: float,
 ) -> CephStorageOSD:
@@ -2257,7 +1700,7 @@ async def upsert_storage_osd(
         Active Kubernetes API context.
     name : str
         OSD inventory object name.
-    spec : Mapping[str, object]
+    spec : Mapping[str, object] | CephStorageOSD
         Desired OSD identity/spec payload.
     phase : StorageOSDPhase
         Lifecycle phase to publish.
@@ -2272,10 +1715,36 @@ async def upsert_storage_osd(
     now = datetime.now(UTC)
     state = await read_storage_state(kube, timeout=timeout)
     existing = state.status.osds.get(name)
+    spec_payload = (
+        spec.model_dump(
+            mode="python",
+            include={
+                "origin",
+                "node_name",
+                "host_id",
+                "pv_name",
+                "pv_uuid",
+                "pv_device",
+                "lv_name",
+                "lv_path",
+                "loop_file",
+                "loop_device",
+                "block_path",
+                "csi_volume_id",
+                "persistent_volume_name",
+                "persistent_volume_claim_namespace",
+                "persistent_volume_claim_name",
+                "device_set_name",
+                "target_bytes",
+            },
+        )
+        if isinstance(spec, CephStorageOSD)
+        else dict(spec)
+    )
     entry = CephStorageOSD.model_validate(
         {
             "name": name,
-            **dict(spec),
+            **spec_payload,
             "phase": phase,
             "created_at": existing.created_at if existing is not None else now,
             "phase_changed_at": (
@@ -2289,8 +1758,10 @@ async def upsert_storage_osd(
             "last_error": "",
         }
     )
-    refreshed = await _patch_storage_state_status(
+    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
         status=state.status.model_copy(
             update={"osds": {**state.status.osds, name: entry}},
         ),
@@ -2327,8 +1798,10 @@ async def patch_storage_osd_status(
         {**osd.model_dump(mode="python"), **payload}
     )
     state = await read_storage_state(kube, timeout=timeout)
-    refreshed = await _patch_storage_state_status(
+    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
         status=state.status.model_copy(
             update={"osds": {**state.status.osds, osd.name: patched}},
         ),
@@ -2365,8 +1838,10 @@ async def upsert_storage_node_report(
     entry = CephStorageNodeReport.model_validate(
         {"name": name, "node_name": node_name, "host_id": host_id, **dict(status)}
     )
-    await _patch_storage_state_status(
+    await STORAGE_STATE_RESOURCE.patch_status(
         kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
         status=state.status.model_copy(
             update={"nodes": {**state.status.nodes, name: entry}},
         ),
@@ -2396,7 +1871,11 @@ async def pending_storage_actions(
     list[CephStorageActionRecord]
         Pending actions for the node.
     """
-    actions = await list_storage_actions(kube, timeout=timeout)
+    actions = await STORAGE_ACTION_RESOURCE.list(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        timeout=timeout,
+    )
     pending = [
         action
         for action in actions

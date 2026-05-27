@@ -64,8 +64,13 @@ from bertrand.env.kube.api.bootstrap import (
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
-from bertrand.env.kube.build.daemon import BUILDKIT_POOL
-from bertrand.env.kube.build.repository import IMAGES
+from bertrand.env.kube.build.daemon import ensure_buildkit_pool
+from bertrand.env.kube.build.repository import (
+    assert_image_repository_node_trust,
+    current_buildkit_config_hash,
+    ensure_image_repository,
+    ensure_image_repository_node_trust,
+)
 from bertrand.env.kube.capability.device import ensure_dra_backend
 from bertrand.env.kube.ceph.bootstrap import ensure_rook_ceph_base, wait_rook_ceph_ready
 from bertrand.env.kube.ceph.mount import (
@@ -78,7 +83,7 @@ from bertrand.env.kube.ceph.mount import (
 from bertrand.env.kube.ceph.storage import ensure_ceph_storage_controller
 from bertrand.env.kube.ceph.volume import (
     DEFAULT_VOLUME_SIZE,
-    RepoVolume,
+    list_repository_volume_claims,
     mark_repository_volume_failed,
 )
 from bertrand.env.kube.control import control_plane_image
@@ -89,6 +94,7 @@ from bertrand.env.kube.node_identity import ensure_local_bertrand_node
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from typing import Protocol
 
 
 INIT_LOCK = Path("/tmp/bertrand-init.lock")
@@ -213,13 +219,15 @@ type _InitText = Annotated[
 
 
 if TYPE_CHECKING:
-    type _InitStep = Callable[[_InitState, _InitContext], Awaitable[None] | None]
-    type _RepoStep = Callable[[_RepoState, _RepoContext], Awaitable[None]]
+    class _InitStep(Protocol):
+        def __call__(
+            self,
+            state: _InitState,
+            *,
+            assume_yes: bool,
+        ) -> Awaitable[None] | None: ...
 
-
-@dataclass(frozen=True)
-class _InitContext:
-    assume_yes: bool
+    type _RepoStep = Callable[[_RepoState], Awaitable[None]]
 
 
 class _InitState(BaseModel):
@@ -270,7 +278,9 @@ class _InitState(BaseModel):
         )
 
 
-def _no_op(_state: _InitState, _context: _InitContext) -> None:
+def _no_op(state: _InitState, *, assume_yes: bool) -> None:
+    del state
+    del assume_yes
     return
 
 
@@ -288,7 +298,8 @@ def _read_os_release() -> dict[str, str]:
     return data
 
 
-def _detect_platform(state: _InitState, _context: _InitContext) -> None:
+def _detect_platform(state: _InitState, *, assume_yes: bool) -> None:
+    del assume_yes
     system = platform.system().lower()
     if system != "linux":
         msg = "Unsupported platform for package manager detection"
@@ -329,7 +340,7 @@ def _detect_platform(state: _InitState, _context: _InitContext) -> None:
     state.distro_codename = codename
 
 
-async def _install_prereqs(state: _InitState, context: _InitContext) -> None:
+async def _install_prereqs(state: _InitState, *, assume_yes: bool) -> None:
     # fail fast if no escalation path is available for package installs
     if os.geteuid() != 0 and not can_escalate():
         msg = (
@@ -367,14 +378,14 @@ async def _install_prereqs(state: _InitState, context: _InitContext) -> None:
         "Bertrand requires host bootstrap tools to configure runtime "
         f"dependencies and shared state (missing: {', '.join(missing)}).  Would "
         "you like Bertrand to install missing packages now (requires sudo)?\n[y/N] ",
-        assume_yes=context.assume_yes,
+        assume_yes=assume_yes,
     ):
         msg = "Installation declined by user."
         raise PermissionError(msg)
     await install_packages(
         package_manager=state.package_manager,
         packages=sorted(missing),
-        assume_yes=context.assume_yes,
+        assume_yes=assume_yes,
         timeout=INFINITY,
     )
 
@@ -392,18 +403,18 @@ async def _install_prereqs(state: _InitState, context: _InitContext) -> None:
         raise OSError(msg)
 
 
-async def _bootstrap_state_dir(state: _InitState, context: _InitContext) -> None:
+async def _bootstrap_state_dir(state: _InitState, *, assume_yes: bool) -> None:
     if state.user is None:
         msg = "init state user is missing; rerun `bertrand init`."
         raise OSError(msg)
     await ensure_host_state(
         user=state.user,
-        assume_yes=context.assume_yes,
+        assume_yes=assume_yes,
         timeout=INFINITY,
     )
 
 
-async def _install_kube_runtime(state: _InitState, context: _InitContext) -> None:
+async def _install_kube_runtime(state: _InitState, *, assume_yes: bool) -> None:
     if state.user is None:
         msg = "init state user is missing; rerun `bertrand init`."
         raise OSError(msg)
@@ -413,11 +424,12 @@ async def _install_kube_runtime(state: _InitState, context: _InitContext) -> Non
     await install_microk8s(
         package_manager=state.package_manager,
         user=state.user,
-        assume_yes=context.assume_yes,
+        assume_yes=assume_yes,
     )
 
 
-async def _assert_installed(state: _InitState, _context: _InitContext) -> None:
+async def _assert_installed(state: _InitState, *, assume_yes: bool) -> None:
+    del assume_yes
     if state.user is None:
         msg = "init state user is missing; rerun `bertrand init`."
         raise OSError(msg)
@@ -443,9 +455,10 @@ async def _assert_installed(state: _InitState, _context: _InitContext) -> None:
 async def _run_init_step(
     step: _InitStep,
     state: _InitState,
-    context: _InitContext,
+    *,
+    assume_yes: bool,
 ) -> None:
-    result = step(state, context)
+    result = step(state, assume_yes=assume_yes)
     if inspect.isawaitable(result):
         await result
 
@@ -467,12 +480,12 @@ def _init_stage_index(state: _InitState) -> int:
     )
 
 
-async def _converge_init_state(context: _InitContext) -> _InitState:
+async def _converge_init_state(*, assume_yes: bool) -> _InitState:
     state = _InitState.load()
     index = _init_stage_index(state)
     if index == len(INIT_STAGES) - 1:
         try:
-            await _assert_installed(state, context)
+            await _assert_installed(state, assume_yes=assume_yes)
         except OSError:
             index = 0
             state = _InitState(version=INIT_STATE_VERSION)
@@ -480,7 +493,7 @@ async def _converge_init_state(context: _InitContext) -> _InitState:
                 state.dump()
 
     for stage, step in INIT_STAGES[index:]:
-        await _run_init_step(step, state, context)
+        await _run_init_step(step, state, assume_yes=assume_yes)
         state.stage = stage
         if _InitState.backend_trustworthy():
             state.dump()
@@ -526,8 +539,7 @@ async def _ensure_shared_runtime(
         timeout=deadline.remaining(),
         privileges=INIT_LOCK_MODE,
     ):
-        context = _InitContext(assume_yes=yes)
-        state = await _converge_init_state(context)
+        state = await _converge_init_state(assume_yes=yes)
         _validate_shared_runtime_groups(state)
 
         if not converge_cluster:
@@ -555,24 +567,9 @@ async def ensure_shared_runtime_installed(*, timeout: float, yes: bool) -> None:
     )
 
 
-@dataclass(frozen=True)
-class _GitHook:
-    source: Path
-    destination: Path
-    executable: bool
-
-
-MANAGED_GIT_HOOKS: tuple[_GitHook, ...] = (
-    _GitHook(
-        source=Path("reference_transaction.py"),
-        destination=Path("hooks/reference-transaction"),
-        executable=True,
-    ),
-    _GitHook(
-        source=Path("bertrand_git.py"),
-        destination=Path("hooks/bertrand_git.py"),
-        executable=False,
-    ),
+MANAGED_GIT_HOOKS: tuple[tuple[Path, Path, bool], ...] = (
+    (Path("reference_transaction.py"), Path("hooks/reference-transaction"), True),
+    (Path("bertrand_git.py"), Path("hooks/bertrand_git.py"), False),
 )
 REPO_LOCK_DIR = RUN_DIR / "init"
 PROTECTED_DISABLE_RESOURCES: frozenset[str] = frozenset({"bertrand", "python"})
@@ -606,48 +603,24 @@ def _parse_resource_specs(
     return parsed
 
 
-@dataclass(frozen=True)
-class _RepoContext:
-    enable: set[Resource[Any]]
-    disable: set[Resource[Any]]
-    assume_yes: bool
-
-
-@dataclass(frozen=True)
-class _RepoResourcePlan:
-    enabled: set[Resource[Any]]
-    disabled: set[Resource[Any]]
-
-    @classmethod
-    def parse(cls, *, enable: list[str], disable: list[str]) -> _RepoResourcePlan:
-        enabled: set[Resource[Any]] = {RESOURCE_NAMES["bertrand"]}
-        enabled.update(_parse_resource_specs(enable, for_disable=False))
-        disabled = _parse_resource_specs(disable, for_disable=True)
-        protected = {
-            name
-            for name in PROTECTED_DISABLE_RESOURCES
-            if RESOURCE_NAMES[name] in disabled
-        }
-        if protected:
-            names = ", ".join(sorted(protected))
-            msg = f"cannot disable required Bertrand resources: {names}"
-            raise ValueError(msg)
-        return cls(enabled=enabled - disabled, disabled=disabled)
-
-    def context(self, *, assume_yes: bool) -> _RepoContext:
-        return _RepoContext(
-            enable=self.enabled,
-            disable=self.disabled,
-            assume_yes=assume_yes,
-        )
-
-
-@dataclass(frozen=True)
-class _RepoTarget:
-    repo: GitRepository
-    worktree: Path
-    target: Path
-    recovered_repo_id: str | None
+def _parse_repo_resource_plan(
+    *,
+    enable: list[str],
+    disable: list[str],
+) -> tuple[set[Resource[Any]], set[Resource[Any]]]:
+    enabled: set[Resource[Any]] = {RESOURCE_NAMES["bertrand"]}
+    enabled.update(_parse_resource_specs(enable, for_disable=False))
+    disabled = _parse_resource_specs(disable, for_disable=True)
+    protected = {
+        name
+        for name in PROTECTED_DISABLE_RESOURCES
+        if RESOURCE_NAMES[name] in disabled
+    }
+    if protected:
+        names = ", ".join(sorted(protected))
+        msg = f"cannot disable required Bertrand resources: {names}"
+        raise ValueError(msg)
+    return enabled - disabled, disabled
 
 
 @dataclass
@@ -658,6 +631,9 @@ class _RepoState:
     worktree: Path
     repo_id: str
     mount_alias: Path | None
+    enable: set[Resource[Any]]
+    disable: set[Resource[Any]]
+    assume_yes: bool
     deadline: Deadline
 
     def __post_init__(self) -> None:
@@ -675,9 +651,8 @@ class _RepoState:
 
 async def _ensure_repo_storage(
     state: _RepoState,
-    context: _RepoContext,
 ) -> None:
-    volumes = await RepoVolume.list(
+    volumes = await list_repository_volume_claims(
         state.kube,
         state.repo_id,
         timeout=state.deadline.remaining(),
@@ -696,11 +671,11 @@ async def _ensure_repo_storage(
             "information can be "
             "found in the Bertrand documentation, if needed.\nContinue? [y/N] "
         )
-        if not confirm(prompt, assume_yes=context.assume_yes):
+        if not confirm(prompt, assume_yes=state.assume_yes):
             msg = "repository conversion declined by user"
             raise PermissionError(msg)
 
-    repository_mount = await ensure_repository_mount(
+    state.mount_alias = await ensure_repository_mount(
         state.kube,
         repo_id=state.repo_id,
         timeout=state.deadline.remaining(),
@@ -708,12 +683,10 @@ async def _ensure_repo_storage(
         target=state.target,
         volumes=volumes,
     )
-    state.mount_alias = repository_mount.alias
 
 
 async def _ensure_bare_worktrees(
     state: _RepoState,
-    _context: _RepoContext,
 ) -> None:
     if state.mount_alias is None:
         msg = "bare-worktree convergence requires a mounted repository alias"
@@ -830,30 +803,29 @@ async def _remap_target_worktree(
 
 async def _ensure_repo_hooks(
     state: _RepoState,
-    _context: _RepoContext,
 ) -> None:
     # load managed hook payloads before install; this preserves fail-fast behavior if
     # packaged hook definitions are malformed.
-    for hook in MANAGED_GIT_HOOKS:
-        stage = f"resolve managed hook for '{hook.destination}'"
-        marker = f"# bertrand-managed: {hook.source}"
+    for source, destination, executable in MANAGED_GIT_HOOKS:
+        stage = f"resolve managed hook for '{destination}'"
+        marker = f"# bertrand-managed: {source}"
         try:
             # load hook from Bertrand package resources and verify shebang/marker
             expected: list[str] = []
-            if hook.executable:
+            if executable:
                 expected.append("#!/usr/bin/env python3")
             expected.append(marker)
             hook_text = (
                 importlib_resources.files("bertrand.env")
                 .joinpath(
                     "git",
-                    hook.source,
+                    source,
                 )
                 .read_text(encoding="utf-8")
             )
             if hook_text.splitlines()[: len(expected)] != expected:
                 lines = "\n".join(expected)
-                msg = f"packaged {hook.source} must start with:\n{lines}"
+                msg = f"packaged {source} must start with:\n{lines}"
                 print(
                     f"bertrand: failed to {stage} in {state.repo.root}\n{msg}",
                     file=sys.stderr,
@@ -861,8 +833,8 @@ async def _ensure_repo_hooks(
                 continue
 
             # do not clobber non-managed hooks
-            stage = f"resolve existing git hook at '{hook.destination}'"
-            target = await state.repo.git_path(hook.destination, cwd=state.repo.root)
+            stage = f"resolve existing git hook at '{destination}'"
+            target = await state.repo.git_path(destination, cwd=state.repo.root)
             if target.exists():
                 if not target.is_file():
                     msg = f"git hook path is not a file: {target}"
@@ -885,7 +857,7 @@ async def _ensure_repo_hooks(
             # install hook into git directory
             stage = f"write git hook to {target}"
             atomic_write_text(target, hook_text, encoding="utf-8")
-            if hook.executable:
+            if executable:
                 stage = f"set executable permissions on git hook {target}"
                 with contextlib.suppress(OSError):
                     target.chmod(0o755)
@@ -898,12 +870,11 @@ async def _ensure_repo_hooks(
 
 async def _render_config_artifacts(
     state: _RepoState,
-    context: _RepoContext,
 ) -> None:
     # render all targeted worktrees based on existing configuration (if any), then
     # apply enable/disable deltas before syncing artifacts.
     for worktree in await _config_render_targets(state):
-        await _sync_worktree_config(state, context, worktree)
+        await _sync_worktree_config(state, worktree)
 
 
 async def _config_render_targets(state: _RepoState) -> tuple[Path, ...]:
@@ -940,7 +911,6 @@ async def _config_render_targets(state: _RepoState) -> tuple[Path, ...]:
 
 async def _sync_worktree_config(
     state: _RepoState,
-    context: _RepoContext,
     worktree: Path,
 ) -> None:
     root = state.repo.root / worktree
@@ -950,22 +920,22 @@ async def _sync_worktree_config(
         repo=state.repo,
         timeout=state.deadline.remaining(),
     )
-    config.resources.update({resource.name: None for resource in context.enable})
+    config.resources.update({resource.name: None for resource in state.enable})
     config.init = Config.Init(
         repo=state.repo,
         worktree=worktree,
     )
     async with config:
-        _remove_disabled_resource_artifacts(root, config, context)
+        _remove_disabled_resource_artifacts(root, config, state.disable)
         await config.sync()
 
 
 def _remove_disabled_resource_artifacts(
     root: Path,
     config: Config,
-    context: _RepoContext,
+    disabled: set[Resource[Any]],
 ) -> None:
-    for resource in context.disable:
+    for resource in disabled:
         config.resources.pop(resource.name, None)
         for relative in sorted(resource.paths, key=lambda item: item.as_posix()):
             path = root / relative
@@ -979,7 +949,6 @@ def _remove_disabled_resource_artifacts(
 
 async def _make_initial_commit(
     state: _RepoState,
-    _context: _RepoContext,
 ) -> None:
     worktree_path = await _initial_commit_worktree(state)
     if worktree_path is None:
@@ -1055,7 +1024,6 @@ async def _commit_initial_changes(state: _RepoState, worktree_path: Path) -> Non
 
 async def _finalize(
     state: _RepoState,
-    context: _RepoContext,
 ) -> None:
     mount_alias = state.mount_alias
     if mount_alias is None:
@@ -1074,7 +1042,7 @@ async def _finalize(
         replace_existing = confirm(
             "Bertrand needs to atomically replace this path with a managed "
             "CephFS repository alias to complete conversion. Continue?\n[y/N] ",
-            assume_yes=context.assume_yes,
+            assume_yes=state.assume_yes,
         )
 
     state.mount_alias = await finalize_repository_mount(
@@ -1117,13 +1085,13 @@ async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
         name=BERTRAND_NAMESPACE,
         timeout=deadline.remaining(),
     )
-    await IMAGES.ensure(kube, timeout=deadline.remaining())
-    await IMAGES.ensure_node_trust(kube, timeout=deadline.remaining())
-    await IMAGES.assert_node_trust(kube, timeout=deadline.remaining())
-    await BUILDKIT_POOL.ensure(
+    await ensure_image_repository(kube, timeout=deadline.remaining())
+    await ensure_image_repository_node_trust(kube, timeout=deadline.remaining())
+    await assert_image_repository_node_trust(kube, timeout=deadline.remaining())
+    await ensure_buildkit_pool(
         kube,
         timeout=deadline.remaining(),
-        config_hash=await IMAGES.current_buildkit_config_hash(
+        config_hash=await current_buildkit_config_hash(
             kube,
             timeout=deadline.remaining(),
         ),
@@ -1204,7 +1172,7 @@ async def _resolve_repo_target(
     path: Path,
     *,
     deadline: Deadline,
-) -> _RepoTarget:
+) -> tuple[GitRepository, Path, Path, str | None]:
     raw_path = abspath(path)
 
     # run managed-alias resurrection before git path resolution so repository
@@ -1219,11 +1187,11 @@ async def _resolve_repo_target(
     # search for parent Git repository on target path, and then identify the
     # ancestor symlink that points to it, if any
     repo, worktree = await GitRepository.resolve(raw_path.resolve())
-    return _RepoTarget(
-        repo=repo,
-        worktree=worktree,
-        target=_repository_destination_path(raw_path, repo),
-        recovered_repo_id=recovered_repo_id,
+    return (
+        repo,
+        worktree,
+        _repository_destination_path(raw_path, repo),
+        recovered_repo_id,
     )
 
 
@@ -1243,26 +1211,33 @@ def _repository_destination_path(raw_path: Path, repo: GitRepository) -> Path:
 
 async def _converge_repository(
     kube: Kube,
-    target: _RepoTarget,
-    resources: _RepoResourcePlan,
     *,
+    repo: GitRepository,
+    worktree: Path,
+    target: Path,
+    recovered_repo_id: str | None,
+    enable: set[Resource[Any]],
+    disable: set[Resource[Any]],
     deadline: Deadline,
     yes: bool,
 ) -> None:
     # synchronize uniquely for each repository path to limit global init lock
     # contention
-    async with _RepoState.lock(target.repo.root, timeout=deadline.remaining()):
-        await _assert_repo_clean(target.repo)
+    async with _RepoState.lock(repo.root, timeout=deadline.remaining()):
+        await _assert_repo_clean(repo)
         state = _RepoState(
             kube=kube,
-            repo=target.repo,
-            target=target.target,
-            worktree=target.worktree,
-            repo_id=target.recovered_repo_id or target.repo.repo_id,
+            repo=repo,
+            target=target,
+            worktree=worktree,
+            repo_id=recovered_repo_id or repo.repo_id,
             mount_alias=None,
+            enable=enable,
+            disable=disable,
+            assume_yes=yes,
             deadline=deadline,
         )
-        await _run_repo_stages(state, resources.context(assume_yes=yes))
+        await _run_repo_stages(state)
 
 
 async def _assert_repo_clean(repo: GitRepository) -> None:
@@ -1274,10 +1249,10 @@ async def _assert_repo_clean(repo: GitRepository) -> None:
         raise OSError(msg)
 
 
-async def _run_repo_stages(state: _RepoState, context: _RepoContext) -> None:
+async def _run_repo_stages(state: _RepoState) -> None:
     try:
         for stage in REPO_STAGES:
-            await stage(state, context)
+            await stage(state)
     except _INIT_REPO_STAGE_ERRORS as err:
         await _mark_repo_failure(
             state.kube,
@@ -1355,21 +1330,25 @@ async def bertrand_init(
 
     # fail fast if required tools are missing, and validate resource convergence input
     try:
-        resources = _RepoResourcePlan.parse(enable=enable, disable=disable)
+        enabled, disabled = _parse_repo_resource_plan(enable=enable, disable=disable)
     except ValueError as err:
         raise ValueError(*err.args) from None
     _ensure_git_available()
 
     with await Kube.host(timeout=deadline.remaining()) as kube:
-        target = await _resolve_repo_target(
+        repo, worktree, target, recovered_repo_id = await _resolve_repo_target(
             kube,
             path,
             deadline=deadline,
         )
         await _converge_repository(
             kube,
-            target,
-            resources,
+            repo=repo,
+            worktree=worktree,
+            target=target,
+            recovered_repo_id=recovered_repo_id,
+            enable=enabled,
+            disable=disabled,
             deadline=deadline,
             yes=yes,
         )

@@ -14,11 +14,21 @@ from bertrand.env.cli.external._helper import (
 from bertrand.env.config.core import _check_kube_name
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
 from bertrand.env.kube.build.controller import BUILDKIT_BUILD_CONTROLLER
-from bertrand.env.kube.build.daemon import BUILDKIT_POOL
-from bertrand.env.kube.build.execution import job_logs
-from bertrand.env.kube.build.project import project_image_build
+from bertrand.env.kube.build.daemon import buildkit_pool_status
+from bertrand.env.kube.build.project import (
+    project_image_spec,
+)
 from bertrand.env.kube.build.refs import split_tagged_ref
-from bertrand.env.kube.build.repository import IMAGES
+from bertrand.env.kube.build.repository import (
+    current_buildkit_config_hash,
+    image_repository_maintenance_status,
+    image_repository_status,
+)
+from bertrand.env.kube.build.request import (
+    BUILDKIT_BUILD_RESOURCE,
+    submit_buildkit_build,
+    wait_buildkit_build,
+)
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.job import Job
 
@@ -28,8 +38,7 @@ if TYPE_CHECKING:
     from bertrand.env.config.core import Config
     from bertrand.env.git import GitRepository
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.build.lifecycle import ProjectImagePublication
-    from bertrand.env.kube.build.request import BuildKitBuildRecord
+    from bertrand.env.kube.build.request import BuildKitBuildRecord, BuildKitBuildSpec
 
 
 _GITHUB_HTTPS_REMOTE = re.compile(
@@ -92,30 +101,36 @@ async def bertrand_build(
             raise ValueError(msg)
         auth = _check_kube_name(auth)
 
-    result: ProjectImagePublication | None = None
+    result: BuildKitBuildRecord | None = None
     request_name: str | None = None
-    async with _project_command_context(target, timeout=INFINITY) as context:
-        publish_repo = await _publish_repository(context.config.repo, publish)
-        repo_id = context.config.repo.repo_id
+    async with _project_command_context(target, timeout=INFINITY) as (
+        kube,
+        _repo,
+        _worktree,
+        config,
+    ):
+        publish_repo = await _publish_repository(config.repo, publish)
+        repo_id = config.repo.repo_id
         if detach:
-            await _assert_build_runtime(context.kube, timeout=INFINITY)
-            build = project_image_build(context.config, repo_id=repo_id)
+            await _assert_build_runtime(kube, timeout=INFINITY)
+            spec = project_image_spec(config, repo_id=repo_id)
             external_image = (
-                _external_image(publish_repo, build.identity.image)
+                _external_image(publish_repo, spec.image)
                 if publish_repo is not None
                 else None
             )
-            request = await build.submit(
-                context.kube,
+            spec = _publication_spec(spec, external_image=external_image, auth_id=auth)
+            await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=INFINITY)
+            request = await submit_buildkit_build(
+                kube,
+                spec=spec,
                 timeout=INFINITY,
-                external_image=external_image,
-                auth_id=auth,
             )
             request_name = request.name
         else:
             result = await _publish_project_image(
-                context.kube,
-                config=context.config,
+                kube,
+                config=config,
                 repo_id=repo_id,
                 timeout=INFINITY,
                 external_repository=publish_repo,
@@ -243,36 +258,145 @@ async def _publish_project_image(
     auth_id: str | None = None,
     quiet: bool = False,
     ensure_crds: bool = True,
-) -> ProjectImagePublication:
-    await _assert_build_runtime(kube, timeout=timeout)
-    build = project_image_build(config, repo_id=repo_id)
+) -> BuildKitBuildRecord:
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    await _assert_build_runtime(kube, timeout=deadline.remaining())
+    spec = project_image_spec(config, repo_id=repo_id)
     external_image = (
-        _external_image(external_repository, build.identity.image)
+        _external_image(external_repository, spec.image)
         if external_repository is not None
         else None
     )
-    follower = None if quiet else BuildLogFollower(kube)
+    spec = _publication_spec(spec, external_image=external_image, auth_id=auth_id)
+    job_name = ""
+    task: asyncio.Task[None] | None = None
+    printed: dict[str, str] = {}
+    maintenance_notice = ""
+
+    def print_new_logs(name: str, logs: str) -> None:
+        logs = logs.strip()
+        if not logs:
+            return
+        previous = printed.get(name, "")
+        if logs == previous:
+            return
+        if previous and logs.startswith(previous):
+            chunk = logs[len(previous) :].lstrip("\n")
+        else:
+            chunk = logs
+        printed[name] = logs
+        if chunk:
+            print(chunk, file=sys.stderr, flush=True)
+
+    async def follow_build_logs(name: str) -> None:
+        while True:
+            try:
+                job = await Job.get(
+                    kube,
+                    namespace=BERTRAND_NAMESPACE,
+                    name=name,
+                    timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
+                )
+                if job is not None:
+                    logs = await job.logs(
+                        kube,
+                        timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
+                        tail_lines=_BUILD_LOG_TAIL_LINES,
+                        failure_label="build Job logs",
+                        include_headers=True,
+                    )
+                    print_new_logs(name, logs)
+            except (OSError, TimeoutError, ValueError):
+                pass
+            await asyncio.sleep(_BUILD_LOG_POLL_SECONDS)
+
+    async def set_job(name: str) -> None:
+        nonlocal job_name, task
+        name = name.strip()
+        if name == job_name:
+            return
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        job_name = name
+        task = asyncio.create_task(follow_build_logs(name)) if name else None
+
+    async def maybe_print_maintenance() -> None:
+        nonlocal maintenance_notice
+        try:
+            status = await image_repository_maintenance_status(
+                kube,
+                timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
+            )
+        except (OSError, TimeoutError, ValueError):
+            return
+        if not status.active:
+            maintenance_notice = ""
+            return
+        message = status.message or "image registry maintenance is running"
+        if message == maintenance_notice:
+            return
+        maintenance_notice = message
+        print(message, file=sys.stderr, flush=True)
+
+    async def update_logs(record: BuildKitBuildRecord) -> None:
+        await set_job(record.status.active_job)
+        if not record.status.active_job.strip() and record.is_active:
+            await maybe_print_maintenance()
+
     try:
-        return await build.publish(
+        if ensure_crds:
+            await BUILDKIT_BUILD_RESOURCE.ensure_crd(
+                kube,
+                timeout=deadline.remaining(),
+            )
+        request = await submit_buildkit_build(
             kube,
-            timeout=timeout,
-            external_image=external_image,
-            auth_id=auth_id,
-            on_update=None if follower is None else follower.update,
-            ensure_crds=ensure_crds,
+            spec=spec,
+            timeout=deadline.remaining(),
         )
+        result = await wait_buildkit_build(
+            kube,
+            name=request.name,
+            timeout=deadline.remaining(),
+            on_update=None if quiet else update_logs,
+        )
+        return _require_successful_build(result)
     finally:
-        if follower is not None:
-            await follower.close()
+        await set_job("")
 
 
-def _print_result(result: ProjectImagePublication) -> None:
-    record = result.record
-    print(f"image: {record.image}")
-    print(f"  digest: {record.digest_ref}")
-    print(f"  platforms: {', '.join(record.platforms)}")
-    if result.external_digest_ref is not None:
-        print(f"  external: {result.external_digest_ref}")
+def _publication_spec(
+    spec: BuildKitBuildSpec,
+    *,
+    external_image: str | None,
+    auth_id: str | None,
+) -> BuildKitBuildSpec:
+    return type(spec).model_validate(
+        {
+            **spec.model_dump(mode="python"),
+            "external_image": external_image,
+            "auth_id": auth_id,
+        }
+    )
+
+
+def _require_successful_build(record: BuildKitBuildRecord) -> BuildKitBuildRecord:
+    if record.status.phase == "Succeeded" and record.digest_ref:
+        return record
+    detail = record.status.message or "BuildKit build did not publish an image"
+    if record.status.log_excerpt:
+        detail = f"{detail}\n{record.status.log_excerpt}"
+    raise OSError(detail)
+
+
+def _print_result(result: BuildKitBuildRecord) -> None:
+    print(f"image: {result.image}")
+    print(f"  digest: {result.digest_ref}")
+    print(f"  platforms: {', '.join(result.platforms)}")
+    if result.status.external_digest_ref:
+        print(f"  external: {result.status.external_digest_ref}")
 
 
 def _print_request(name: str) -> None:
@@ -284,11 +408,11 @@ async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
     if timeout <= 0:
         raise TimeoutError(msg)
     deadline = Deadline.from_timeout(timeout, message=msg)
-    registry = await IMAGES.status(kube, timeout=deadline.remaining())
-    buildkit = await BUILDKIT_POOL.status(
+    registry = await image_repository_status(kube, timeout=deadline.remaining())
+    buildkit = await buildkit_pool_status(
         kube,
         timeout=deadline.remaining(),
-        config_hash=await IMAGES.current_buildkit_config_hash(
+        config_hash=await current_buildkit_config_hash(
             kube,
             timeout=deadline.remaining(),
         ),
@@ -311,105 +435,3 @@ async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
             f"to converge the Kubernetes build service.\n{detail}"
         )
         raise OSError(msg)
-
-
-class BuildLogFollower:
-    """Best-effort active BuildKit Job log follower for synchronous CLI builds.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context used to read Jobs and pod logs.
-    """
-
-    def __init__(self, kube: Kube) -> None:
-        self._kube = kube
-        self._job_name = ""
-        self._task: asyncio.Task[None] | None = None
-        self._printed: dict[str, str] = {}
-        self._maintenance_notice = ""
-
-    async def update(self, record: BuildKitBuildRecord) -> None:
-        """Follow the current active Job from a BuildKit request status update.
-
-        Parameters
-        ----------
-        record : BuildKitBuildRecord
-            Build request status snapshot.
-        """
-        await self._set_job(record.status.active_job)
-        if not record.status.active_job.strip() and record.is_active:
-            await self._maybe_print_maintenance()
-
-    async def close(self) -> None:
-        """Stop any active log-following task."""
-        await self._set_job("")
-
-    async def _set_job(self, name: str) -> None:
-        name = name.strip()
-        if name == self._job_name:
-            return
-        if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-        self._job_name = name
-        self._task = None
-        if name:
-            self._task = asyncio.create_task(self._run(name))
-
-    async def _run(self, name: str) -> None:
-        while True:
-            try:
-                job = await Job.get(
-                    self._kube,
-                    namespace=BERTRAND_NAMESPACE,
-                    name=name,
-                    timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
-                )
-                if job is not None:
-                    logs = await job_logs(
-                        self._kube,
-                        job,
-                        timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
-                        tail_lines=_BUILD_LOG_TAIL_LINES,
-                        failure_label="build Job logs",
-                        include_headers=True,
-                    )
-                    self._print_new_logs(name, logs)
-            except (OSError, TimeoutError, ValueError):
-                pass
-            await asyncio.sleep(_BUILD_LOG_POLL_SECONDS)
-
-    def _print_new_logs(self, name: str, logs: str) -> None:
-        logs = logs.strip()
-        if not logs:
-            return
-        previous = self._printed.get(name, "")
-        if logs == previous:
-            return
-        if previous and logs.startswith(previous):
-            chunk = logs[len(previous) :].lstrip("\n")
-        else:
-            chunk = logs
-        self._printed[name] = logs
-        if not chunk:
-            return
-        print(chunk, file=sys.stderr, flush=True)
-
-    async def _maybe_print_maintenance(self) -> None:
-        try:
-            status = await IMAGES.maintenance_status(
-                self._kube,
-                timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
-            )
-        except (OSError, TimeoutError, ValueError):
-            return
-        if not status.active:
-            self._maintenance_notice = ""
-            return
-        message = status.message or "image registry maintenance is running"
-        if message == self._maintenance_notice:
-            return
-        self._maintenance_notice = message
-        print(message, file=sys.stderr, flush=True)

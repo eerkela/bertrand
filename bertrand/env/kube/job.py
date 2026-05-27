@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 import kubernetes
 
-from bertrand.env.git import until
+from bertrand.env.git import Deadline, until
 
 from .api._helpers import (
     DeletionPropagationPolicy,
@@ -20,7 +20,7 @@ from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
     from datetime import datetime
 
     from .api.client import Kube
@@ -30,85 +30,69 @@ JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type JobCompletionMode = Literal["NonIndexed", "Indexed"]
 
 
-@dataclass(frozen=True)
-class _JobExecutionFields:
-    """Validated execution fields shared by Jobs and CronJob job templates."""
-
-    backoff_limit: int
-    ttl_seconds_after_finished: int | None
-    active_deadline_seconds: int | None
-    parallelism: int | None
-    completions: int | None
-    completion_mode: JobCompletionMode | None
-
-    @classmethod
-    def validate(
-        cls,
-        *,
-        owner: Literal["Job", "CronJob"],
-        template_owner: Literal["Job", "CronJob Job"],
-        backoff_limit: int,
-        ttl_seconds_after_finished: int | None,
-        active_deadline_seconds: int | None,
-        parallelism: int | None,
-        completions: int | None,
-        completion_mode: JobCompletionMode | None,
-    ) -> Self:
-        if backoff_limit < 0:
-            msg = f"{owner} backoff limit cannot be negative"
-            raise ValueError(msg)
-        if ttl_seconds_after_finished is not None and ttl_seconds_after_finished < 0:
-            msg = f"{template_owner} TTL cannot be negative"
-            raise ValueError(msg)
-        if active_deadline_seconds is not None and active_deadline_seconds < 0:
-            msg = f"{template_owner} active deadline cannot be negative"
-            raise ValueError(msg)
-        if parallelism is not None and parallelism <= 0:
-            msg = f"{template_owner} parallelism must be positive"
-            raise ValueError(msg)
-        if completions is not None and completions <= 0:
-            msg = f"{template_owner} completions must be positive"
-            raise ValueError(msg)
-        if completion_mode is not None and completion_mode not in (
-            "NonIndexed",
-            "Indexed",
-        ):
-            msg = f"invalid {template_owner} completion mode: {completion_mode!r}"
-            raise ValueError(msg)
-        return cls(
-            backoff_limit=backoff_limit,
-            ttl_seconds_after_finished=ttl_seconds_after_finished,
-            active_deadline_seconds=active_deadline_seconds,
-            parallelism=parallelism,
-            completions=completions,
-            completion_mode=completion_mode,
-        )
+def _validate_job_execution(
+    *,
+    owner: Literal["Job", "CronJob"],
+    template_owner: Literal["Job", "CronJob Job"],
+    backoff_limit: int,
+    ttl_seconds_after_finished: int | None,
+    active_deadline_seconds: int | None,
+    parallelism: int | None,
+    completions: int | None,
+    completion_mode: JobCompletionMode | None,
+) -> None:
+    if backoff_limit < 0:
+        msg = f"{owner} backoff limit cannot be negative"
+        raise ValueError(msg)
+    if ttl_seconds_after_finished is not None and ttl_seconds_after_finished < 0:
+        msg = f"{template_owner} TTL cannot be negative"
+        raise ValueError(msg)
+    if active_deadline_seconds is not None and active_deadline_seconds < 0:
+        msg = f"{template_owner} active deadline cannot be negative"
+        raise ValueError(msg)
+    if parallelism is not None and parallelism <= 0:
+        msg = f"{template_owner} parallelism must be positive"
+        raise ValueError(msg)
+    if completions is not None and completions <= 0:
+        msg = f"{template_owner} completions must be positive"
+        raise ValueError(msg)
+    if completion_mode is not None and completion_mode not in (
+        "NonIndexed",
+        "Indexed",
+    ):
+        msg = f"invalid {template_owner} completion mode: {completion_mode!r}"
+        raise ValueError(msg)
 
 
 def _job_spec_manifest(
     *,
     labels: Mapping[str, str],
     pod_template: PodTemplateSpec,
-    execution: _JobExecutionFields,
+    backoff_limit: int,
+    ttl_seconds_after_finished: int | None,
+    active_deadline_seconds: int | None,
+    parallelism: int | None,
+    completions: int | None,
+    completion_mode: JobCompletionMode | None,
 ) -> dict[str, object]:
     template_labels = dict(labels)
     template_labels.update(pod_template.labels)
     if pod_template.restart_policy is None:
         pod_template = replace(pod_template, restart_policy="Never")
     spec: dict[str, object] = {
-        "backoffLimit": execution.backoff_limit,
+        "backoffLimit": backoff_limit,
         "template": replace(pod_template, labels=template_labels)._manifest(),
     }
-    if execution.ttl_seconds_after_finished is not None:
-        spec["ttlSecondsAfterFinished"] = execution.ttl_seconds_after_finished
-    if execution.active_deadline_seconds is not None:
-        spec["activeDeadlineSeconds"] = execution.active_deadline_seconds
-    if execution.parallelism is not None:
-        spec["parallelism"] = execution.parallelism
-    if execution.completions is not None:
-        spec["completions"] = execution.completions
-    if execution.completion_mode is not None:
-        spec["completionMode"] = execution.completion_mode
+    if ttl_seconds_after_finished is not None:
+        spec["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
+    if active_deadline_seconds is not None:
+        spec["activeDeadlineSeconds"] = active_deadline_seconds
+    if parallelism is not None:
+        spec["parallelism"] = parallelism
+    if completions is not None:
+        spec["completions"] = completions
+    if completion_mode is not None:
+        spec["completionMode"] = completion_mode
     return spec
 
 
@@ -153,7 +137,12 @@ class Job(
         labels: Mapping[str, str],
         pod_template: PodTemplateSpec,
         annotations: Mapping[str, str] | None,
-        execution: _JobExecutionFields,
+        backoff_limit: int,
+        ttl_seconds_after_finished: int | None,
+        active_deadline_seconds: int | None,
+        parallelism: int | None,
+        completions: int | None,
+        completion_mode: JobCompletionMode | None,
     ) -> dict[str, object]:
         return {
             "apiVersion": "batch/v1",
@@ -167,7 +156,12 @@ class Job(
             "spec": _job_spec_manifest(
                 labels=labels,
                 pod_template=pod_template,
-                execution=execution,
+                backoff_limit=backoff_limit,
+                ttl_seconds_after_finished=ttl_seconds_after_finished,
+                active_deadline_seconds=active_deadline_seconds,
+                parallelism=parallelism,
+                completions=completions,
+                completion_mode=completion_mode,
             ),
         }
 
@@ -235,7 +229,7 @@ class Job(
         if not namespace or not name:
             msg = "Job create requires non-empty namespace and name"
             raise OSError(msg)
-        execution = _JobExecutionFields.validate(
+        _validate_job_execution(
             owner="Job",
             template_owner="Job",
             backoff_limit=backoff_limit,
@@ -252,7 +246,12 @@ class Job(
             labels=labels,
             pod_template=pod_template,
             annotations=annotations,
-            execution=execution,
+            backoff_limit=backoff_limit,
+            ttl_seconds_after_finished=ttl_seconds_after_finished,
+            active_deadline_seconds=active_deadline_seconds,
+            parallelism=parallelism,
+            completions=completions,
+            completion_mode=completion_mode,
         )
         return await cls.resource.create_manifest(
             kube,
@@ -510,3 +509,298 @@ class Job(
         except TimeoutError as err:
             msg = f"timed out waiting for Job {namespace}/{name} completion"
             raise TimeoutError(msg) from err
+
+    async def logs(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        tail_lines: int,
+        failure_label: str,
+        include_headers: bool = False,
+    ) -> str:
+        """Collect logs from pods owned by this Job.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum diagnostic budget in seconds.
+        tail_lines : int
+            Number of log lines to request from each pod.
+        failure_label : str
+            Human-readable label for diagnostic failures.
+        include_headers : bool, optional
+            Whether to prefix each pod's log chunk with ``namespace/name``.
+
+        Returns
+        -------
+        str
+            Collected pod logs, or a diagnostic placeholder if logs cannot be read.
+        """
+        if timeout <= 0:
+            return ""
+        try:
+            deadline = Deadline.from_timeout(
+                timeout,
+                message="timeout must be non-negative",
+            )
+            pods = await self.pods(kube, timeout=deadline.remaining())
+            chunks: list[str] = []
+            for pod in pods:
+                remaining = deadline.remaining()
+                if remaining <= 0:
+                    break
+                log = await pod.logs(
+                    kube,
+                    timeout=remaining,
+                    tail_lines=tail_lines,
+                )
+                log = log.strip()
+                if not log:
+                    continue
+                if include_headers:
+                    chunks.append(f"--- {pod.namespace}/{pod.name} ---\n{log}")
+                else:
+                    chunks.append(log)
+            separator = "\n\n" if include_headers else "\n"
+            return separator.join(chunks)
+        except (OSError, TimeoutError, ValueError) as err:
+            return f"<failed to read {failure_label}: {err}>"
+
+    async def pod_diagnostics(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        failure_label: str,
+    ) -> str:
+        """Collect status diagnostics from pods owned by this Job.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum diagnostic budget in seconds.
+        failure_label : str
+            Human-readable label for diagnostic failures.
+
+        Returns
+        -------
+        str
+            Newline-separated pod status diagnostics, or a diagnostic placeholder if
+            pod status cannot be read.
+        """
+        if timeout <= 0:
+            return ""
+        try:
+            pods = await self.pods(kube, timeout=timeout)
+            lines: list[str] = []
+            for pod in pods:
+                lines.extend(pod.status_diagnostics)
+            return "\n".join(lines)
+        except (OSError, TimeoutError, ValueError) as err:
+            return f"<failed to read {failure_label}: {err}>"
+
+    async def delete_quietly(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        wait: bool = False,
+    ) -> None:
+        """Delete this Job, ignoring cleanup failures.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum cleanup budget in seconds.
+        wait : bool, optional
+            Whether to wait for the Job to disappear after deletion.
+        """
+        if timeout <= 0:
+            return
+        try:
+            deadline = Deadline.from_timeout(
+                timeout,
+                message="timeout must be non-negative",
+            )
+            await self.delete(
+                kube,
+                timeout=deadline.remaining(),
+                propagation_policy="Foreground",
+            )
+            if wait:
+                await self.wait_deleted(kube, timeout=deadline.remaining())
+        except (OSError, TimeoutError):
+            return
+
+    async def wait_complete_with_diagnostics(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        failure_context: str,
+        log_heading: str,
+        log_failure_label: str,
+        tail_lines: int,
+        diagnostic_timeout: float,
+        cleanup_timeout: float,
+        include_log_headers: bool = False,
+    ) -> Self:
+        """Wait for this Job and enrich failures with logs and cleanup.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum completion budget in seconds.
+        failure_context : str
+            Failure message prefix used if the Job fails or times out.
+        log_heading : str
+            Heading inserted before collected diagnostic logs.
+        log_failure_label : str
+            Label used when diagnostic log collection itself fails.
+        tail_lines : int
+            Number of pod log lines to collect on failure.
+        diagnostic_timeout : float
+            Maximum budget for failure log collection.
+        cleanup_timeout : float
+            Maximum budget for failed Job cleanup.
+        include_log_headers : bool, optional
+            Whether diagnostic logs should include pod headers.
+
+        Returns
+        -------
+        Job
+            Refreshed Job wrapper that completed successfully.
+
+        Raises
+        ------
+        TimeoutError
+            If the Job does not complete before `timeout`.
+        OSError
+            If the Job fails or disappears while waiting.
+        """
+        try:
+            return await self.wait_complete(kube, timeout=timeout)
+        except (OSError, TimeoutError) as err:
+            logs = ""
+            diagnostics = ""
+            if diagnostic_timeout > 0:
+                deadline = Deadline.from_timeout(
+                    diagnostic_timeout,
+                    message="diagnostic timeout must be non-negative",
+                )
+                logs = await self.logs(
+                    kube,
+                    timeout=deadline.remaining(),
+                    tail_lines=tail_lines,
+                    failure_label=log_failure_label,
+                    include_headers=include_log_headers,
+                )
+                diagnostics = await self.pod_diagnostics(
+                    kube,
+                    timeout=deadline.remaining(),
+                    failure_label="Job pod status diagnostics",
+                )
+            await self.delete_quietly(kube, timeout=cleanup_timeout)
+            msg = f"{failure_context}: {err}"
+            diagnostics = diagnostics.strip()
+            if diagnostics:
+                msg = f"{msg}\n\nPod status:\n{diagnostics}"
+            logs = logs.strip()
+            if logs:
+                msg = f"{msg}\n\n{log_heading}:\n{logs}"
+            if isinstance(err, TimeoutError):
+                raise TimeoutError(msg) from err
+            raise OSError(msg) from err
+
+    async def run_observed(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        failure_context: str,
+        log_heading: str,
+        log_failure_label: str,
+        tail_lines: int,
+        diagnostic_timeout: float,
+        cleanup_timeout: float,
+        include_log_headers: bool = False,
+        observer: Callable[[Self], Awaitable[None]] | None = None,
+    ) -> str:
+        """Observe, wait for, and collect logs from this short-lived Job.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum completion and success-log budget in seconds.
+        failure_context : str
+            Failure message prefix used if the Job fails or times out.
+        log_heading : str
+            Heading inserted before collected diagnostic logs.
+        log_failure_label : str
+            Label used when diagnostic or success log collection itself fails.
+        tail_lines : int
+            Number of pod log lines to collect.
+        diagnostic_timeout : float
+            Maximum budget for failure log collection.
+        cleanup_timeout : float
+            Maximum budget for failed Job cleanup.
+        include_log_headers : bool, optional
+            Whether collected logs should include pod headers.
+        observer : Callable[[Job], Awaitable[None]] | None, optional
+            Callback invoked after the Job is created and before waiting begins.
+
+        Returns
+        -------
+        str
+            Success logs collected from the completed Job.
+
+        Raises
+        ------
+        TimeoutError
+            If the Job does not complete before `timeout`.
+        OSError
+            If the Job fails or disappears while waiting.
+        """
+        if timeout <= 0:
+            msg = "observed Job timeout must be non-negative"
+            raise TimeoutError(msg)
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="timeout must be non-negative",
+        )
+        if observer is not None:
+            await observer(self)
+        try:
+            await self.wait_complete_with_diagnostics(
+                kube,
+                timeout=deadline.remaining(),
+                failure_context=failure_context,
+                log_heading=log_heading,
+                log_failure_label=log_failure_label,
+                tail_lines=tail_lines,
+                diagnostic_timeout=diagnostic_timeout,
+                cleanup_timeout=cleanup_timeout,
+                include_log_headers=include_log_headers,
+            )
+        except TimeoutError:
+            raise
+        except OSError as err:
+            raise OSError(str(err)) from err
+        return await self.logs(
+            kube,
+            timeout=deadline.remaining(),
+            tail_lines=tail_lines,
+            failure_label=log_failure_label,
+            include_headers=include_log_headers,
+        )

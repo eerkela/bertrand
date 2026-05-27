@@ -12,8 +12,8 @@ from bertrand.env.git import Deadline
 from bertrand.env.kube.api.spec import VolumeSpec
 from bertrand.env.kube.capability.base import resolve_capability_secret
 from bertrand.env.kube.capability.device import (
-    DRAResourceClaimIntent,
-    resource_claim_intents,
+    pod_resource_claim,
+    resource_claim_name,
     select_device_claims,
 )
 
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from bertrand.env.config.bertrand import BertrandModel
     from bertrand.env.config.core import KubeName
     from bertrand.env.kube.api.client import Kube
+    from bertrand.env.kube.api.spec import PodResourceClaimManifest
     from bertrand.env.kube.capability.base import CapabilityKind
 
 WORKLOAD_SECRET_MOUNT = "/run/secrets"
@@ -47,62 +48,6 @@ class CapabilityRequest(Protocol):
 
 
 @dataclass(frozen=True)
-class ResolvedWorkloadSecret:
-    """Resolved runtime Secret capability mounted into a workload.
-
-    Parameters
-    ----------
-    capability_id : str
-        Host-agnostic capability ID from project configuration.
-    container_name : str
-        Container that receives the Secret mount.
-    secret_name : str
-        Kubernetes Secret name backing the resolved capability.
-    volume_name : str
-        Deterministic pod volume name used for the Secret.
-    mount_path : str
-        Container path where the Secret is mounted.
-    payload_path : str
-        Path to the capability payload file inside the mounted Secret.
-    """
-
-    capability_id: str
-    container_name: str
-    secret_name: str
-    volume_name: str
-    mount_path: str
-    payload_path: str
-
-
-@dataclass(frozen=True)
-class ResolvedWorkloadSSH:
-    """Resolved runtime SSH credential capability mounted into a workload.
-
-    Parameters
-    ----------
-    capability_id : str
-        Host-agnostic capability ID from project configuration.
-    container_name : str
-        Container that receives the SSH credential mount.
-    secret_name : str
-        Kubernetes Secret name backing the resolved capability.
-    volume_name : str
-        Deterministic pod volume name used for the Secret.
-    mount_path : str
-        Container directory where the SSH credential Secret is mounted.
-    private_key_path : str
-        Path to the projected private key file inside the mounted Secret.
-    """
-
-    capability_id: str
-    container_name: str
-    secret_name: str
-    volume_name: str
-    mount_path: str
-    private_key_path: str
-
-
-@dataclass(frozen=True)
 class WorkloadCapabilities:
     """Resolved capability additions for a native workload pod.
 
@@ -112,40 +57,19 @@ class WorkloadCapabilities:
         Pod volumes required by resolved Secret capabilities.
     mounts_by_container : Mapping[str, tuple[Mapping[str, object], ...]]
         Secret mounts keyed by container name.
-    secrets : tuple[ResolvedWorkloadSecret, ...]
-        Resolved Secret capability records.
-    ssh : tuple[ResolvedWorkloadSSH, ...]
-        Resolved SSH credential capability records.
-    resource_claims : tuple[DRAResourceClaimIntent, ...]
-        DRA resource claim templates requested by workload containers.
+    resource_claims : tuple[PodResourceClaimManifest, ...]
+        Pod resource claims requested by workload containers.
+    claim_names_by_container : Mapping[str, tuple[str, ...]]
+        DRA claim names keyed by container for container resource references.
+    claim_capabilities_by_container : Mapping[str, tuple[str, ...]]
+        Selected DRA capability IDs keyed by container for template convergence.
     """
 
     volumes: tuple[VolumeSpec, ...]
     mounts_by_container: Mapping[str, tuple[Mapping[str, object], ...]]
-    secrets: tuple[ResolvedWorkloadSecret, ...]
-    ssh: tuple[ResolvedWorkloadSSH, ...]
-    resource_claims: tuple[DRAResourceClaimIntent, ...]
-
-
-@dataclass(frozen=True)
-class _CapabilityResolutionContext:
-    kube: Kube
-    worktree_id: str
-    repo_id: str
-    claim_owner: str
-    host_id: str | None
-    node_name: str | None
-    deadline: Deadline
-
-
-@dataclass(frozen=True)
-class _ResolvedMount:
-    capability_id: str
-    container_name: str
-    secret_name: str
-    volume: VolumeSpec
-    mount: Mapping[str, object]
-    payload_path: str
+    resource_claims: tuple[PodResourceClaimManifest, ...]
+    claim_names_by_container: Mapping[str, tuple[str, ...]]
+    claim_capabilities_by_container: Mapping[str, tuple[str, ...]]
 
 
 async def resolve_workload_capabilities(
@@ -197,191 +121,164 @@ async def resolve_workload_capabilities(
         timeout,
         message="workload capability resolution timeout must be non-negative",
     )
-    context = _CapabilityResolutionContext(
-        kube=kube,
-        worktree_id=worktree_id,
-        repo_id=repo_id,
-        claim_owner=claim_owner,
-        host_id=host_id,
-        node_name=node_name,
-        deadline=deadline,
-    )
     volumes: dict[str, VolumeSpec] = {}
     mounts_by_container: dict[str, list[Mapping[str, object]]] = {
         _check_kube_name(container.name): [] for container in containers
     }
-    resolved_secrets: list[ResolvedWorkloadSecret] = []
-    resolved_ssh: list[ResolvedWorkloadSSH] = []
-    resource_claims: list[DRAResourceClaimIntent] = []
+    resource_claims: list[PodResourceClaimManifest] = []
+    claim_names_by_container: dict[str, list[str]] = {
+        _check_kube_name(container.name): [] for container in containers
+    }
+    claim_capabilities_by_container: dict[str, list[str]] = {
+        _check_kube_name(container.name): [] for container in containers
+    }
 
     for container in containers:
         container_name = _check_kube_name(container.name)
         for request in container.secrets:
             resolved = await _resolve_secret_mount(
-                context,
+                kube,
                 kind="secret",
                 request=request,
-                container_name=container_name,
+                worktree_id=worktree_id,
+                repo_id=repo_id,
+                host_id=host_id,
+                deadline=deadline,
             )
             if resolved is None:
                 continue
-            _record_secret_mount(
-                volumes,
-                mounts_by_container,
-                resolved_secrets,
-                resolved=resolved,
-            )
+            volume, mount = resolved
+            volumes.setdefault(volume.name, volume)
+            mounts_by_container[container_name].append(mount)
 
         for request in container.ssh:
             resolved = await _resolve_secret_mount(
-                context,
+                kube,
                 kind="ssh",
                 request=request,
-                container_name=container_name,
+                worktree_id=worktree_id,
+                repo_id=repo_id,
+                host_id=host_id,
+                deadline=deadline,
             )
             if resolved is None:
                 continue
-            _record_ssh_mount(
-                volumes,
-                mounts_by_container,
-                resolved_ssh,
-                resolved=resolved,
-            )
+            volume, mount = resolved
+            volumes.setdefault(volume.name, volume)
+            mounts_by_container[container_name].append(mount)
 
-        resource_claims.extend(
+        _record_device_claims(
             await _resolve_device_claims(
-                context,
-                container_name=container_name,
+                kube,
                 requests=container.devices,
-            )
+                host_id=host_id,
+                node_name=node_name,
+                deadline=deadline,
+            ),
+            owner=claim_owner,
+            container_name=container_name,
+            resource_claims=resource_claims,
+            claim_names_by_container=claim_names_by_container,
+            claim_capabilities_by_container=claim_capabilities_by_container,
         )
 
     return _finalize_capabilities(
         volumes=volumes,
         mounts_by_container=mounts_by_container,
-        resolved_secrets=resolved_secrets,
-        resolved_ssh=resolved_ssh,
         resource_claims=resource_claims,
+        claim_names_by_container=claim_names_by_container,
+        claim_capabilities_by_container=claim_capabilities_by_container,
     )
 
 
 async def _resolve_secret_mount(
-    context: _CapabilityResolutionContext,
+    kube: Kube,
     *,
     kind: CapabilityKind,
     request: CapabilityRequest,
-    container_name: str,
-) -> _ResolvedMount | None:
+    worktree_id: str,
+    repo_id: str,
+    host_id: str | None,
+    deadline: Deadline,
+) -> tuple[VolumeSpec, Mapping[str, object]] | None:
     capability_id = _check_kube_name(str(request.id))
     secret = await resolve_capability_secret(
-        context.kube,
+        kube,
         kind=kind,
         capability_id=capability_id,
-        worktree_id=context.worktree_id,
-        repo_id=context.repo_id,
-        host_id=context.host_id,
+        worktree_id=worktree_id,
+        repo_id=repo_id,
+        host_id=host_id,
         required=request.required,
-        timeout=context.deadline.remaining(),
+        timeout=deadline.remaining(),
     )
     if secret is None:
         return None
 
     volume_name = _capability_volume_name(kind, capability_id)
     mount_path = _capability_mount_path(kind, capability_id)
-    secret_name = secret.name
-    return _ResolvedMount(
-        capability_id=capability_id,
-        container_name=container_name,
-        secret_name=secret_name,
-        volume=_capability_volume(
-            kind,
-            volume_name=volume_name,
-            secret_name=secret_name,
-        ),
-        mount={"name": volume_name, "mountPath": mount_path, "readOnly": True},
-        payload_path=_capability_payload_path(kind, mount_path),
+    volume = _capability_volume(
+        kind,
+        volume_name=volume_name,
+        secret_name=secret.name,
     )
-
-
-def _record_resolved_mount(
-    volumes: dict[str, VolumeSpec],
-    mounts_by_container: dict[str, list[Mapping[str, object]]],
-    *,
-    resolved: _ResolvedMount,
-) -> None:
-    volumes.setdefault(resolved.volume.name, resolved.volume)
-    mounts_by_container[resolved.container_name].append(resolved.mount)
-
-
-def _record_secret_mount(
-    volumes: dict[str, VolumeSpec],
-    mounts_by_container: dict[str, list[Mapping[str, object]]],
-    resolved_secrets: list[ResolvedWorkloadSecret],
-    *,
-    resolved: _ResolvedMount,
-) -> None:
-    _record_resolved_mount(volumes, mounts_by_container, resolved=resolved)
-    resolved_secrets.append(
-        ResolvedWorkloadSecret(
-            capability_id=resolved.capability_id,
-            container_name=resolved.container_name,
-            secret_name=resolved.secret_name,
-            volume_name=resolved.volume.name,
-            mount_path=str(resolved.mount["mountPath"]),
-            payload_path=resolved.payload_path,
-        )
-    )
-
-
-def _record_ssh_mount(
-    volumes: dict[str, VolumeSpec],
-    mounts_by_container: dict[str, list[Mapping[str, object]]],
-    resolved_ssh: list[ResolvedWorkloadSSH],
-    *,
-    resolved: _ResolvedMount,
-) -> None:
-    _record_resolved_mount(volumes, mounts_by_container, resolved=resolved)
-    resolved_ssh.append(
-        ResolvedWorkloadSSH(
-            capability_id=resolved.capability_id,
-            container_name=resolved.container_name,
-            secret_name=resolved.secret_name,
-            volume_name=resolved.volume.name,
-            mount_path=str(resolved.mount["mountPath"]),
-            private_key_path=resolved.payload_path,
-        )
-    )
+    mount = {"name": volume_name, "mountPath": mount_path, "readOnly": True}
+    return volume, mount
 
 
 async def _resolve_device_claims(
-    context: _CapabilityResolutionContext,
+    kube: Kube,
     *,
-    container_name: str,
     requests: Sequence[CapabilityRequest],
-) -> tuple[DRAResourceClaimIntent, ...]:
-    device_requests = await select_device_claims(
-        context.kube,
+    host_id: str | None,
+    node_name: str | None,
+    deadline: Deadline,
+) -> tuple[str, ...]:
+    return await select_device_claims(
+        kube,
         requests={
             _check_kube_name(str(request.id)): request.required for request in requests
         },
-        host_ids=(context.host_id,) if context.host_id is not None else None,
-        node_names=(context.node_name,) if context.node_name is not None else None,
-        timeout=context.deadline.remaining(),
+        host_ids=(host_id,) if host_id is not None else None,
+        node_names=(node_name,) if node_name is not None else None,
+        timeout=deadline.remaining(),
     )
-    return resource_claim_intents(
-        owner=context.claim_owner,
-        requests=device_requests,
-        container_name=container_name,
-    )
+
+
+def _record_device_claims(
+    capability_ids: tuple[str, ...],
+    *,
+    owner: str,
+    container_name: str,
+    resource_claims: list[PodResourceClaimManifest],
+    claim_names_by_container: dict[str, list[str]],
+    claim_capabilities_by_container: dict[str, list[str]],
+) -> None:
+    for capability_id in capability_ids:
+        resource_claims.append(
+            pod_resource_claim(
+                owner=owner,
+                capability_id=capability_id,
+                container_name=container_name,
+            )
+        )
+        claim_names_by_container[container_name].append(
+            resource_claim_name(
+                owner=owner,
+                capability_id=capability_id,
+                container_name=container_name,
+            )
+        )
+        claim_capabilities_by_container[container_name].append(capability_id)
 
 
 def _finalize_capabilities(
     *,
     volumes: dict[str, VolumeSpec],
     mounts_by_container: dict[str, list[Mapping[str, object]]],
-    resolved_secrets: list[ResolvedWorkloadSecret],
-    resolved_ssh: list[ResolvedWorkloadSSH],
-    resource_claims: list[DRAResourceClaimIntent],
+    resource_claims: list[PodResourceClaimManifest],
+    claim_names_by_container: dict[str, list[str]],
+    claim_capabilities_by_container: dict[str, list[str]],
 ) -> WorkloadCapabilities:
     mounts = MappingProxyType(
         {
@@ -392,9 +289,21 @@ def _finalize_capabilities(
     return WorkloadCapabilities(
         volumes=tuple(volumes[name] for name in sorted(volumes)),
         mounts_by_container=mounts,
-        secrets=tuple(resolved_secrets),
-        ssh=tuple(resolved_ssh),
         resource_claims=tuple(resource_claims),
+        claim_names_by_container=MappingProxyType(
+            {
+                container: tuple(entries)
+                for container, entries in sorted(claim_names_by_container.items())
+            }
+        ),
+        claim_capabilities_by_container=MappingProxyType(
+            {
+                container: tuple(entries)
+                for container, entries in sorted(
+                    claim_capabilities_by_container.items()
+                )
+            }
+        ),
     )
 
 
@@ -423,11 +332,6 @@ def _capability_volume(
 def _capability_mount_path(kind: CapabilityKind, capability_id: str) -> str:
     root = WORKLOAD_SSH_MOUNT if kind == "ssh" else WORKLOAD_SECRET_MOUNT
     return f"{root}/{capability_id}"
-
-
-def _capability_payload_path(kind: CapabilityKind, mount_path: str) -> str:
-    filename = SSH_PRIVATE_KEY_FILE if kind == "ssh" else CAPABILITY_VALUE_KEY
-    return f"{mount_path}/{filename}"
 
 
 def _capability_volume_name(kind: str, capability_id: str) -> str:

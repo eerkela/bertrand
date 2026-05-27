@@ -6,7 +6,7 @@ import os
 import shutil
 import sys
 import time
-from dataclasses import dataclass, field
+import uuid
 
 from bertrand.env.config.bertrand import Bertrand, Editor
 from bertrand.env.config.core import Config
@@ -25,9 +25,11 @@ from bertrand.env.git import (
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.dev.mailbox import (
-    CodeOpenIntent,
+    CODE_OPEN_RESOURCE,
     CodeOpenRecord,
-    create_code_open_request,
+    CodeOpenSpec,
+    code_open_request_labels,
+    code_open_request_name,
     wait_code_open_request,
 )
 from bertrand.env.kube.dev.session import (
@@ -40,125 +42,106 @@ from bertrand.env.kube.dev.session import (
 CODE_OPEN_TIMEOUT: float = 30.0
 
 
-@dataclass(frozen=True)
-class CodeOpenResult:
-    """Result for a completed editor-open request.
+async def send_code_open_request(
+    *,
+    block: bool,
+    editor: Editor | None = None,
+    deadline: float | None = None,
+) -> None:
+    """Create a mailbox request and wait for the host bridge response.
 
     Parameters
     ----------
-    success : bool
-        Whether the host bridge completed the request.
-    """
-
-    success: bool
-
-
-@dataclass(frozen=True)
-class CodeOpen:
-    """Request object for opening a host editor from inside a dev Pod.
-
-    Parameters
-    ----------
-    deadline : float, optional
-        Unix timestamp deadline for the request.
     block : bool, optional
         Whether the host bridge should preserve editor lifetime semantics.
     editor : Editor | None, optional
         Optional editor alias override.
+    deadline : float | None, optional
+        Unix timestamp deadline for the request. Defaults to thirty seconds from now.
+
+    Raises
+    ------
+    TimeoutError
+        If the request deadline expires before completion.
     """
+    deadline = deadline if deadline is not None else time.time() + CODE_OPEN_TIMEOUT
+    spec, host_id = await _request_spec(
+        block=block,
+        editor=editor,
+        deadline=deadline,
+    )
+    remaining = deadline - time.time()
+    if remaining <= 0:
+        msg = "deadline exhausted before editor request could be submitted"
+        raise TimeoutError(msg)
+    with Kube.inside_cluster() as kube:
+        record = await CODE_OPEN_RESOURCE.create(
+            kube,
+            name=code_open_request_name(spec.session_id, spec.request_id),
+            spec=spec,
+            labels=code_open_request_labels(spec, host_id),
+            timeout=remaining,
+        )
+        terminal = await wait_code_open_request(
+            kube,
+            name=record.name,
+            timeout=max(0.001, deadline - time.time()),
+        )
+    _raise_if_unsuccessful(terminal)
 
-    deadline: float = field(default_factory=lambda: time.time() + CODE_OPEN_TIMEOUT)
-    block: bool = False
-    editor: Editor | None = None
 
-    async def send(self) -> CodeOpenResult:
-        """Create a mailbox request and wait for the host bridge response.
+async def _request_spec(
+    *,
+    block: bool,
+    editor: Editor | None,
+    deadline: float,
+) -> tuple[CodeOpenSpec, str]:
+    if not inside_container():
+        msg = (
+            "`bertrand code` requires a live Bertrand dev Pod context. Run "
+            "`bertrand enter` first."
+        )
+        raise RuntimeError(msg)
+    session_id = _required_env(DEV_SESSION_ENV)
+    host_id = _required_env(DEV_HOST_ID_ENV)
+    repo_id = _required_env(REPO_ID_ENV)
+    worktree = _required_env(WORKTREE_ENV)
+    pod_name = _required_env(DEV_POD_NAME_ENV)
+    primary_container = _required_env(DEV_PRIMARY_CONTAINER_ENV)
 
-        Returns
-        -------
-        CodeOpenResult
-            Successful request result.
+    with Kube.inside_cluster() as kube:
+        async with await Config.load(
+            WORKTREE_MOUNT,
+            kube=kube,
+            repo=GitRepository(git_dir=PROJECT_MOUNT / ".git"),
+        ) as config:
+            config.resources[VSCodeWorkspace.name] = None
+            await config.sync(image_build=True)
+            bertrand = config.get(Bertrand)
+            if bertrand is None:
+                msg = (
+                    f"Bertrand configuration is missing from the worktree config "
+                    f"at {WORKTREE_MOUNT}."
+                )
+                raise RuntimeError(msg)
+            resolved_editor = editor or bertrand.editor
+            _request_prereqs(resolved_editor)
 
-        Raises
-        ------
-        TimeoutError
-            If the request deadline expires before completion.
-        """
-        intent = await self.intent()
-        remaining = self.deadline - time.time()
-        if remaining <= 0:
-            msg = "deadline exhausted before editor request could be submitted"
-            raise TimeoutError(msg)
-        with Kube.inside_cluster() as kube:
-            record = await create_code_open_request(
-                kube,
-                intent=intent,
-                timeout=remaining,
-            )
-            terminal = await wait_code_open_request(
-                kube,
-                name=record.name,
-                timeout=max(0.001, self.deadline - time.time()),
-            )
-        _raise_if_unsuccessful(terminal)
-        return CodeOpenResult(success=True)
-
-    async def intent(self) -> CodeOpenIntent:
-        """Render this request as a Kubernetes mailbox intent.
-
-        Returns
-        -------
-        CodeOpenIntent
-            Request intent ready to create in Kubernetes.
-
-        Raises
-        ------
-        RuntimeError
-            If required dev-session environment variables or config are missing.
-        """
-        if not inside_container():
-            msg = (
-                "`bertrand code` requires a live Bertrand dev Pod context. Run "
-                "`bertrand enter` first."
-            )
-            raise RuntimeError(msg)
-        session_id = _required_env(DEV_SESSION_ENV)
-        host_id = _required_env(DEV_HOST_ID_ENV)
-        repo_id = _required_env(REPO_ID_ENV)
-        worktree = _required_env(WORKTREE_ENV)
-        pod_name = _required_env(DEV_POD_NAME_ENV)
-        primary_container = _required_env(DEV_PRIMARY_CONTAINER_ENV)
-
-        with Kube.inside_cluster() as kube:
-            async with await Config.load(
-                WORKTREE_MOUNT,
-                kube=kube,
-                repo=GitRepository(git_dir=PROJECT_MOUNT / ".git"),
-            ) as config:
-                config.resources[VSCodeWorkspace.name] = None
-                await config.sync(image_build=True)
-                bertrand = config.get(Bertrand)
-                if bertrand is None:
-                    msg = (
-                        f"Bertrand configuration is missing from the worktree config "
-                        f"at {WORKTREE_MOUNT}."
-                    )
-                    raise RuntimeError(msg)
-                editor = self.editor or bertrand.editor
-                _request_prereqs(editor)
-
-        return CodeOpenIntent(
+    return (
+        CodeOpenSpec(
             session_id=session_id,
+            request_id=uuid.uuid4().hex,
             repo_id=repo_id,
             worktree=worktree,
             pod_name=pod_name,
             container_name=primary_container,
             workspace_path=VSCODE_WORKSPACE_FILE.as_posix(),
-            editor=editor,
-            block=self.block,
-            deadline=self.deadline,
-            host_id=host_id,
-        )
+            editor=resolved_editor,
+            block=block,
+            deadline=deadline,
+        ),
+        host_id,
+    )
 
 
 def _request_prereqs(editor: Editor) -> None:

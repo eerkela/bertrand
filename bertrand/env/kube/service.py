@@ -10,7 +10,6 @@ import kubernetes
 
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
-from .api.view import ServicePortView
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -18,6 +17,31 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
+
+
+@dataclass(frozen=True)
+class ServicePortView:
+    """Read-only Kubernetes Service port view.
+
+    Parameters
+    ----------
+    name : str
+        Service port name.
+    port : int
+        Service port number.
+    target_port : int | str
+        Target container port number or name.
+    protocol : str
+        Service port protocol.
+    node_port : int | None
+        Allocated or requested NodePort value, when present.
+    """
+
+    name: str
+    port: int
+    target_port: int | str
+    protocol: str
+    node_port: int | None = None
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
+from bertrand.env.config.core import _check_kube_name
 from bertrand.env.git.bertrand_git import (
     BERTRAND_ENV,
     PROJECT_ENV,
@@ -20,15 +21,6 @@ from bertrand.env.git.bertrand_git import (
     WORKTREE_MOUNT,
 )
 from bertrand.env.kube.api.spec import VolumeSpec
-from bertrand.env.kube.ceph.volume import RepoVolume
-from bertrand.env.kube.workload_refs import (
-    WORKLOAD_ID_LABEL,
-    WORKLOAD_LABEL,
-    WORKLOAD_LABEL_VALUE,
-    WORKLOAD_REPO_LABEL,
-    WORKLOAD_WORKTREE_ID_LABEL,
-    WORKLOAD_WORKTREE_LABEL,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -38,13 +30,18 @@ if TYPE_CHECKING:
         PodTemplateSpec,
         VolumeMountManifest,
     )
-    from bertrand.env.kube.capability.device import DRAResourceClaimIntent
 
 WORKLOAD_REPOSITORY_VOLUME = "bertrand-repository"
 WORKLOAD_BOOTSTRAP_COMMAND = ("/bin/sh", "-c")
 WORKLOAD_BOOTSTRAP_ARG0 = "bertrand-workload-bootstrap"
 WORKLOAD_NAME_PREFIX = "bertrand-workload-"
 WORKLOAD_NAME_HASH_CHARS = 44
+WORKLOAD_LABEL = "bertrand.dev/workload"
+WORKLOAD_LABEL_VALUE = "v1"
+WORKLOAD_ID_LABEL = "bertrand.dev/workload-id"
+WORKLOAD_REPO_LABEL = "bertrand.dev/workload-repo"
+WORKLOAD_WORKTREE_LABEL = "bertrand.dev/workload-worktree"
+WORKLOAD_WORKTREE_ID_LABEL = "bertrand.dev/workload-worktree-id"
 
 
 @dataclass(frozen=True)
@@ -166,53 +163,6 @@ class WorkloadIdentity:
         labels.update(self.selector)
         return MappingProxyType(labels)
 
-
-@dataclass(frozen=True)
-class WorkloadRepository:
-    """Repository volume intent for native workload pods.
-
-    Parameters
-    ----------
-    repo_id : str
-        Stable repository UUID used to derive the managed Ceph PVC claim name.
-    worktree_id : str
-        Stable UUID for this concrete checkout instance.
-    worktree : str | PurePosixPath
-        Relative worktree path inside the repository volume. Use ``"."`` for the
-        repository root.
-    read_only : bool, optional
-        Whether to mount the repository volume read-only.
-    """
-
-    repo_id: str
-    worktree_id: str
-    worktree: str | PurePosixPath
-    read_only: bool = False
-
-    def __post_init__(self) -> None:
-        """Validate and normalize repository runtime intent.
-
-        Raises
-        ------
-        ValueError
-            If `repo_id` is not a UUID or `worktree` is absolute or escapes the
-            repository.
-        """
-        try:
-            repo_id = UUID(self.repo_id).hex
-        except (TypeError, ValueError) as err:
-            msg = f"invalid workload repository id: {self.repo_id!r}"
-            raise ValueError(msg) from err
-        try:
-            worktree_id = UUID(self.worktree_id).hex
-        except (TypeError, ValueError) as err:
-            msg = f"invalid workload worktree id: {self.worktree_id!r}"
-            raise ValueError(msg) from err
-
-        object.__setattr__(self, "repo_id", repo_id)
-        object.__setattr__(self, "worktree_id", worktree_id)
-        object.__setattr__(self, "worktree", _worktree_path(self.worktree))
-
     @property
     def claim_name(self) -> str:
         """Return the managed repository PVC name.
@@ -222,21 +172,11 @@ class WorkloadRepository:
         str
             Deterministic PVC claim name for this repository.
         """
-        return RepoVolume.claim_name(self.repo_id)
-
-    @property
-    def worktree_env(self) -> str:
-        """Return the relative worktree value for `BERTRAND_WORKTREE`.
-
-        Returns
-        -------
-        str
-            ``"."`` for root worktrees, otherwise the POSIX relative path.
-        """
-        worktree = cast("PurePosixPath", self.worktree)
-        if not worktree.parts:
-            return "."
-        return worktree.as_posix()
+        h = hashlib.sha256()
+        encoded = self.repo_id.encode("utf-8")
+        h.update(len(encoded).to_bytes(8, "big"))
+        h.update(encoded)
+        return f"bertrand-repo-{h.hexdigest()}"
 
     @property
     def target_path(self) -> PurePosixPath:
@@ -263,11 +203,12 @@ class WorkloadPod:
         Base pod template to render. The template may contain multiple containers.
     primary_container : str
         Container name that receives command overrides.
-    repository : WorkloadRepository
-        Managed repository volume and selected worktree intent.
-    resource_claim_templates : tuple[DRAResourceClaimIntent, ...], optional
-        DRA ResourceClaimTemplate intents that must be converged with this
-        workload.
+    identity : WorkloadIdentity
+        Stable workload identity and selected repository worktree.
+    repository_read_only : bool, optional
+        Whether to mount the repository volume read-only.
+    resource_claim_capabilities_by_container : Mapping[str, tuple[str, ...]], optional
+        DRA capability IDs keyed by container for ResourceClaimTemplate convergence.
     runtime_env : Mapping[str, str], optional
         Additional invariant runtime environment variables to apply to every
         container.
@@ -275,8 +216,11 @@ class WorkloadPod:
 
     template: PodTemplateSpec
     primary_container: str
-    repository: WorkloadRepository
-    resource_claim_templates: tuple[DRAResourceClaimIntent, ...] = ()
+    identity: WorkloadIdentity
+    repository_read_only: bool = False
+    resource_claim_capabilities_by_container: Mapping[str, tuple[str, ...]] = (
+        MappingProxyType({})
+    )
     runtime_env: Mapping[str, str] = MappingProxyType({})
 
     def __post_init__(self) -> None:
@@ -309,25 +253,20 @@ class WorkloadPod:
         object.__setattr__(self, "primary_container", primary)
         object.__setattr__(
             self,
-            "resource_claim_templates",
-            tuple(self.resource_claim_templates),
+            "resource_claim_capabilities_by_container",
+            MappingProxyType(
+                {
+                    _check_kube_name(container): tuple(
+                        _check_kube_name(item) for item in capabilities
+                    )
+                    for container, capabilities in sorted(
+                        self.resource_claim_capabilities_by_container.items()
+                    )
+                    if capabilities
+                }
+            ),
         )
         object.__setattr__(self, "runtime_env", _runtime_env(self.runtime_env))
-
-    @property
-    def identity(self) -> WorkloadIdentity:
-        """Return this workload's stable Kubernetes identity.
-
-        Returns
-        -------
-        WorkloadIdentity
-            Identity derived from the managed repository and selected worktree.
-        """
-        return WorkloadIdentity(
-            repo_id=self.repository.repo_id,
-            worktree_id=self.repository.worktree_id,
-            worktree=self.repository.worktree_env,
-        )
 
     @property
     def name(self) -> str:
@@ -404,10 +343,10 @@ class WorkloadPod:
         repository_mount: VolumeMountManifest = {
             "name": WORKLOAD_REPOSITORY_VOLUME,
             "mountPath": PROJECT_MOUNT.as_posix(),
-            "readOnly": self.repository.read_only,
+            "readOnly": self.repository_read_only,
         }
-        repository_env = _repository_env(self.repository, self.runtime_env)
-        bootstrap = _bootstrap_script(self.repository)
+        repository_env = _repository_env(self.identity, self.runtime_env)
+        bootstrap = _bootstrap_script(self.identity)
         for container in self.template.containers:
             if container.name.strip() == self.primary_container:
                 container_args = tuple(container.args or ())
@@ -438,7 +377,7 @@ class WorkloadPod:
             labels=_with_workload_labels(self.template.labels, self.labels),
             volumes=_repository_volumes(
                 tuple(self.template.volumes),
-                self.repository.claim_name,
+                self.identity.claim_name,
             ),
         )
 
@@ -504,15 +443,15 @@ def _runtime_env(env: Mapping[str, str]) -> MappingProxyType[str, str]:
 
 
 def _repository_env(
-    repository: WorkloadRepository,
+    identity: WorkloadIdentity,
     runtime_env: Mapping[str, str],
 ) -> dict[str, str]:
     env = {
         BERTRAND_ENV: "1",
-        REPO_ID_ENV: repository.repo_id,
-        WORKTREE_ID_ENV: repository.worktree_id,
+        REPO_ID_ENV: identity.repo_id,
+        WORKTREE_ID_ENV: identity.worktree_id,
         PROJECT_ENV: PROJECT_MOUNT.as_posix(),
-        WORKTREE_ENV: repository.worktree_env,
+        WORKTREE_ENV: identity.worktree_env,
     }
     for key, value in runtime_env.items():
         if key in env and env[key] != value:
@@ -643,10 +582,10 @@ def _label_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
-def _bootstrap_script(repository: WorkloadRepository) -> str:
+def _bootstrap_script(identity: WorkloadIdentity) -> str:
     repo_root = shlex.quote(PROJECT_MOUNT.as_posix())
-    worktree = shlex.quote(repository.worktree_env)
-    target = shlex.quote(repository.target_path.as_posix())
+    worktree = shlex.quote(identity.worktree_env)
+    target = shlex.quote(identity.target_path.as_posix())
     worktree_mount = shlex.quote(WORKTREE_MOUNT.as_posix())
     return "\n".join(
         (

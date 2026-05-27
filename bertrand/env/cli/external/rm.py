@@ -51,11 +51,16 @@ async def bertrand_rm(
         msg = "rm timeout must be positive"
         raise TimeoutError(msg)
 
-    async with _project_command_context(target, timeout=timeout) as context:
+    async with _project_command_context(target, timeout=timeout) as (
+        kube,
+        _repo,
+        _worktree,
+        config,
+    ):
         result = await remove_project_workload(
-            context.kube,
-            config=context.config,
-            repo_id=context.config.repo.repo_id,
+            kube,
+            config=config,
+            repo_id=config.repo.repo_id,
             grace_period_seconds=grace_period_seconds,
             timeout=timeout,
         )

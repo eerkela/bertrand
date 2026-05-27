@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,20 +19,12 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 
-@dataclass(frozen=True)
-class _ProjectCommandContext:
-    kube: Kube
-    repo: GitRepository
-    worktree: Path
-    config: Config
-
-
 @asynccontextmanager
 async def _project_command_context(
     target: Path,
     *,
     timeout: float,
-) -> AsyncIterator[_ProjectCommandContext]:
+) -> AsyncIterator[tuple[Kube, GitRepository, Path, Config]]:
     with await Kube.host(timeout=timeout) as kube:
         repo, worktree = await resolve_project_worktree(
             kube,
@@ -42,12 +33,7 @@ async def _project_command_context(
         )
         config = await Config.load(worktree, kube=kube, repo=repo, timeout=timeout)
         async with config:
-            yield _ProjectCommandContext(
-                kube=kube,
-                repo=repo,
-                worktree=worktree,
-                config=config,
-            )
+            yield kube, repo, worktree, config
         await prune_repository_mounts_quietly(kube, timeout=timeout)
 
 
