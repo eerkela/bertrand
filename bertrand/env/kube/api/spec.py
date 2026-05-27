@@ -317,45 +317,13 @@ class VolumeSpec:
     ----------
     name : str
         Pod volume name.
-    empty_dir_source : bool, optional
-        Whether the volume is backed by an `emptyDir` source.
-    empty_dir_medium : str | None, optional
-        Storage medium for `emptyDir` volumes, such as `"Memory"`.
-    empty_dir_size_limit : str | None, optional
-        Kubernetes quantity limiting the `emptyDir` volume size.
-    config_map_name : str | None, optional
-        ConfigMap name for ConfigMap-backed volumes.
-    config_map_optional : bool | None, optional
-        Whether the ConfigMap reference is optional.
-    secret_name : str | None, optional
-        Secret name for Secret-backed volumes.
-    secret_optional : bool | None, optional
-        Whether the Secret reference is optional.
-    secret_default_mode : int | None, optional
-        Default POSIX mode for Secret-backed volume files.
-    secret_items : Collection[Mapping[str, object]], optional
-        Optional Secret key-to-path projections.
-    persistent_volume_claim : str | None, optional
-        PersistentVolumeClaim name for PVC-backed volumes.
-    host_path_path : str | None, optional
-        Host path for hostPath-backed volumes.
-    host_path_type : str | None, optional
-        Optional Kubernetes hostPath type constraint.
+    source : Mapping[str, object]
+        Single Kubernetes volume source fragment, such as ``{"emptyDir": {}}`` or
+        ``{"persistentVolumeClaim": {"claimName": "repo"}}``.
     """
 
     name: str
-    empty_dir_source: bool = False
-    empty_dir_medium: str | None = None
-    empty_dir_size_limit: str | None = None
-    config_map_name: str | None = None
-    config_map_optional: bool | None = None
-    secret_name: str | None = None
-    secret_optional: bool | None = None
-    secret_default_mode: int | None = None
-    secret_items: Collection[Mapping[str, object]] = ()
-    persistent_volume_claim: str | None = None
-    host_path_path: str | None = None
-    host_path_type: str | None = None
+    source: Mapping[str, object]
 
     @classmethod
     def empty_dir(
@@ -381,12 +349,12 @@ class VolumeSpec:
         Self
             Volume specification.
         """
-        return cls(
-            name=name,
-            empty_dir_source=True,
-            empty_dir_medium=medium,
-            empty_dir_size_limit=size_limit,
-        )
+        empty_dir: dict[str, object] = {}
+        if medium is not None:
+            empty_dir["medium"] = medium
+        if size_limit is not None:
+            empty_dir["sizeLimit"] = size_limit
+        return cls(name=name, source={"emptyDir": empty_dir})
 
     @classmethod
     def config_map(
@@ -412,11 +380,13 @@ class VolumeSpec:
         Self
             Volume specification.
         """
-        return cls(
-            name=name,
-            config_map_name=config_map_name,
-            config_map_optional=optional,
+        config_map = _copy_manifest(
+            {
+                "name": config_map_name,
+                "optional": optional,
+            }
         )
+        return cls(name=name, source={"configMap": config_map})
 
     @classmethod
     def secret(
@@ -449,13 +419,16 @@ class VolumeSpec:
         Self
             Volume specification.
         """
-        return cls(
-            name=name,
-            secret_name=secret_name,
-            secret_optional=optional,
-            secret_default_mode=default_mode,
-            secret_items=tuple(items),
+        secret = _copy_manifest(
+            {
+                "secretName": secret_name,
+                "optional": optional,
+                "defaultMode": default_mode,
+            }
         )
+        if items:
+            secret["items"] = [_secret_volume_item_manifest(item) for item in items]
+        return cls(name=name, source={"secret": secret})
 
     @classmethod
     def pvc(cls, name: str, *, claim_name: str) -> Self:
@@ -473,7 +446,10 @@ class VolumeSpec:
         Self
             Volume specification.
         """
-        return cls(name=name, persistent_volume_claim=claim_name)
+        return cls(
+            name=name,
+            source={"persistentVolumeClaim": {"claimName": claim_name}},
+        )
 
     @classmethod
     def host_path(
@@ -499,7 +475,13 @@ class VolumeSpec:
         Self
             Volume specification.
         """
-        return cls(name=name, host_path_path=str(path), host_path_type=host_path_type)
+        host_path = _copy_manifest(
+            {
+                "path": str(path),
+                "type": host_path_type,
+            }
+        )
+        return cls(name=name, source={"hostPath": host_path})
 
     def _manifest(self) -> dict[str, object]:
         """Render this volume as a Kubernetes manifest fragment.
@@ -512,59 +494,16 @@ class VolumeSpec:
         Raises
         ------
         ValueError
-            If the volume source or Secret item projection is invalid.
+            If the volume source is invalid.
         """
-        empty_dir_source = (
-            self.empty_dir_source
-            or self.empty_dir_medium is not None
-            or self.empty_dir_size_limit is not None
-        )
-        kinds = sum(
-            (
-                empty_dir_source,
-                self.config_map_name is not None,
-                self.secret_name is not None,
-                self.persistent_volume_claim is not None,
-                self.host_path_path is not None,
-            )
-        )
-        if kinds != 1:
+        source = _copy_manifest(self.source)
+        if len(source) != 1:
             msg = "Kubernetes volume must define exactly one source"
             raise ValueError(msg)
 
         payload: dict[str, object] = {"name": self.name}
-        if empty_dir_source:
-            empty_dir: dict[str, object] = {}
-            if self.empty_dir_medium is not None:
-                empty_dir["medium"] = self.empty_dir_medium
-            if self.empty_dir_size_limit is not None:
-                empty_dir["sizeLimit"] = self.empty_dir_size_limit
-            payload["emptyDir"] = empty_dir
-        elif self.config_map_name is not None:
-            config_map: dict[str, object] = {"name": self.config_map_name}
-            if self.config_map_optional is not None:
-                config_map["optional"] = self.config_map_optional
-            payload["configMap"] = config_map
-        elif self.secret_name is not None:
-            secret: dict[str, object] = {"secretName": self.secret_name}
-            if self.secret_optional is not None:
-                secret["optional"] = self.secret_optional
-            if self.secret_default_mode is not None:
-                secret["defaultMode"] = self.secret_default_mode
-            if self.secret_items:
-                secret["items"] = [
-                    _secret_volume_item_manifest(item) for item in self.secret_items
-                ]
-            payload["secret"] = secret
-        elif self.persistent_volume_claim is not None:
-            payload["persistentVolumeClaim"] = {
-                "claimName": self.persistent_volume_claim
-            }
-        elif self.host_path_path is not None:
-            host_path: dict[str, object] = {"path": self.host_path_path}
-            if self.host_path_type is not None:
-                host_path["type"] = self.host_path_type
-            payload["hostPath"] = host_path
+        key, value = next(iter(source.items()))
+        payload[key] = dict(value) if isinstance(value, Mapping) else value
         return payload
 
 
@@ -609,9 +548,7 @@ def _env_manifest(fragment: Mapping[str, object]) -> dict[str, object]:
     raw_config_map = value_from.get("configMapKeyRef")
     config_map = _mapping_or_none(raw_config_map)
     if raw_config_map is not None and (
-        config_map is None
-        or not config_map.get("name")
-        or not config_map.get("key")
+        config_map is None or not config_map.get("name") or not config_map.get("key")
     ):
         msg = "ConfigMap environment variable source requires name and key"
         raise ValueError(msg)

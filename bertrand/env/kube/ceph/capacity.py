@@ -555,6 +555,54 @@ class CephStorageStateStatus(BaseModel):
     nodes: dict[str, CephStorageNodeReport] = Field(default_factory=dict)
     osds: dict[str, CephStorageOSD] = Field(default_factory=dict)
 
+    def with_policy(
+        self,
+        policy: CephStoragePolicyStatus | None,
+    ) -> CephStorageStateStatus:
+        """Return a copy with the policy summary replaced.
+
+        Returns
+        -------
+        CephStorageStateStatus
+            Updated storage-state status.
+        """
+        return self.model_copy(update={"policy": policy})
+
+    def with_reservation(
+        self,
+        entry: CephStorageReservation,
+    ) -> CephStorageStateStatus:
+        """Return a copy with one reservation entry replaced.
+
+        Returns
+        -------
+        CephStorageStateStatus
+            Updated storage-state status.
+        """
+        return self.model_copy(
+            update={"reservations": {**self.reservations, entry.name: entry}},
+        )
+
+    def with_osd(self, entry: CephStorageOSD) -> CephStorageStateStatus:
+        """Return a copy with one OSD entry replaced.
+
+        Returns
+        -------
+        CephStorageStateStatus
+            Updated storage-state status.
+        """
+        return self.model_copy(update={"osds": {**self.osds, entry.name: entry}})
+
+    def with_node(self, entry: CephStorageNodeReport) -> CephStorageStateStatus:
+        """Return a copy with one node report replaced.
+
+        Returns
+        -------
+        CephStorageStateStatus
+            Updated storage-state status.
+        """
+        return self.model_copy(update={"nodes": {**self.nodes, entry.name: entry}})
+
 
 class CephStorageStateRecord(BaseModel):
     """Validated `CephStorageState` custom-resource payload."""
@@ -639,14 +687,7 @@ async def ensure_ceph_capacity_crds(kube: Kube, *, timeout: float) -> None:
     timeout : float
         Maximum convergence budget in seconds.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or CRD establishment exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "Ceph capacity CRD timeout must be non-negative"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
         timeout,
         message="Ceph capacity CRD timeout must be non-negative",
@@ -721,6 +762,21 @@ async def read_storage_state(kube: Kube, *, timeout: float) -> CephStorageStateR
     return record
 
 
+async def _patch_storage_state(
+    kube: Kube,
+    *,
+    status: CephStorageStateStatus,
+    timeout: float,
+) -> CephStorageStateRecord:
+    return await STORAGE_STATE_RESOURCE.patch_status(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
+        status=status,
+        timeout=timeout,
+    )
+
+
 async def upsert_storage_reservation(
     kube: Kube,
     *,
@@ -759,14 +815,9 @@ async def upsert_storage_reservation(
         observed_free_bytes=0,
         last_error="",
     )
-    status = state.status.model_copy(
-        update={"reservations": {**state.status.reservations, name: entry}},
-    )
-    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
+    refreshed = await _patch_storage_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        status=status,
+        status=state.status.with_reservation(entry),
         timeout=timeout,
     )
     return refreshed.status.reservations.get(name, entry)
@@ -790,18 +841,9 @@ async def patch_storage_reservation_status(
         {**reservation.model_dump(mode="python"), **dict(status)}
     )
     state = await read_storage_state(kube, timeout=timeout)
-    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
+    refreshed = await _patch_storage_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        status=state.status.model_copy(
-            update={
-                "reservations": {
-                    **state.status.reservations,
-                    reservation.name: patched,
-                },
-            },
-        ),
+        status=state.status.with_reservation(patched),
         timeout=timeout,
     )
     return refreshed.status.reservations.get(reservation.name, patched)
@@ -1024,13 +1066,9 @@ async def upsert_storage_osd(
             "last_error": "",
         }
     )
-    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
+    refreshed = await _patch_storage_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        status=state.status.model_copy(
-            update={"osds": {**state.status.osds, name: entry}},
-        ),
+        status=state.status.with_osd(entry),
         timeout=timeout,
     )
     return refreshed.status.osds.get(name, entry)
@@ -1064,13 +1102,9 @@ async def patch_storage_osd_status(
         {**osd.model_dump(mode="python"), **payload}
     )
     state = await read_storage_state(kube, timeout=timeout)
-    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
+    refreshed = await _patch_storage_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        status=state.status.model_copy(
-            update={"osds": {**state.status.osds, osd.name: patched}},
-        ),
+        status=state.status.with_osd(patched),
         timeout=timeout,
     )
     return refreshed.status.osds.get(osd.name, patched)
@@ -1104,13 +1138,9 @@ async def upsert_storage_node_report(
     entry = CephStorageNodeReport.model_validate(
         {"name": name, "node_name": node_name, "host_id": host_id, **dict(status)}
     )
-    await STORAGE_STATE_RESOURCE.patch_status(
+    await _patch_storage_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        status=state.status.model_copy(
-            update={"nodes": {**state.status.nodes, name: entry}},
-        ),
+        status=state.status.with_node(entry),
         timeout=timeout,
     )
 

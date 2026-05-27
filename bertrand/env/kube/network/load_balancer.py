@@ -91,21 +91,17 @@ _CONFIGURATION_STATE_RESOURCE: CustomObjectResource[CustomObject] = (
         plural="configurationstates",
     )
 )
-_SERVICE_L2_STATUS_RESOURCE: CustomObjectResource[CustomObject] = (
-    CustomObjectResource(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA1,
-        kind="ServiceL2Status",
-        plural="servicel2statuses",
-    )
+_SERVICE_L2_STATUS_RESOURCE: CustomObjectResource[CustomObject] = CustomObjectResource(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="ServiceL2Status",
+    plural="servicel2statuses",
 )
-_SERVICE_BGP_STATUS_RESOURCE: CustomObjectResource[CustomObject] = (
-    CustomObjectResource(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA1,
-        kind="ServiceBGPStatus",
-        plural="servicebgpstatuses",
-    )
+_SERVICE_BGP_STATUS_RESOURCE: CustomObjectResource[CustomObject] = CustomObjectResource(
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="ServiceBGPStatus",
+    plural="servicebgpstatuses",
 )
 
 

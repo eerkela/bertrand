@@ -465,7 +465,7 @@ def _assert_managed_gateway_resource(
     if all(labels.get(key) == value for key, value in expected.items()):
         return
     location = resource.name
-    if resource.scope == "namespaced":
+    if resource.namespace:
         location = f"{resource.namespace}/{resource.name}"
     msg = f"{kind} {location} exists but is not managed by Bertrand"
     raise OSError(msg)

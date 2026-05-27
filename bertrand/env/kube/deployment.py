@@ -8,17 +8,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 import kubernetes
 
-from bertrand.env.git import until
-
-from .api._helpers import (
-    DeletionPropagationPolicy,
-    _delete_options,
-    _validate_delete_status,
-)
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
-
-DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -418,49 +409,6 @@ class Deployment(
             and self.available_replicas >= minimum
         )
 
-    async def delete(
-        self,
-        kube: Kube,
-        *,
-        timeout: float,
-        propagation_policy: DeletionPropagationPolicy = "Background",
-        grace_period_seconds: int | None = None,
-    ) -> None:
-        """Delete this Deployment from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        propagation_policy : {"Background", "Foreground", "Orphan"}, optional
-            Kubernetes deletion propagation policy.
-        grace_period_seconds : int | None, optional
-            Optional Kubernetes deletion grace period.
-
-        """
-        namespace, name = self._require_namespace_name("delete Deployment")
-        delete_options = _delete_options(
-            kind="Deployment",
-            propagation_policy=propagation_policy,
-            grace_period_seconds=grace_period_seconds,
-        )
-        payload = await kube.run(
-            lambda request_timeout: kube.apps.delete_namespaced_deployment(
-                name=name,
-                namespace=namespace,
-                body=delete_options,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete Deployment {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload,
-            label=self._object_label(name=name, namespace=namespace),
-        )
-
     async def wait_available(
         self,
         kube: Kube,
@@ -488,8 +436,6 @@ class Deployment(
         ------
         ValueError
             If `minimum` is less than one.
-        TimeoutError
-            If the Deployment does not become available before `timeout`.
         """
         if minimum < 1:
             msg = "minimum available Deployment replicas must be positive"
@@ -497,33 +443,20 @@ class Deployment(
         namespace, name = self._require_namespace_name(
             "wait for Deployment availability"
         )
-        live: Self = self
-
-        async def available(remaining: float) -> Self:
-            nonlocal live
-            refreshed = await live.refresh(kube, timeout=remaining)
-            if refreshed is None:
-                msg = (
-                    f"Deployment {namespace}/{name} disappeared while waiting for "
-                    "availability"
-                )
-                raise OSError(msg)
-            if refreshed.available_replicas >= minimum:
-                return refreshed
-            live = refreshed
-            msg = f"Deployment {namespace}/{name} is not available yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                available,
-                timeout=timeout,
-                interval=DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS,
-                action=f"waiting for Deployment {namespace}/{name} availability",
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for Deployment {namespace}/{name} availability"
-            raise TimeoutError(msg) from err
+        return await self._wait_until(
+            kube,
+            timeout=timeout,
+            predicate=lambda live: live.available_replicas >= minimum,
+            action=f"waiting for Deployment {namespace}/{name} availability",
+            pending_message=f"Deployment {namespace}/{name} is not available yet",
+            missing_message=(
+                f"Deployment {namespace}/{name} disappeared while waiting for "
+                "availability"
+            ),
+            timeout_message=(
+                f"timed out waiting for Deployment {namespace}/{name} availability"
+            ),
+        )
 
     async def wait_rollout(
         self,
@@ -553,47 +486,34 @@ class Deployment(
         ------
         ValueError
             If `minimum` is less than one.
-        TimeoutError
-            If the Deployment rollout does not complete before `timeout`.
         """
         if minimum < 1:
             msg = "minimum rolled out Deployment replicas must be positive"
             raise ValueError(msg)
         namespace, name = self._require_namespace_name("wait for Deployment rollout")
         target_generation = self.generation
-        live: Self = self
-
-        async def rolled_out(remaining: float) -> Self:
-            nonlocal live
-            refreshed = await live.refresh(kube, timeout=remaining)
-            if refreshed is None:
-                msg = (
-                    f"Deployment {namespace}/{name} disappeared while waiting for "
-                    "rollout"
+        return await self._wait_until(
+            kube,
+            timeout=timeout,
+            predicate=lambda live: (
+                (
+                    target_generation <= 0
+                    or live.observed_generation >= target_generation
                 )
-                raise OSError(msg)
-            generation_observed = (
-                target_generation <= 0
-                or refreshed.observed_generation >= target_generation
-            )
-            replicas_updated = refreshed.updated_replicas >= minimum
-            replicas_available = refreshed.available_replicas >= minimum
-            if generation_observed and replicas_updated and replicas_available:
-                return refreshed
-            live = refreshed
-            msg = f"Deployment {namespace}/{name} rollout is not complete yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                rolled_out,
-                timeout=timeout,
-                interval=DEPLOYMENT_WAIT_POLL_INTERVAL_SECONDS,
-                action=f"waiting for Deployment {namespace}/{name} rollout",
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for Deployment {namespace}/{name} rollout"
-            raise TimeoutError(msg) from err
+                and live.updated_replicas >= minimum
+                and live.available_replicas >= minimum
+            ),
+            action=f"waiting for Deployment {namespace}/{name} rollout",
+            pending_message=(
+                f"Deployment {namespace}/{name} rollout is not complete yet"
+            ),
+            missing_message=(
+                f"Deployment {namespace}/{name} disappeared while waiting for rollout"
+            ),
+            timeout_message=(
+                f"timed out waiting for Deployment {namespace}/{name} rollout"
+            ),
+        )
 
     async def scale(self, kube: Kube, *, replicas: int, timeout: float) -> Self:
         """Patch this Deployment's desired replica count.

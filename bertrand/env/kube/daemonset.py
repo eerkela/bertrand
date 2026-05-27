@@ -8,12 +8,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 import kubernetes
 
-from bertrand.env.git import until
-
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
-
-DAEMONSET_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -335,8 +331,6 @@ class DaemonSet(
         ------
         ValueError
             If `minimum` is negative.
-        TimeoutError
-            If the DaemonSet does not become available before `timeout`.
         """
         if minimum < 0:
             msg = "DaemonSet availability minimum cannot be negative"
@@ -344,33 +338,20 @@ class DaemonSet(
         namespace, name = self._require_namespace_name(
             "wait for DaemonSet availability"
         )
-        current: Self = self
-
-        async def available(remaining: float) -> Self:
-            nonlocal current
-            refreshed = await current.refresh(kube, timeout=remaining)
-            if refreshed is None:
-                msg = (
-                    f"DaemonSet {namespace}/{name} disappeared while waiting for "
-                    "availability"
-                )
-                raise OSError(msg)
-            if refreshed.has_available_pods(minimum):
-                return refreshed
-            current = refreshed
-            msg = f"DaemonSet {namespace}/{name} is not available yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                available,
-                timeout=timeout,
-                interval=DAEMONSET_WAIT_POLL_INTERVAL_SECONDS,
-                action=f"waiting for DaemonSet {namespace}/{name} availability",
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for DaemonSet {namespace}/{name} availability"
-            raise TimeoutError(msg) from err
+        return await self._wait_until(
+            kube,
+            timeout=timeout,
+            predicate=lambda live: live.has_available_pods(minimum),
+            action=f"waiting for DaemonSet {namespace}/{name} availability",
+            pending_message=f"DaemonSet {namespace}/{name} is not available yet",
+            missing_message=(
+                f"DaemonSet {namespace}/{name} disappeared while waiting for "
+                "availability"
+            ),
+            timeout_message=(
+                f"timed out waiting for DaemonSet {namespace}/{name} availability"
+            ),
+        )
 
     async def wait_rollout(
         self,
@@ -399,41 +380,28 @@ class DaemonSet(
         ------
         ValueError
             If `minimum` is negative.
-        TimeoutError
-            If the DaemonSet does not complete rollout before `timeout`.
         """
         if minimum < 0:
             msg = "DaemonSet rollout minimum cannot be negative"
             raise ValueError(msg)
         namespace, name = self._require_namespace_name("wait for DaemonSet rollout")
         target_generation = self.generation
-        current: Self = self
-
-        async def rolled_out(remaining: float) -> Self:
-            nonlocal current
-            refreshed = await current.refresh(kube, timeout=remaining)
-            if refreshed is None:
-                msg = (
-                    f"DaemonSet {namespace}/{name} disappeared while waiting for "
-                    "rollout"
+        return await self._wait_until(
+            kube,
+            timeout=timeout,
+            predicate=lambda live: (
+                (
+                    target_generation <= 0
+                    or live.observed_generation >= target_generation
                 )
-                raise OSError(msg)
-            if (
-                target_generation <= 0
-                or refreshed.observed_generation >= target_generation
-            ) and refreshed.rollout_ready(minimum):
-                return refreshed
-            current = refreshed
-            msg = f"DaemonSet {namespace}/{name} rollout is not complete yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                rolled_out,
-                timeout=timeout,
-                interval=DAEMONSET_WAIT_POLL_INTERVAL_SECONDS,
-                action=f"waiting for DaemonSet {namespace}/{name} rollout",
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for DaemonSet {namespace}/{name} rollout"
-            raise TimeoutError(msg) from err
+                and live.rollout_ready(minimum)
+            ),
+            action=f"waiting for DaemonSet {namespace}/{name} rollout",
+            pending_message=f"DaemonSet {namespace}/{name} rollout is not complete yet",
+            missing_message=(
+                f"DaemonSet {namespace}/{name} disappeared while waiting for rollout"
+            ),
+            timeout_message=(
+                f"timed out waiting for DaemonSet {namespace}/{name} rollout"
+            ),
+        )

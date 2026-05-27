@@ -628,9 +628,13 @@ def _isolated_ingress_rules(
     *,
     route_plan: _HTTPRoutePlan | None,
 ) -> tuple[dict[str, object], ...]:
-    plan = route_plan if route_plan is not None else _workload_http_route_plan(
-        network,
-        workload,
+    plan = (
+        route_plan
+        if route_plan is not None
+        else _workload_http_route_plan(
+            network,
+            workload,
+        )
     )
     allowed_ports = {service_port for _route, service_port in plan.values()}
     if not allowed_ports:

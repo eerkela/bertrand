@@ -12,7 +12,6 @@ from kubernetes.stream import stream as kubernetes_stream
 
 from bertrand.env.git import Deadline
 
-from .api._helpers import _delete_options, _validate_delete_status
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -709,46 +708,4 @@ class Pod(
             ),
             timeout=timeout,
             context=f"failed to evict pod {namespace}/{name}",
-        )
-
-    async def delete(
-        self,
-        kube: Kube,
-        *,
-        timeout: float,
-        grace_period_seconds: int | None = None,
-    ) -> None:
-        """Delete this pod from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-        grace_period_seconds : int | None, optional
-            Optional Kubernetes termination grace period.  When provided,
-            kubelet sends normal termination signals and forcefully kills the
-            container after this many seconds if it is still running.
-
-        """
-        namespace, name = self._require_namespace_name("delete pod")
-        delete_options = _delete_options(
-            kind="Pod",
-            grace_period_seconds=grace_period_seconds,
-        )
-
-        payload = await kube.run(
-            lambda request_timeout: kube.core.delete_namespaced_pod(
-                name=name,
-                namespace=namespace,
-                body=delete_options,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete Pod {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload,
-            label=self._object_label(name=name, namespace=namespace),
         )

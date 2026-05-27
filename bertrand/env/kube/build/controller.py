@@ -571,9 +571,7 @@ async def ensure_buildkit_build_controller(
     if timeout <= 0:
         msg = "BuildKit build controller timeout must be non-negative"
         raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
-    )
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     await ServiceAccount.upsert(
         kube,

@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
 
+from bertrand.env.git import until
+
 from ._helpers import (
+    DeletionPropagationPolicy,
+    _delete_options,
     _is_conflict,
     _label_selector,
     _normalized_namespaces,
@@ -24,6 +28,7 @@ if TYPE_CHECKING:
     from .client import Kube
 
 type ResourceScope = Literal["cluster", "namespaced"]
+RESOURCE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -338,6 +343,8 @@ class BuiltinResource[PayloadT]:
         name: str,
         timeout: float,
         namespace: str | None = None,
+        propagation_policy: DeletionPropagationPolicy | None = None,
+        grace_period_seconds: int | None = None,
     ) -> None:
         """Delete one resource by name.
 
@@ -351,18 +358,30 @@ class BuiltinResource[PayloadT]:
             Maximum request budget in seconds.
         namespace : str | None, optional
             Namespace for namespaced resources.
+        propagation_policy : {"Background", "Foreground", "Orphan"} | None, optional
+            Optional Kubernetes deletion propagation policy.
+        grace_period_seconds : int | None, optional
+            Optional Kubernetes deletion grace period.
         """
         if not self.can_delete:
             msg = f"{self.kind} does not define a delete endpoint"
             raise NotImplementedError(msg)
         namespace = self._single_namespace(namespace, action="delete")
         label = self._object_label(name=name, namespace=namespace)
+        delete_options = None
+        if propagation_policy is not None or grace_period_seconds is not None:
+            delete_options = _delete_options(
+                kind=self.kind,
+                propagation_policy=propagation_policy,
+                grace_period_seconds=grace_period_seconds,
+            )
         payload = await self._run(
             kube,
             lambda request_timeout: self._delete(
                 kube,
                 namespace,
                 name,
+                delete_options,
                 request_timeout,
             ),
             timeout=timeout,
@@ -611,12 +630,15 @@ class BuiltinResource[PayloadT]:
         kube: Kube,
         namespace: str | None,
         name: str,
+        delete_options: object | None,
         request_timeout: float | None,
     ) -> object:
         kwargs: dict[str, object] = {
             "name": name,
             "_request_timeout": request_timeout,
         }
+        if delete_options is not None:
+            kwargs["body"] = delete_options
         if self.scope == "namespaced":
             kwargs["namespace"] = self._required_namespace(namespace, action="delete")
         return self._method(kube, self._single_method("delete"))(**kwargs)
@@ -816,7 +838,14 @@ class BuiltinResourceObject[PayloadT]:
             timeout=timeout,
         )
 
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
+    async def delete(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        propagation_policy: DeletionPropagationPolicy | None = "Background",
+        grace_period_seconds: int | None = None,
+    ) -> None:
         """Delete this resource from the cluster.
 
         Parameters
@@ -825,11 +854,22 @@ class BuiltinResourceObject[PayloadT]:
             Active Kubernetes API context.
         timeout : float
             Maximum request budget in seconds.
+        propagation_policy : {"Background", "Foreground", "Orphan"} | None, optional
+            Optional Kubernetes deletion propagation policy. Defaults to
+            ``"Background"``.
+        grace_period_seconds : int | None, optional
+            Optional Kubernetes deletion grace period.
         """
         resource = type(self).resource
         if resource.scope == "cluster":
             name = _resource_name(self, f"delete {type(self).__name__}")
-            await resource.delete_by_name(kube, name=name, timeout=timeout)
+            await resource.delete_by_name(
+                kube,
+                name=name,
+                timeout=timeout,
+                propagation_policy=propagation_policy,
+                grace_period_seconds=grace_period_seconds,
+            )
             return
         namespace, name = _resource_namespace_name(
             self,
@@ -840,6 +880,8 @@ class BuiltinResourceObject[PayloadT]:
             namespace=namespace,
             name=name,
             timeout=timeout,
+            propagation_policy=propagation_policy,
+            grace_period_seconds=grace_period_seconds,
         )
 
     async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
@@ -869,6 +911,42 @@ class BuiltinResourceObject[PayloadT]:
             timeout=timeout,
             refresh=lambda remaining: self.refresh(kube, timeout=remaining),
         )
+
+    async def _wait_until(
+        self,
+        kube: Kube,
+        *,
+        timeout: float,
+        predicate: Callable[[Self], bool],
+        action: str,
+        pending_message: str,
+        missing_message: str,
+        timeout_message: str,
+        check_current: bool = False,
+    ) -> Self:
+        current: Self = self
+
+        async def ready(remaining: float) -> Self:
+            nonlocal current
+            if check_current and predicate(current):
+                return current
+            refreshed = await current.refresh(kube, timeout=remaining)
+            if refreshed is None:
+                raise OSError(missing_message)
+            current = refreshed
+            if predicate(current):
+                return current
+            raise TimeoutError(pending_message)
+
+        try:
+            return await until(
+                ready,
+                timeout=timeout,
+                interval=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
+                action=action,
+            )
+        except TimeoutError as err:
+            raise TimeoutError(timeout_message) from err
 
 
 def _resource_name(resource: object, action: str) -> str:

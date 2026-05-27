@@ -17,7 +17,6 @@ from bertrand.env.git import Deadline, until
 from .api._helpers import (
     _is_conflict,
     _is_not_found,
-    _validate_delete_status,
 )
 from .api.metadata import KubeMetadata, NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
@@ -246,6 +245,7 @@ class PersistentVolumeClaim(
             expected=kubernetes.client.V1PersistentVolumeClaim,
             list_type=kubernetes.client.V1PersistentVolumeClaimList,
             can_create=True,
+            can_delete=True,
         )
     )
 
@@ -633,31 +633,6 @@ class PersistentVolumeClaim(
         msg = f"PVC {name!r} did not converge to requested size {requested!r}"
         raise OSError(msg)
 
-    async def delete(self, kube: Kube, *, timeout: float) -> None:
-        """Delete this PVC from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        """
-        namespace, name = self._require_namespace_name("delete PVC")
-        payload = await kube.run(
-            lambda request_timeout: kube.core.delete_namespaced_persistent_volume_claim(
-                name=name,
-                namespace=namespace,
-                body=kubernetes.client.V1DeleteOptions(),
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete PVC {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
-        )
-
     async def wait_bound(self, kube: Kube, *, timeout: float) -> Self:
         """Wait until this PVC reaches a bound state.
 
@@ -672,34 +647,17 @@ class PersistentVolumeClaim(
         -------
         PersistentVolumeClaim
             Fresh wrapper whose phase is `Bound`.
-
-        Raises
-        ------
-        TimeoutError
-            If the claim does not bind before `timeout`.
         """
         namespace, name = self._require_namespace_name("wait for PVC binding")
-
-        async def bound(remaining: float) -> Self:
-            live = await self.refresh(kube, timeout=remaining)
-            if live is None:
-                msg = f"PVC {name!r} disappeared before binding"
-                raise OSError(msg)
-            if live.is_bound:
-                return live
-            msg = f"PVC {namespace}/{name} is not bound yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                bound,
-                timeout=timeout,
-                interval=VOLUME_WAIT_POLL_INTERVAL_SECONDS,
-                action=f"waiting for PVC {namespace}/{name} binding",
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for PVC {namespace}/{name} binding"
-            raise TimeoutError(msg) from err
+        return await self._wait_until(
+            kube,
+            timeout=timeout,
+            predicate=lambda live: live.is_bound,
+            action=f"waiting for PVC {namespace}/{name} binding",
+            pending_message=f"PVC {namespace}/{name} is not bound yet",
+            missing_message=f"PVC {name!r} disappeared before binding",
+            timeout_message=f"timed out waiting for PVC {namespace}/{name} binding",
+        )
 
     @property
     def phase(self) -> str:

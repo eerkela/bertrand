@@ -9,11 +9,6 @@ import kubernetes
 
 from bertrand.env.git import Deadline, until
 
-from .api._helpers import (
-    DeletionPropagationPolicy,
-    _delete_options,
-    _validate_delete_status,
-)
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 from .pod import Pod
@@ -125,6 +120,7 @@ class Job(
         expected=kubernetes.client.V1Job,
         list_type=kubernetes.client.V1JobList,
         can_create=True,
+        can_delete=True,
         can_watch=True,
     )
 
@@ -410,48 +406,6 @@ class Job(
             namespaces=(namespace,),
             labels={"job-name": name},
             timeout=timeout,
-        )
-
-    async def delete(
-        self,
-        kube: Kube,
-        *,
-        timeout: float,
-        propagation_policy: DeletionPropagationPolicy = "Background",
-        grace_period_seconds: int | None = None,
-    ) -> None:
-        """Delete this Job from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        propagation_policy : {"Background", "Foreground", "Orphan"}, optional
-            Kubernetes deletion propagation policy.
-        grace_period_seconds : int | None, optional
-            Optional Kubernetes deletion grace period.
-
-        """
-        namespace, name = self._require_namespace_name("delete Job")
-        delete_options = _delete_options(
-            kind="Job",
-            propagation_policy=propagation_policy,
-            grace_period_seconds=grace_period_seconds,
-        )
-        payload = await kube.run(
-            lambda request_timeout: kube.batch.delete_namespaced_job(
-                name=name,
-                namespace=namespace,
-                body=delete_options,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to delete Job {namespace}/{name}",
-        )
-        _validate_delete_status(
-            payload, label=self._object_label(name=name, namespace=namespace)
         )
 
     async def wait_complete(self, kube: Kube, *, timeout: float) -> Self:

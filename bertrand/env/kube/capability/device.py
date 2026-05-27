@@ -300,9 +300,7 @@ async def ensure_dra_backend(
                     env=[
                         {
                             "name": DRA_NODE_ENV,
-                            "valueFrom": {
-                                "fieldRef": {"fieldPath": "spec.nodeName"}
-                            },
+                            "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
                         }
                     ],
                 )

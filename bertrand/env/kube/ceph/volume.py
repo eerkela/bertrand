@@ -386,21 +386,19 @@ async def ensure_repository_volume_claim(
     ------
     OSError
         If the selected storage class or resulting PVC is incompatible.
-    TimeoutError
-        If convergence does not complete within the timeout.
     ValueError
         If the repository ID or storage request is invalid.
     """
     repo_id = _check_uuid(repo_id)
-    if timeout <= 0:
-        msg = "timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository volume claim convergence timeout must be non-negative",
+    )
     size_request = size_request.strip()
     if not size_request:
         msg = "size request cannot be empty"
         raise ValueError(msg)
     claim_name = repo_volume_claim_name(repo_id)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     storage = await StorageClass.select(
         kube=kube,
         timeout=deadline.remaining(),
@@ -526,14 +524,12 @@ async def delete_repository_volume_claim(
     ------
     OSError
         If the PVC is still in use by active pods.
-    TimeoutError
-        If deletion does not complete within the timeout.
     """
-    if timeout <= 0:
-        msg = "timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository volume deletion timeout must be non-negative",
+    )
     repo_id = _check_uuid(pvc.labels.get(REPO_ID_ENV, ""))
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     if not force:
         pods = await Pod.list(
             kube=kube,
@@ -585,12 +581,11 @@ async def resolve_repository_volume_ceph_path(
     ------
     OSError
         If PVC/PV metadata cannot identify a valid CephFS path.
-    TimeoutError
-        If binding or PV lookup does not complete within the timeout.
     """
-    if timeout <= 0:
-        msg = "timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository volume Ceph path resolution timeout must be non-negative",
+    )
     name = pvc.name
     namespace = pvc.namespace
     if not name:
@@ -601,7 +596,6 @@ async def resolve_repository_volume_ceph_path(
             f"cannot resolve Ceph path for PVC {name!r} with missing metadata.namespace"
         )
         raise OSError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     pvc = await pvc.wait_bound(kube=kube, timeout=deadline.remaining())
     volume_name = pvc.volume_name
     volume = await PersistentVolume.wait_present(
@@ -790,6 +784,28 @@ class _RepositoryStateStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mounts: dict[str, CephRepositoryMount] = Field(default_factory=dict)
     worktrees: dict[str, CephRepositoryWorktree] = Field(default_factory=dict)
+
+    def with_mount(self, entry: CephRepositoryMount) -> _RepositoryStateStatus:
+        """Return a copy with one mount entry replaced.
+
+        Returns
+        -------
+        _RepositoryStateStatus
+            Updated repository-state status.
+        """
+        return self.model_copy(update={"mounts": {**self.mounts, entry.name: entry}})
+
+    def with_worktree(self, entry: CephRepositoryWorktree) -> _RepositoryStateStatus:
+        """Return a copy with one worktree entry replaced.
+
+        Returns
+        -------
+        _RepositoryStateStatus
+            Updated repository-state status.
+        """
+        return self.model_copy(
+            update={"worktrees": {**self.worktrees, entry.name: entry}},
+        )
 
 
 class CephRepositoryStateRecord(BaseModel):
@@ -985,7 +1001,6 @@ async def _read_repository_state(
     repo_id: str,
     deadline: Deadline,
 ) -> CephRepositoryStateRecord | None:
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     return await REPOSITORY_STATE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
@@ -1010,6 +1025,47 @@ async def _upsert_repository_state(
     )
 
 
+async def _patch_repository_state(
+    kube: Kube,
+    *,
+    state: CephRepositoryStateRecord,
+    status: _RepositoryStateStatus,
+    timeout: float,
+) -> CephRepositoryStateRecord:
+    return await REPOSITORY_STATE_RESOURCE.patch_status(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=state.name,
+        status=status,
+        timeout=timeout,
+    )
+
+
+async def _ensure_repository_state_record(
+    kube: Kube,
+    *,
+    repo_id: str,
+    deadline: Deadline,
+) -> CephRepositoryStateRecord:
+    repo_id = _check_uuid(repo_id)
+    existing = await _read_repository_state(kube, repo_id=repo_id, deadline=deadline)
+    now = datetime.now(UTC)
+    created_at = existing.spec.created_at if existing is not None else now
+    phase: _RepositoryVolumePhase = "Initializing"
+    if existing is not None and existing.spec.phase == "Ready":
+        phase = "Ready"
+    spec = _RepositoryVolumeSpec(
+        repo_id=repo_id,
+        claim_name=repo_volume_claim_name(repo_id),
+        phase=phase,
+        created_at=created_at,
+        last_seen_at=now,
+        last_gc_at=None,
+        last_error="",
+    )
+    return await _upsert_repository_state(kube, spec=spec, deadline=deadline)
+
+
 async def ensure_repository_volume_record(
     kube: Kube,
     *,
@@ -1032,32 +1088,21 @@ async def ensure_repository_volume_record(
     CephRepositoryStateRecord
         Lifecycle record for the repository volume.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or convergence exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "repository volume lifecycle convergence timeout must be non-negative"
-        raise TimeoutError(msg)
-    repo_id = _check_uuid(repo_id)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
-    existing = await _read_repository_state(kube, repo_id=repo_id, deadline=deadline)
-    now = datetime.now(UTC)
-    created_at = existing.spec.created_at if existing is not None else now
-    phase: _RepositoryVolumePhase = "Initializing"
-    if existing is not None and existing.spec.phase == "Ready":
-        phase = "Ready"
-    spec = _RepositoryVolumeSpec(
-        repo_id=repo_id,
-        claim_name=repo_volume_claim_name(repo_id),
-        phase=phase,
-        created_at=created_at,
-        last_seen_at=now,
-        last_gc_at=None,
-        last_error="",
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository volume lifecycle convergence timeout must be non-negative",
     )
-    return await _upsert_repository_state(kube, spec=spec, deadline=deadline)
+    repo_id = _check_uuid(repo_id)
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+        kube,
+        timeout=deadline.remaining(),
+    )
+    return await _ensure_repository_state_record(
+        kube,
+        repo_id=repo_id,
+        deadline=deadline,
+    )
 
 
 async def mark_repository_volume_ready(
@@ -1082,16 +1127,16 @@ async def mark_repository_volume_ready(
     CephRepositoryStateRecord
         Ready lifecycle record for the repository volume.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or convergence exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "repository volume phase update timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository volume phase update timeout must be non-negative",
+    )
     repo_id = _check_uuid(repo_id)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+        kube,
+        timeout=deadline.remaining(),
+    )
     existing = await _read_repository_state(kube, repo_id=repo_id, deadline=deadline)
     now = datetime.now(UTC)
     if existing is None:
@@ -1105,15 +1150,12 @@ async def mark_repository_volume_ready(
         )
         return await _upsert_repository_state(kube, spec=spec, deadline=deadline)
 
-    spec = _RepositoryVolumeSpec(
-        repo_id=existing.spec.repo_id,
-        claim_name=existing.spec.claim_name,
-        phase="Ready",
-        created_at=existing.spec.created_at,
-        last_seen_at=now,
-        retired_at=existing.spec.retired_at,
-        last_gc_at=existing.spec.last_gc_at,
-        last_error="",
+    spec = existing.spec.model_copy(
+        update={
+            "phase": "Ready",
+            "last_seen_at": now,
+            "last_error": "",
+        },
     )
     return await _upsert_repository_state(kube, spec=spec, deadline=deadline)
 
@@ -1150,20 +1192,24 @@ async def mark_repository_volume_failed(
     if timeout <= 0:
         return None
     repo_id = _check_uuid(repo_id)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository volume failed phase update timeout must be non-negative",
+    )
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+        kube,
+        timeout=deadline.remaining(),
+    )
     record = await _read_repository_state(kube, repo_id=repo_id, deadline=deadline)
     if record is None or record.spec.phase in ("Ready", "Retired"):
         return record
 
-    spec = _RepositoryVolumeSpec(
-        repo_id=record.spec.repo_id,
-        claim_name=record.spec.claim_name,
-        phase="Failed",
-        created_at=record.spec.created_at,
-        last_seen_at=datetime.now(UTC),
-        retired_at=record.spec.retired_at,
-        last_gc_at=record.spec.last_gc_at,
-        last_error=last_error,
+    spec = record.spec.model_copy(
+        update={
+            "phase": "Failed",
+            "last_seen_at": datetime.now(UTC),
+            "last_error": last_error,
+        },
     )
     return await _upsert_repository_state(kube, spec=spec, deadline=deadline)
 
@@ -1199,24 +1245,24 @@ async def ensure_repository_mount_record(
     CephRepositoryMount
         Active lifecycle record for the host alias.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or convergence exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "repository mount lifecycle convergence timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository mount lifecycle convergence timeout must be non-negative",
+    )
     repo_id = _check_uuid(repo_id)
     host_id = _check_uuid(host_id)
     alias_path = repository_mount_alias_path(alias_path)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+        kube,
+        timeout=deadline.remaining(),
+    )
     state = await _read_repository_state(kube, repo_id=repo_id, deadline=deadline)
     if state is None:
-        state = await ensure_repository_volume_record(
+        state = await _ensure_repository_state_record(
             kube,
             repo_id=repo_id,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     name = repository_mount_name(repo_id, host_id, alias_path)
     existing = state.status.mounts.get(name)
@@ -1236,14 +1282,10 @@ async def ensure_repository_mount_record(
         retired_at=None,
         last_error="",
     )
-    status = state.status.model_copy(
-        update={"mounts": {**state.status.mounts, name: entry}},
-    )
-    state = await REPOSITORY_STATE_RESOURCE.patch_status(
+    state = await _patch_repository_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=state.name,
-        status=status,
+        state=state,
+        status=state.status.with_mount(entry),
         timeout=deadline.remaining(),
     )
     return state.status.mounts[name]
@@ -1277,24 +1319,26 @@ async def ensure_repository_worktree_record(
     CephRepositoryWorktree
         Active lifecycle record for the worktree.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or convergence exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "repository worktree lifecycle convergence timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message=(
+            "repository worktree lifecycle convergence timeout must be non-negative"
+        ),
+    )
     repo_id = _check_uuid(repo_id)
     worktree_id = _check_uuid(worktree_id)
     worktree = repository_worktree_path(worktree)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+        kube,
+        timeout=deadline.remaining(),
+    )
     state = await _read_repository_state(kube, repo_id=repo_id, deadline=deadline)
     if state is None:
-        state = await ensure_repository_volume_record(
+        state = await _ensure_repository_state_record(
             kube,
             repo_id=repo_id,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     name = repository_worktree_name(repo_id, worktree_id)
     existing = state.status.worktrees.get(name)
@@ -1311,14 +1355,10 @@ async def ensure_repository_worktree_record(
         retired_at=None,
         last_error="",
     )
-    status = state.status.model_copy(
-        update={"worktrees": {**state.status.worktrees, name: entry}},
-    )
-    state = await REPOSITORY_STATE_RESOURCE.patch_status(
+    state = await _patch_repository_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=state.name,
-        status=status,
+        state=state,
+        status=state.status.with_worktree(entry),
         timeout=deadline.remaining(),
     )
     return state.status.worktrees[name]
@@ -1346,15 +1386,16 @@ async def retire_repository_mount_record(
     CephRepositoryMount
         Retired lifecycle record.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or retirement exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "repository mount retirement timeout must be non-negative"
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository mount retirement timeout must be non-negative",
+    )
+    repo_id = _check_uuid(record.repo_id)
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+        kube,
+        timeout=deadline.remaining(),
+    )
     retired_at = record.retired_at or datetime.now(UTC)
     entry = record.model_copy(
         update={
@@ -1364,23 +1405,17 @@ async def retire_repository_mount_record(
             "last_error": "",
         }
     )
-    state = await _read_repository_state(
-        kube, repo_id=record.repo_id, deadline=deadline
-    )
+    state = await _read_repository_state(kube, repo_id=repo_id, deadline=deadline)
     if state is None:
-        state = await ensure_repository_volume_record(
+        state = await _ensure_repository_state_record(
             kube,
-            repo_id=record.repo_id,
-            timeout=deadline.remaining(),
+            repo_id=repo_id,
+            deadline=deadline,
         )
-    status = state.status.model_copy(
-        update={"mounts": {**state.status.mounts, record.name: entry}},
-    )
-    state = await REPOSITORY_STATE_RESOURCE.patch_status(
+    state = await _patch_repository_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=state.name,
-        status=status,
+        state=state,
+        status=state.status.with_mount(entry),
         timeout=deadline.remaining(),
     )
     return state.status.mounts[record.name]
@@ -1414,29 +1449,42 @@ async def retire_repository_mount(
     CephRepositoryMount | None
         Retired lifecycle record, or None if the record does not exist.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or retirement exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "repository mount retirement timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository mount retirement timeout must be non-negative",
+    )
     repo_id = _check_uuid(repo_id)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
-    state = await _read_repository_state(kube, repo_id=repo_id, deadline=deadline)
-    record = None
-    if state is not None:
-        record = state.status.mounts.get(
-            repository_mount_name(repo_id, host_id, alias_path)
-        )
-    if record is None:
-        return None
-    return await retire_repository_mount_record(
+    host_id = _check_uuid(host_id)
+    alias_path = repository_mount_alias_path(alias_path)
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(
         kube,
-        record=record,
         timeout=deadline.remaining(),
     )
+    state = await _read_repository_state(kube, repo_id=repo_id, deadline=deadline)
+    if state is None:
+        return None
+    record = state.status.mounts.get(
+        repository_mount_name(repo_id, host_id, alias_path)
+    )
+    if record is None:
+        return None
+    retired_at = record.retired_at or datetime.now(UTC)
+    entry = record.model_copy(
+        update={
+            "phase": "Retired",
+            "last_seen_at": record.last_seen_at,
+            "retired_at": retired_at,
+            "last_error": "",
+        }
+    )
+    state = await _patch_repository_state(
+        kube,
+        state=state,
+        status=state.status.with_mount(entry),
+        timeout=deadline.remaining(),
+    )
+    return state.status.mounts[record.name]
 
 
 async def delete_repository_snapshot_artifacts(
@@ -1456,16 +1504,12 @@ async def delete_repository_snapshot_artifacts(
     timeout : float
         Maximum deletion budget in seconds.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or deletion exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "repository snapshot artifact deletion timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository snapshot artifact deletion timeout must be non-negative",
+    )
     repo_id = _check_uuid(repo_id)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     pvcs = await PersistentVolumeClaim.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
@@ -1521,14 +1565,13 @@ async def gc_repository_volumes(
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive or GC exceeds the budget.
     ValueError
         If `grace_seconds` or `limit` is negative.
     """
-    if timeout <= 0:
-        msg = "repository volume GC timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository volume GC timeout must be non-negative",
+    )
     if grace_seconds < 0:
         msg = "repository volume GC grace_seconds must be non-negative"
         raise ValueError(msg)
@@ -1537,10 +1580,6 @@ async def gc_repository_volumes(
         raise ValueError(msg)
     if limit == 0:
         return []
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="timeout must be non-negative",
-    )
     now = datetime.now(UTC)
     grace = timedelta(seconds=grace_seconds)
     await REPOSITORY_STATE_RESOURCE.ensure_crd(
@@ -1642,15 +1681,12 @@ async def gc_repository_volumes(
                 blocker = "retained repository snapshots still exist"
 
             if blocker is not None:
-                spec = _RepositoryVolumeSpec(
-                    repo_id=record.spec.repo_id,
-                    claim_name=record.spec.claim_name,
-                    phase="Retired",
-                    created_at=record.spec.created_at,
-                    last_seen_at=record.spec.last_seen_at,
-                    retired_at=record.spec.retired_at,
-                    last_gc_at=now,
-                    last_error=blocker,
+                spec = record.spec.model_copy(
+                    update={
+                        "phase": "Retired",
+                        "last_gc_at": now,
+                        "last_error": blocker,
+                    },
                 )
                 await _upsert_repository_state(kube, spec=spec, deadline=deadline)
                 continue
@@ -1690,15 +1726,12 @@ async def gc_repository_volumes(
                         force=False,
                     )
             if collection_error is not None:
-                spec = _RepositoryVolumeSpec(
-                    repo_id=record.spec.repo_id,
-                    claim_name=record.spec.claim_name,
-                    phase="Retired",
-                    created_at=record.spec.created_at,
-                    last_seen_at=record.spec.last_seen_at,
-                    retired_at=record.spec.retired_at,
-                    last_gc_at=now,
-                    last_error=collection_error,
+                spec = record.spec.model_copy(
+                    update={
+                        "phase": "Retired",
+                        "last_gc_at": now,
+                        "last_error": collection_error,
+                    },
                 )
                 await _upsert_repository_state(kube, spec=spec, deadline=deadline)
                 continue
@@ -1722,15 +1755,12 @@ async def gc_repository_volumes(
                 timeout=deadline.remaining(),
             )
         except (OSError, TimeoutError, ValueError) as err:
-            spec = _RepositoryVolumeSpec(
-                repo_id=record.spec.repo_id,
-                claim_name=record.spec.claim_name,
-                phase="Retired",
-                created_at=record.spec.created_at,
-                last_seen_at=record.spec.last_seen_at,
-                retired_at=record.spec.retired_at,
-                last_gc_at=now,
-                last_error=str(err),
+            spec = record.spec.model_copy(
+                update={
+                    "phase": "Retired",
+                    "last_gc_at": now,
+                    "last_error": str(err),
+                },
             )
             await _upsert_repository_state(kube, spec=spec, deadline=deadline)
             continue
@@ -1763,18 +1793,16 @@ async def next_repository_volume_gc_time(
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     ValueError
         If `grace_seconds` is negative.
     """
-    if timeout <= 0:
-        msg = "repository volume GC scheduling timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository volume GC scheduling timeout must be non-negative",
+    )
     if grace_seconds < 0:
         msg = "repository volume GC grace_seconds must be non-negative"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await REPOSITORY_STATE_RESOURCE.list(
         kube,
@@ -1806,7 +1834,10 @@ async def _repository_workload_resource_blocker(
         WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE,
         WORKLOAD_REPO_LABEL: hashlib.sha256(repo_id.encode()).hexdigest()[:16],
     }
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository workload blocker scan timeout must be non-negative",
+    )
     deployments = await Deployment.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
@@ -1879,8 +1910,10 @@ async def _delete_repository_parented_records(
     record: CephRepositoryStateRecord,
     timeout: float,
 ) -> None:
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository parented record cleanup timeout must be non-negative",
+    )
     for worktree in sorted(
         record.status.worktrees.values(),
         key=lambda item: (item.worktree, item.worktree_id),

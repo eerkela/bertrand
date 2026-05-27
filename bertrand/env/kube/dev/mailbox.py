@@ -134,16 +134,10 @@ class CodeOpenRecord(BaseModel):
             msg = f"{CODE_OPEN_KIND} {self.name!r}: missing dev label"
             raise ValueError(msg)
         if labels.get(CODE_OPEN_SESSION_LABEL) != _label_value(self.spec.session_id):
-            msg = (
-                f"{CODE_OPEN_KIND} {self.name!r}: session label does "
-                "not match spec"
-            )
+            msg = f"{CODE_OPEN_KIND} {self.name!r}: session label does not match spec"
             raise ValueError(msg)
         if labels.get(CODE_OPEN_REQUEST_LABEL) != _label_value(self.spec.request_id):
-            msg = (
-                f"{CODE_OPEN_KIND} {self.name!r}: request label does "
-                "not match spec"
-            )
+            msg = f"{CODE_OPEN_KIND} {self.name!r}: request label does not match spec"
             raise ValueError(msg)
         return self
 

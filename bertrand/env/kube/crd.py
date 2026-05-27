@@ -7,12 +7,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
-from bertrand.env.git import until
-
 from .api.metadata import KubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
-
-CRD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -215,35 +211,15 @@ class CustomResourceDefinition(
         -------
         CustomResourceDefinition
             Refreshed CRD wrapper that reports `Established=True`.
-
-        Raises
-        ------
-        TimeoutError
-            If the CRD does not become established before `timeout`.
         """
-        current: Self = self
-
-        async def established(remaining: float) -> Self:
-            nonlocal current
-            if current.is_established:
-                return current
-            refreshed = await current.refresh(kube, timeout=remaining)
-            if refreshed is None:
-                msg = f"CRD {self.name!r} disappeared"
-                raise OSError(msg)
-            current = refreshed
-            if current.is_established:
-                return current
-            msg = f"CRD {self.name!r} is not established yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                established,
-                timeout=timeout,
-                interval=CRD_WAIT_POLL_INTERVAL_SECONDS,
-                action=f"waiting for CRD {self.name!r} establishment",
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for CRD {self.name!r} establishment"
-            raise TimeoutError(msg) from err
+        name = self.name
+        return await self._wait_until(
+            kube,
+            timeout=timeout,
+            predicate=lambda live: live.is_established,
+            action=f"waiting for CRD {name!r} establishment",
+            pending_message=f"CRD {name!r} is not established yet",
+            missing_message=f"CRD {name!r} disappeared",
+            timeout_message=f"timed out waiting for CRD {name!r} establishment",
+            check_current=True,
+        )

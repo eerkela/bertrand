@@ -34,9 +34,7 @@ from bertrand.env.kube.ceph.capacity import (
     STORAGE_NODE_REPORT_MAX_AGE_SECONDS,
     STORAGE_OSD_IN_FLIGHT_PHASES,
     STORAGE_OSD_STALE_PHASE_SECONDS,
-    STORAGE_STATE_NAME,
     STORAGE_STATE_PLURAL,
-    STORAGE_STATE_RESOURCE,
     STORAGE_TARGET_RETRY_COOLDOWN_SECONDS,
     CephStorageActionRecord,
     CephStorageActionSpec,
@@ -45,8 +43,8 @@ from bertrand.env.kube.ceph.capacity import (
     CephStoragePolicyStatus,
     CephStorageReservation,
     CephStorageStateRecord,
-    CephStorageStateStatus,
     StorageActionOperation,
+    _patch_storage_state,
     create_storage_actions,
     ensure_ceph_capacity_crds,
     ensure_default_storage_policy,
@@ -1423,16 +1421,10 @@ async def _reconcile_storage_controller(
         )
 
     storage = await read_storage_state(kube, timeout=deadline.remaining())
-    await STORAGE_STATE_RESOURCE.patch_status(
+    await _patch_storage_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        status=storage.status.model_copy(
-            update={
-                "policy": status.model_copy(
-                    update={"observed_generation": policy.generation}
-                )
-            },
+        status=storage.status.with_policy(
+            status.model_copy(update={"observed_generation": policy.generation}),
         ),
         timeout=deadline.remaining(),
     )
@@ -1550,16 +1542,9 @@ async def _patch_storage_controller_error(
             "last_error": error,
         }
     )
-    await STORAGE_STATE_RESOURCE.patch_status(
+    await _patch_storage_state(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        status=CephStorageStateStatus(
-            policy=policy,
-            reservations=storage.status.reservations,
-            nodes=storage.status.nodes,
-            osds=storage.status.osds,
-        ),
+        status=storage.status.with_policy(policy),
         timeout=deadline.remaining(),
     )
 
