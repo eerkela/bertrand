@@ -37,17 +37,16 @@ class ConfigMap(
 
     _obj: kube_client.V1ConfigMap
 
-    resource: ClassVar[BuiltinResource[kube_client.V1ConfigMap]] = (
-        BuiltinResource.namespaced(
-            api="core",
-            kind="ConfigMap",
-            slug="config_map",
-            expected=kube_client.V1ConfigMap,
-            list_type=kube_client.V1ConfigMapList,
-            create=True,
-            patch=True,
-            delete=True,
-        )
+    resource: ClassVar[BuiltinResource[kube_client.V1ConfigMap]] = BuiltinResource(
+        scope="namespaced",
+        api="core",
+        kind="ConfigMap",
+        slug="config_map",
+        expected=kube_client.V1ConfigMap,
+        list_type=kube_client.V1ConfigMapList,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
     )
 
     @staticmethod
@@ -134,13 +133,14 @@ class ConfigMap(
             annotations=annotations,
         )
 
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )
 
     @property

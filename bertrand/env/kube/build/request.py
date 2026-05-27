@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
@@ -218,9 +218,7 @@ class BuildKitBuildSpec(BaseModel):
                 BUILDKIT_BUILD_WORKTREE_LABEL: buildkit_build_label_hash(
                     self.worktree_id
                 ),
-                BUILDKIT_BUILD_CONFIG_LABEL: buildkit_build_label_hash(
-                    self.config_id
-                ),
+                BUILDKIT_BUILD_CONFIG_LABEL: buildkit_build_label_hash(self.config_id),
             }
         )
         return labels
@@ -571,9 +569,7 @@ async def submit_buildkit_build(
     if timeout <= 0:
         msg = "BuildKitBuild submit timeout must be non-negative"
         raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
-    )
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     return await BUILDKIT_BUILD_RESOURCE.create(
         kube,
         name=_buildkit_build_name(spec),
@@ -606,17 +602,13 @@ async def require_active_project_image(
     if timeout <= 0:
         msg = "active project image lookup timeout must be non-negative"
         raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
-    )
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await BUILDKIT_BUILD_RESOURCE.list(
         kube,
         labels={
             BUILDKIT_BUILD_REPO_LABEL: buildkit_build_label_hash(spec.repo_id),
-            BUILDKIT_BUILD_WORKTREE_LABEL: buildkit_build_label_hash(
-                spec.worktree_id
-            ),
+            BUILDKIT_BUILD_WORKTREE_LABEL: buildkit_build_label_hash(spec.worktree_id),
             BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "active",
         },
         timeout=deadline.remaining(),
@@ -639,10 +631,7 @@ async def require_active_project_image(
         raise OSError(msg)
     if matching:
         record = matching[0]
-        if (
-            record.spec.worktree_id != spec.worktree_id
-            or record.image != spec.image
-        ):
+        if record.spec.worktree_id != spec.worktree_id or record.image != spec.image:
             msg = (
                 "project image lifecycle invariant violated: active "
                 f"{BUILDKIT_BUILD_KIND} {record.name!r} matches config "
@@ -703,9 +692,7 @@ async def retire_project_images(
         raise TimeoutError(msg)
     repo_id = _check_uuid(repo_id)
     worktree_id = _check_uuid(worktree_id)
-    deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
-    )
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await BUILDKIT_BUILD_RESOURCE.list(
         kube,
@@ -773,9 +760,7 @@ async def gc_project_images(
     if limit == 0:
         return []
 
-    deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
-    )
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await BUILDKIT_BUILD_RESOURCE.list(
         kube,
@@ -787,23 +772,49 @@ async def gc_project_images(
         labels={BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "active"},
         timeout=deadline.remaining(),
     )
-    live_refs = await _active_pod_image_refs(kube, timeout=deadline.remaining())
-    active_digest_refs = _active_record_digest_refs(active_records)
+    live_refs: set[str] = set()
+    for pod in await Pod.list(kube, timeout=deadline.remaining()):
+        if pod.is_active:
+            live_refs.update(pod.image_refs)
+
+    active_digest_refs: set[str] = set()
+    for active in active_records:
+        if active.image_phase != "Active":
+            continue
+        for ref in (active.digest_ref, *active.platform_images.values()):
+            if ref:
+                active_digest_refs.add(ref)
+
     now = datetime.now(UTC)
+    grace = timedelta(seconds=grace_seconds)
     collected: list[BuildKitBuildRecord] = []
-    for record in sorted(records, key=_image_gc_sort_key):
+    for record in sorted(
+        records,
+        key=lambda item: (
+            item.retired_at or datetime.max.replace(tzinfo=UTC),
+            item.name,
+        ),
+    ):
         if len(collected) >= limit:
             break
-        if not _image_gc_eligible(
-            record,
-            now=now,
-            grace=timedelta(seconds=grace_seconds),
-            live_refs=live_refs,
-            active_digest_refs=active_digest_refs,
-        ):
+
+        retired_at = record.retired_at
+        if retired_at is None or now - retired_at < grace:
             continue
+
+        digest_refs: list[str] = []
+        seen_refs: set[str] = set()
+        for ref in (record.digest_ref, *record.platform_images.values()):
+            if ref and ref not in seen_refs:
+                digest_refs.append(ref)
+                seen_refs.add(ref)
+        if seen_refs & active_digest_refs:
+            continue
+        if {record.image, *digest_refs} & live_refs:
+            continue
+
         try:
-            for image_ref in _record_digest_refs(record):
+            for image_ref in digest_refs:
                 await delete_image_manifest(
                     image_ref,
                     timeout=deadline.remaining(),
@@ -860,9 +871,7 @@ async def next_project_image_gc_time(
         msg = "project image GC scheduling grace_seconds must be non-negative"
         raise ValueError(msg)
 
-    deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
-    )
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await BUILDKIT_BUILD_RESOURCE.list(
         kube,
@@ -998,9 +1007,7 @@ async def wait_buildkit_build(
     if timeout <= 0:
         msg = "BuildKitBuild wait timeout must be non-negative"
         raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
-    )
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     seen_version = ""
     while True:
         remaining = deadline.remaining()
@@ -1063,9 +1070,7 @@ async def patch_buildkit_build_status(
     if timeout <= 0:
         msg = "BuildKitBuild status patch timeout must be non-negative"
         raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
-    )
+    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     payload: dict[str, object] = {}
     payload.update(updates)
     payload["phase"] = phase
@@ -1217,61 +1222,6 @@ def _validate_platform_images(
             raise ValueError(msg) from err
         validated[platform] = ref
     return dict(sorted(validated.items()))
-
-
-async def _active_pod_image_refs(kube: Kube, *, timeout: float) -> frozenset[str]:
-    pods = await Pod.list(kube, timeout=timeout)
-    refs: set[str] = set()
-    for pod in pods:
-        if pod.is_active:
-            refs.update(pod.image_refs)
-    return frozenset(refs)
-
-
-def _active_record_digest_refs(
-    records: Sequence[BuildKitBuildRecord],
-) -> frozenset[str]:
-    refs: set[str] = set()
-    for record in records:
-        if record.image_phase == "Active":
-            refs.update(_record_digest_refs(record))
-    return frozenset(refs)
-
-
-def _record_digest_refs(record: BuildKitBuildRecord) -> tuple[str, ...]:
-    seen: set[str] = set()
-    refs: list[str] = []
-    for ref in (record.digest_ref, *record.platform_images.values()):
-        if ref and ref not in seen:
-            seen.add(ref)
-            refs.append(ref)
-    return tuple(refs)
-
-
-def _image_gc_eligible(
-    record: BuildKitBuildRecord,
-    *,
-    now: datetime,
-    grace: timedelta,
-    live_refs: frozenset[str],
-    active_digest_refs: frozenset[str],
-) -> bool:
-    retired_at = record.retired_at
-    if retired_at is None:
-        return False
-    if now - retired_at < grace:
-        return False
-    return set(_record_digest_refs(record)).isdisjoint(
-        active_digest_refs
-    ) and _record_image_refs(record).isdisjoint(live_refs)
-
-
-def _record_image_refs(record: BuildKitBuildRecord) -> frozenset[str]:
-    return frozenset((record.image, *_record_digest_refs(record)))
-
-
-def _image_gc_sort_key(record: BuildKitBuildRecord) -> tuple[datetime, str]:
-    return (record.retired_at or datetime.max.replace(tzinfo=UTC), record.name)
 
 
 def _utc_datetime(value: datetime | None) -> datetime | None:

@@ -31,17 +31,16 @@ class ServiceAccount(
 
     _obj: kube_client.V1ServiceAccount
 
-    resource: ClassVar[BuiltinResource[kube_client.V1ServiceAccount]] = (
-        BuiltinResource.namespaced(
-            api="core",
-            kind="ServiceAccount",
-            slug="service_account",
-            expected=kube_client.V1ServiceAccount,
-            list_type=kube_client.V1ServiceAccountList,
-            create=True,
-            patch=True,
-            delete=True,
-        )
+    resource: ClassVar[BuiltinResource[kube_client.V1ServiceAccount]] = BuiltinResource(
+        scope="namespaced",
+        api="core",
+        kind="ServiceAccount",
+        slug="service_account",
+        expected=kube_client.V1ServiceAccount,
+        list_type=kube_client.V1ServiceAccountList,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
     )
 
     @staticmethod
@@ -112,11 +111,12 @@ class ServiceAccount(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )

@@ -32,16 +32,17 @@ class DaemonSet(
     _obj: kubernetes.client.V1DaemonSet
 
     resource: ClassVar[BuiltinResource[kubernetes.client.V1DaemonSet]] = (
-        BuiltinResource.namespaced(
+        BuiltinResource(
+            scope="namespaced",
             api="apps",
             kind="DaemonSet",
             slug="daemon_set",
             expected=kubernetes.client.V1DaemonSet,
             list_type=kubernetes.client.V1DaemonSetList,
-            create=True,
-            patch=True,
-            delete=True,
-            watch=True,
+            can_create=True,
+            can_patch=True,
+            can_delete=True,
+            can_watch=True,
         )
     )
 
@@ -130,13 +131,14 @@ class DaemonSet(
             pod_template=pod_template,
             annotations=annotations,
         )
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )
 
     @property

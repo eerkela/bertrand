@@ -30,15 +30,16 @@ class CustomResourceDefinition(
     _obj: kube_client.V1CustomResourceDefinition
 
     resource: ClassVar[BuiltinResource[kube_client.V1CustomResourceDefinition]] = (
-        BuiltinResource.cluster(
+        BuiltinResource(
+            scope="cluster",
             api="apiextensions",
             kind="CustomResourceDefinition",
             slug="custom_resource_definition",
             expected=kube_client.V1CustomResourceDefinition,
             list_type=kube_client.V1CustomResourceDefinitionList,
-            create=True,
-            patch=True,
-            delete=True,
+            can_create=True,
+            can_patch=True,
+            can_delete=True,
         )
     )
 
@@ -176,12 +177,13 @@ class CustomResourceDefinition(
             scope=scope,
             short_names=short_names,
         )
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            name=name,
-            manifest=body,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                name=name,
+                manifest=body,
+                timeout=timeout,
+            )
         )
 
     @property

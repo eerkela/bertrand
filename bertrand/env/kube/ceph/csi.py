@@ -11,7 +11,13 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from bertrand.env.kube.api.client import Kube
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
+from bertrand.env.kube.api.client import (
+    CLUSTER_REGISTRY_READY_LABEL,
+    CLUSTER_REGISTRY_READY_VALUE,
+    Kube,
+)
+from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.ceph.api import (
     bind_block_device,
     host_id_from_host_state,
@@ -20,27 +26,292 @@ from bertrand.env.kube.ceph.api import (
     unbind_block_device,
 )
 from bertrand.env.kube.ceph.capacity import (
+    STORAGE_CONTROLLER_LABELS,
     STORAGE_OSD_NAME_LABEL,
     CephStorageOSD,
     patch_storage_osd_status,
     read_storage_state,
     upsert_storage_osd,
 )
+from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.volume import PersistentVolumeClaim
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
 CSI_DRIVER_NAME = "osd.csi.bertrand.dev"
+CSI_CONTROLLER_NAME = "bertrand-ceph-osd-csi-controller"
+CSI_NODE_NAME = "bertrand-ceph-osd-csi-node"
 CSI_CONTROLLER_SOCKET = "/run/bertrand-csi/csi.sock"
 CSI_NODE_SOCKET = "/csi/csi.sock"
 CSI_SOCKET_DIR = "/csi"
 CSI_REGISTRATION_DIR = "/registration"
 CSI_KUBELET_DIR = "/var/lib/kubelet"
+CSI_PROVISIONER_IMAGE = "registry.k8s.io/sig-storage/csi-provisioner:v5.2.0"
+CSI_RESIZER_IMAGE = "registry.k8s.io/sig-storage/csi-resizer:v1.13.2"
+CSI_NODE_REGISTRAR_IMAGE = (
+    "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0"
+)
 CSI_REQUEST_TIMEOUT_SECONDS = 300.0
 CSI_PVC_NAME_PARAMETER = "csi.storage.k8s.io/pvc/name"
 CSI_PVC_NAMESPACE_PARAMETER = "csi.storage.k8s.io/pvc/namespace"
 CSI_PV_NAME_PARAMETER = "csi.storage.k8s.io/pv/name"
+
+
+async def _upsert_csi_driver_object(kube: Kube, *, timeout: float) -> None:
+    manifest = {
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "CSIDriver",
+        "metadata": {
+            "name": CSI_DRIVER_NAME,
+            "labels": STORAGE_CONTROLLER_LABELS,
+        },
+        "spec": {
+            "attachRequired": False,
+            "podInfoOnMount": False,
+            "volumeLifecycleModes": ["Persistent"],
+            "fsGroupPolicy": "None",
+            "requiresRepublish": False,
+            "storageCapacity": False,
+        },
+    }
+    existing = await kube.run(
+        lambda request_timeout: kube.storage.read_csi_driver(
+            name=CSI_DRIVER_NAME,
+            _request_timeout=request_timeout,
+        ),
+        timeout=timeout,
+        context=f"failed to read CSIDriver {CSI_DRIVER_NAME!r}",
+    )
+    if existing is None:
+        await kube.run(
+            lambda request_timeout: kube.storage.create_csi_driver(
+                body=manifest,
+                _request_timeout=request_timeout,
+            ),
+            timeout=timeout,
+            context=f"failed to create CSIDriver {CSI_DRIVER_NAME!r}",
+        )
+        return
+    await kube.run(
+        lambda request_timeout: kube.storage.patch_csi_driver(
+            name=CSI_DRIVER_NAME,
+            body=manifest,
+            _request_timeout=request_timeout,
+        ),
+        timeout=timeout,
+        context=f"failed to patch CSIDriver {CSI_DRIVER_NAME!r}",
+    )
+
+
+def _csi_common_labels(name: str) -> dict[str, str]:
+    return {
+        "app.kubernetes.io/name": name,
+        "app.kubernetes.io/part-of": "bertrand",
+        **STORAGE_CONTROLLER_LABELS,
+    }
+
+
+async def _ensure_csi_controller(
+    kube: Kube,
+    *,
+    image: str,
+    service_account: str,
+    deadline: Deadline,
+) -> None:
+    labels = _csi_common_labels(CSI_CONTROLLER_NAME)
+    socket_mount = {
+        "name": "csi-socket",
+        "mountPath": Path(CSI_CONTROLLER_SOCKET).parent.as_posix(),
+    }
+    deployment = await Deployment.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=CSI_CONTROLLER_NAME,
+        labels=labels,
+        selector={"app.kubernetes.io/name": CSI_CONTROLLER_NAME},
+        replicas=1,
+        pod_template=PodTemplateSpec(
+            containers=[
+                ContainerSpec(
+                    name="driver",
+                    image=image,
+                    image_pull_policy="Always",
+                    command=["bertrand-ceph-csi"],
+                    args=[
+                        "controller",
+                        "--endpoint",
+                        f"unix://{CSI_CONTROLLER_SOCKET}",
+                    ],
+                    volume_mounts=[socket_mount],
+                ),
+                ContainerSpec(
+                    name="external-provisioner",
+                    image=CSI_PROVISIONER_IMAGE,
+                    args=[
+                        f"--csi-address={CSI_CONTROLLER_SOCKET}",
+                        "--extra-create-metadata=true",
+                        "--feature-gates=Topology=true",
+                        "--leader-election=false",
+                        "--timeout=300s",
+                    ],
+                    volume_mounts=[socket_mount],
+                ),
+                ContainerSpec(
+                    name="external-resizer",
+                    image=CSI_RESIZER_IMAGE,
+                    args=[
+                        f"--csi-address={CSI_CONTROLLER_SOCKET}",
+                        "--leader-election=false",
+                        "--timeout=300s",
+                    ],
+                    volume_mounts=[socket_mount],
+                ),
+            ],
+            volumes=[VolumeSpec.empty_dir("csi-socket")],
+            service_account_name=service_account,
+            automount_service_account_token=True,
+            node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
+        ),
+        timeout=deadline.remaining(),
+    )
+    await deployment.wait_rollout(kube, timeout=deadline.remaining())
+
+
+async def _ensure_csi_node(
+    kube: Kube,
+    *,
+    image: str,
+    service_account: str,
+    deadline: Deadline,
+) -> None:
+    labels = _csi_common_labels(CSI_NODE_NAME)
+    plugin_dir = f"{CSI_KUBELET_DIR}/plugins/{CSI_DRIVER_NAME}"
+    daemonset = await DaemonSet.upsert(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        name=CSI_NODE_NAME,
+        labels=labels,
+        selector={"app.kubernetes.io/name": CSI_NODE_NAME},
+        pod_template=PodTemplateSpec(
+            containers=[
+                ContainerSpec(
+                    name="driver",
+                    image=image,
+                    image_pull_policy="Always",
+                    command=["bertrand-ceph-csi"],
+                    args=["node", "--endpoint", f"unix://{CSI_NODE_SOCKET}"],
+                    env=[
+                        {
+                            "name": "NODE_NAME",
+                            "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
+                        }
+                    ],
+                    security_context={"privileged": True, "runAsUser": 0},
+                    volume_mounts=[
+                        {"name": "csi-node-plugin", "mountPath": CSI_SOCKET_DIR},
+                        {
+                            "name": "csi-kubelet",
+                            "mountPath": CSI_KUBELET_DIR,
+                            "mountPropagation": "Bidirectional",
+                        },
+                        {
+                            "name": "host-root",
+                            "mountPath": "/host",
+                            "mountPropagation": "Bidirectional",
+                        },
+                        {
+                            "name": "host-dev",
+                            "mountPath": "/dev",
+                            "mountPropagation": "HostToContainer",
+                        },
+                        {
+                            "name": "host-run",
+                            "mountPath": "/host-run",
+                            "mountPropagation": "HostToContainer",
+                        },
+                    ],
+                ),
+                ContainerSpec(
+                    name="node-driver-registrar",
+                    image=CSI_NODE_REGISTRAR_IMAGE,
+                    args=[
+                        f"--csi-address={CSI_NODE_SOCKET}",
+                        f"--kubelet-registration-path={plugin_dir}/csi.sock",
+                    ],
+                    volume_mounts=[
+                        {"name": "csi-node-plugin", "mountPath": CSI_SOCKET_DIR},
+                        {
+                            "name": "csi-registration",
+                            "mountPath": CSI_REGISTRATION_DIR,
+                        },
+                    ],
+                ),
+            ],
+            volumes=[
+                VolumeSpec.host_path(
+                    "csi-node-plugin",
+                    path=plugin_dir,
+                    host_path_type="DirectoryOrCreate",
+                ),
+                VolumeSpec.host_path(
+                    "csi-registration",
+                    path=f"{CSI_KUBELET_DIR}/plugins_registry",
+                    host_path_type="DirectoryOrCreate",
+                ),
+                VolumeSpec.host_path(
+                    "csi-kubelet",
+                    path=CSI_KUBELET_DIR,
+                    host_path_type="Directory",
+                ),
+                VolumeSpec.host_path(
+                    "host-root",
+                    path="/",
+                    host_path_type="Directory",
+                ),
+                VolumeSpec.host_path(
+                    "host-dev",
+                    path="/dev",
+                    host_path_type="Directory",
+                ),
+                VolumeSpec.host_path(
+                    "host-run",
+                    path="/run",
+                    host_path_type="Directory",
+                ),
+            ],
+            service_account_name=service_account,
+            automount_service_account_token=True,
+            node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
+            host_pid=True,
+        ),
+        timeout=deadline.remaining(),
+    )
+    await daemonset.wait_rollout(kube, timeout=deadline.remaining())
+
+
+async def ensure_ceph_osd_csi_driver(
+    kube: Kube,
+    *,
+    image: str,
+    service_account: str,
+    deadline: Deadline,
+) -> None:
+    """Converge the Bertrand OSD CSI driver and sidecar workloads."""
+    await _upsert_csi_driver_object(kube, timeout=deadline.remaining())
+    await _ensure_csi_controller(
+        kube,
+        image=image,
+        service_account=service_account,
+        deadline=deadline,
+    )
+    await _ensure_csi_node(
+        kube,
+        image=image,
+        service_account=service_account,
+        deadline=deadline,
+    )
 
 
 def _varint(value: int) -> bytes:
@@ -213,11 +484,6 @@ def _abort(context: Any, code_name: str, message: str) -> None:
     context.abort(getattr(grpc.StatusCode, code_name), message)
 
 
-async def _invoke_inside_cluster(func: Callable[[Kube], Awaitable[Any]]) -> Any:
-    with Kube.inside_cluster() as kube:
-        return await func(kube)
-
-
 class BertrandOSDCSIDriver:
     """Minimal CSI endpoint for Bertrand-managed Rook OSD PVCs."""
 
@@ -228,40 +494,33 @@ class BertrandOSDCSIDriver:
         if role == "node":
             self.host_id = host_id_from_host_state()
 
-    def _run[ResultT](
-        self,
-        func: Callable[..., Awaitable[ResultT]],
-        /,
-        *args: Any,
-    ) -> ResultT:
-        async def invoke(kube: Kube) -> ResultT:
-            return await func(kube, *args)
-
-        return asyncio.run(_invoke_inside_cluster(invoke))
-
-    def _run_csi[ResultT](
+    def _rpc[ResultT](
         self,
         context: Any,
-        func: Callable[..., Awaitable[ResultT]],
-        /,
-        *args: Any,
-        not_found: bool = False,
-        permission_denied: bool = False,
+        func: Callable[[Kube], Awaitable[ResultT]],
     ) -> ResultT:
+        async def invoke() -> ResultT:
+            with Kube.inside_cluster() as kube:
+                return await func(kube)
+
         try:
-            return self._run(func, *args)
+            return asyncio.run(invoke())
         except KeyError as err:
-            if not_found:
-                _abort(context, "NOT_FOUND", str(err))
-            raise
+            _abort(context, "NOT_FOUND", str(err))
         except PermissionError as err:
-            if permission_denied:
-                _abort(context, "PERMISSION_DENIED", str(err))
-            raise
+            _abort(context, "PERMISSION_DENIED", str(err))
         except (OSError, TimeoutError, ValueError) as err:
             _abort(context, "FAILED_PRECONDITION", str(err))
         msg = "CSI abort returned unexpectedly"
         raise RuntimeError(msg)
+
+    def _require_role(self, context: Any, role: str, method: str) -> None:
+        if self.role != role:
+            _abort(
+                context,
+                "UNIMPLEMENTED",
+                f"{method} is unavailable on Bertrand CSI {self.role!r} role",
+            )
 
     async def _record_for_volume(
         self,
@@ -274,182 +533,6 @@ class BertrandOSDCSIDriver:
                 return record
         msg = f"unknown Bertrand OSD CSI volume {volume_id!r}"
         raise KeyError(msg)
-
-    async def _record_for_pvc(
-        self,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-    ) -> tuple[CephStorageOSD, PersistentVolumeClaim]:
-        claim = await PersistentVolumeClaim.get(
-            kube,
-            namespace=namespace,
-            name=name,
-            timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-        )
-        if claim is None:
-            msg = f"PVC {namespace}/{name} does not exist"
-            raise KeyError(msg)
-        osd_name = claim.labels.get(STORAGE_OSD_NAME_LABEL, "").strip()
-        if not osd_name:
-            msg = f"PVC {namespace}/{name} is not a Bertrand-managed OSD claim"
-            raise PermissionError(msg)
-        storage = await read_storage_state(kube, timeout=CSI_REQUEST_TIMEOUT_SECONDS)
-        for record in storage.status.osds.values():
-            if record.name == osd_name:
-                return record, claim
-        msg = f"PVC {namespace}/{name} references missing OSD record {osd_name!r}"
-        raise KeyError(msg)
-
-    async def _upsert_claim_binding(
-        self,
-        kube: Kube,
-        *,
-        record: CephStorageOSD,
-        claim: PersistentVolumeClaim,
-        volume_id: str,
-        pv_name: str,
-    ) -> CephStorageOSD:
-        bound = record.model_copy(
-            update={
-                "csi_volume_id": volume_id,
-                "persistent_volume_name": pv_name,
-                "persistent_volume_claim_namespace": claim.namespace,
-                "persistent_volume_claim_name": claim.name,
-            },
-        )
-        phase = record.phase
-        if phase not in {"Ready", "Expanding"}:
-            phase = "Binding"
-        return await upsert_storage_osd(
-            kube,
-            name=record.name,
-            spec=bound,
-            phase=phase,
-            timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-        )
-
-    async def _create_volume_payload(
-        self,
-        kube: Kube,
-        pvc_namespace: str,
-        pvc_name: str,
-        pv_name: str,
-        volume_id: str,
-        requested: int,
-    ) -> bytes:
-        record, claim = await self._record_for_pvc(
-            kube,
-            namespace=pvc_namespace,
-            name=pvc_name,
-        )
-        if requested > record.target_bytes:
-            msg = (
-                f"PVC requests {requested} bytes but OSD "
-                f"{record.name} is prepared for "
-                f"{record.target_bytes} bytes"
-            )
-            raise ValueError(msg)
-        fresh = await self._upsert_claim_binding(
-            kube,
-            record=record,
-            claim=claim,
-            volume_id=volume_id,
-            pv_name=pv_name,
-        )
-        return _field_bytes(1, _volume(fresh, volume_id=volume_id))
-
-    async def _delete_volume_payload(self, kube: Kube, volume_id: str) -> bytes:
-        with suppress(KeyError):
-            record = await self._record_for_volume(kube, volume_id)
-            if record.phase not in {"Shrinking", "Retiring", "Retired"}:
-                await patch_storage_osd_status(
-                    kube,
-                    osd=record,
-                    status={
-                        "last_error": (
-                            "CSI DeleteVolume was requested while the OSD was "
-                            f"{record.phase}; preserving host substrate "
-                            "because Bertrand has not started shrink/retirement"
-                        )
-                    },
-                    timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-                )
-                return b""
-            await patch_storage_osd_status(
-                kube,
-                osd=record,
-                status={"last_error": ""},
-                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-            )
-        return b""
-
-    async def _controller_expand_volume_payload(
-        self,
-        kube: Kube,
-        volume_id: str,
-        requested: int,
-    ) -> bytes:
-        record = await self._record_for_volume(kube, volume_id)
-        if requested > record.target_bytes:
-            msg = (
-                f"expansion requested {requested} bytes but OSD "
-                f"{record.name} target is {record.target_bytes} bytes"
-            )
-            raise ValueError(msg)
-        return _message(
-            _field_varint(1, record.target_bytes),
-            _field_varint(2, 1),
-        )
-
-    async def _node_publish_volume_payload(
-        self,
-        kube: Kube,
-        volume_id: str,
-        target_path: str,
-    ) -> bytes:
-        record = await self._record_for_volume(kube, volume_id)
-        if record.host_id != self.host_id:
-            msg = (
-                f"volume {volume_id!r} belongs to host {record.host_id}, "
-                f"not this host {self.host_id}"
-            )
-            raise PermissionError(msg)
-        if record.origin == "loop-fallback":
-            prepared = await prepare_loop_fallback_osd(
-                name=record.name,
-                target_bytes=record.target_bytes,
-                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-            )
-        else:
-            prepared = await prepare_lvm_osd(
-                name=record.name,
-                target_bytes=record.target_bytes,
-                pv_name=record.pv_name,
-                lv_name=record.lv_name,
-                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-            )
-        await bind_block_device(
-            block_path=record.block_path,
-            target_path=target_path,
-            timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-        )
-        await patch_storage_osd_status(
-            kube,
-            osd=record,
-            status={
-                "phase": ("Ready" if record.phase == "Ready" else "Binding"),
-                "observed_bytes": prepared.observed_bytes,
-                "last_error": "",
-            },
-            timeout=CSI_REQUEST_TIMEOUT_SECONDS,
-        )
-        return b""
-
-    async def _node_expand_volume_payload(self, kube: Kube, volume_id: str) -> bytes:
-        record = await self._record_for_volume(kube, volume_id)
-        return _field_varint(1, record.target_bytes)
 
     def _get_plugin_info(self, _request: bytes, _context: Any) -> bytes:
         return _message(
@@ -467,19 +550,23 @@ class BertrandOSDCSIDriver:
     def _probe(self, _request: bytes, _context: Any) -> bytes:
         return b""
 
-    def _controller_get_capabilities(self, _request: bytes, _context: Any) -> bytes:
+    def _controller_get_capabilities(self, _request: bytes, context: Any) -> bytes:
+        self._require_role(context, "controller", "ControllerGetCapabilities")
         return _message(_controller_capability(1), _controller_capability(9))
 
-    def _node_get_capabilities(self, _request: bytes, _context: Any) -> bytes:
+    def _node_get_capabilities(self, _request: bytes, context: Any) -> bytes:
+        self._require_role(context, "node", "NodeGetCapabilities")
         return _message(_node_capability(3))
 
-    def _node_get_info(self, _request: bytes, _context: Any) -> bytes:
+    def _node_get_info(self, _request: bytes, context: Any) -> bytes:
+        self._require_role(context, "node", "NodeGetInfo")
         return _message(
             _field_string(1, self.node_name),
             _field_bytes(3, _topology(self.node_name)),
         )
 
     def _create_volume(self, request: bytes, context: Any) -> bytes:
+        self._require_role(context, "controller", "CreateVolume")
         parameters = _map_values(request, 4)
         pvc_name = parameters.get(CSI_PVC_NAME_PARAMETER, "").strip()
         pvc_namespace = parameters.get(CSI_PVC_NAMESPACE_PARAMETER, "").strip()
@@ -491,25 +578,104 @@ class BertrandOSDCSIDriver:
         except ValueError as err:
             _abort(context, "INVALID_ARGUMENT", str(err))
         volume_id = _first_string(request, 1) or pv_name or pvc_name
-        return self._run_csi(
-            context,
-            self._create_volume_payload,
-            pvc_namespace,
-            pvc_name,
-            pv_name,
-            volume_id,
-            _capacity_request(request),
-            not_found=True,
-            permission_denied=True,
-        )
+        requested = _capacity_request(request)
+
+        async def invoke(kube: Kube) -> bytes:
+            claim = await PersistentVolumeClaim.get(
+                kube,
+                namespace=pvc_namespace,
+                name=pvc_name,
+                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+            )
+            if claim is None:
+                msg = f"PVC {pvc_namespace}/{pvc_name} does not exist"
+                raise KeyError(msg)
+            osd_name = claim.labels.get(STORAGE_OSD_NAME_LABEL, "").strip()
+            if not osd_name:
+                msg = (
+                    f"PVC {pvc_namespace}/{pvc_name} is not a "
+                    "Bertrand-managed OSD claim"
+                )
+                raise PermissionError(msg)
+            storage = await read_storage_state(
+                kube,
+                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+            )
+            record: CephStorageOSD | None = None
+            for item in storage.status.osds.values():
+                if item.name == osd_name:
+                    record = item
+                    break
+            if record is None:
+                msg = (
+                    f"PVC {pvc_namespace}/{pvc_name} references missing "
+                    f"OSD record {osd_name!r}"
+                )
+                raise KeyError(msg)
+            if requested > record.target_bytes:
+                msg = (
+                    f"PVC requests {requested} bytes but OSD "
+                    f"{record.name} is prepared for "
+                    f"{record.target_bytes} bytes"
+                )
+                raise ValueError(msg)
+            bound = record.model_copy(
+                update={
+                    "csi_volume_id": volume_id,
+                    "persistent_volume_name": pv_name,
+                    "persistent_volume_claim_namespace": claim.namespace,
+                    "persistent_volume_claim_name": claim.name,
+                },
+            )
+            phase = record.phase
+            if phase not in {"Ready", "Expanding"}:
+                phase = "Binding"
+            fresh = await upsert_storage_osd(
+                kube,
+                name=record.name,
+                spec=bound,
+                phase=phase,
+                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+            )
+            return _field_bytes(1, _volume(fresh, volume_id=volume_id))
+
+        return self._rpc(context, invoke)
 
     def _delete_volume(self, request: bytes, context: Any) -> bytes:
+        self._require_role(context, "controller", "DeleteVolume")
         volume_id = _first_string(request, 1)
         if not volume_id:
             _abort(context, "INVALID_ARGUMENT", "DeleteVolume missing volume_id")
-        return self._run_csi(context, self._delete_volume_payload, volume_id)
+
+        async def invoke(kube: Kube) -> bytes:
+            with suppress(KeyError):
+                record = await self._record_for_volume(kube, volume_id)
+                if record.phase not in {"Shrinking", "Retiring", "Retired"}:
+                    await patch_storage_osd_status(
+                        kube,
+                        osd=record,
+                        status={
+                            "last_error": (
+                                "CSI DeleteVolume was requested while the OSD was "
+                                f"{record.phase}; preserving host substrate "
+                                "because Bertrand has not started shrink/retirement"
+                            )
+                        },
+                        timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                    )
+                    return b""
+                await patch_storage_osd_status(
+                    kube,
+                    osd=record,
+                    status={"last_error": ""},
+                    timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                )
+            return b""
+
+        return self._rpc(context, invoke)
 
     def _controller_expand_volume(self, request: bytes, context: Any) -> bytes:
+        self._require_role(context, "controller", "ControllerExpandVolume")
         volume_id = _first_string(request, 1)
         requested = _capacity_request(request)
         if not volume_id:
@@ -518,28 +684,40 @@ class BertrandOSDCSIDriver:
                 "INVALID_ARGUMENT",
                 "ControllerExpandVolume missing volume_id",
             )
-        return self._run_csi(
-            context,
-            self._controller_expand_volume_payload,
-            volume_id,
-            requested,
-            not_found=True,
-        )
+
+        async def invoke(kube: Kube) -> bytes:
+            record = await self._record_for_volume(kube, volume_id)
+            if requested > record.target_bytes:
+                msg = (
+                    f"expansion requested {requested} bytes but OSD "
+                    f"{record.name} target is {record.target_bytes} bytes"
+                )
+                raise ValueError(msg)
+            return _message(
+                _field_varint(1, record.target_bytes),
+                _field_varint(2, 1),
+            )
+
+        return self._rpc(context, invoke)
 
     def _validate_volume_capabilities(self, request: bytes, context: Any) -> bytes:
+        self._require_role(context, "controller", "ValidateVolumeCapabilities")
         try:
             _require_raw_block_capabilities(request, 2)
         except ValueError as err:
             _abort(context, "INVALID_ARGUMENT", str(err))
         return _field_bytes(1, b"")
 
-    def _node_stage_volume(self, _request: bytes, _context: Any) -> bytes:
+    def _node_stage_volume(self, _request: bytes, context: Any) -> bytes:
+        self._require_role(context, "node", "NodeStageVolume")
         return b""
 
-    def _node_unstage_volume(self, _request: bytes, _context: Any) -> bytes:
+    def _node_unstage_volume(self, _request: bytes, context: Any) -> bytes:
+        self._require_role(context, "node", "NodeUnstageVolume")
         return b""
 
     def _node_publish_volume(self, request: bytes, context: Any) -> bytes:
+        self._require_role(context, "node", "NodePublishVolume")
         volume_id = _first_string(request, 1)
         target_path = _first_string(request, 4)
         if not volume_id or not target_path:
@@ -548,16 +726,50 @@ class BertrandOSDCSIDriver:
             _require_raw_block_capabilities(request, 5)
         except ValueError as err:
             _abort(context, "INVALID_ARGUMENT", str(err))
-        return self._run_csi(
-            context,
-            self._node_publish_volume_payload,
-            volume_id,
-            target_path,
-            not_found=True,
-            permission_denied=True,
-        )
+
+        async def invoke(kube: Kube) -> bytes:
+            record = await self._record_for_volume(kube, volume_id)
+            if record.host_id != self.host_id:
+                msg = (
+                    f"volume {volume_id!r} belongs to host {record.host_id}, "
+                    f"not this host {self.host_id}"
+                )
+                raise PermissionError(msg)
+            if record.origin == "loop-fallback":
+                prepared = await prepare_loop_fallback_osd(
+                    name=record.name,
+                    target_bytes=record.target_bytes,
+                    timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                )
+            else:
+                prepared = await prepare_lvm_osd(
+                    name=record.name,
+                    target_bytes=record.target_bytes,
+                    pv_name=record.pv_name,
+                    lv_name=record.lv_name,
+                    timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                )
+            await bind_block_device(
+                block_path=record.block_path,
+                target_path=target_path,
+                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+            )
+            await patch_storage_osd_status(
+                kube,
+                osd=record,
+                status={
+                    "phase": ("Ready" if record.phase == "Ready" else "Binding"),
+                    "observed_bytes": prepared.observed_bytes,
+                    "last_error": "",
+                },
+                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+            )
+            return b""
+
+        return self._rpc(context, invoke)
 
     def _node_unpublish_volume(self, request: bytes, context: Any) -> bytes:
+        self._require_role(context, "node", "NodeUnpublishVolume")
         target_path = _first_string(request, 2)
         if not target_path:
             _abort(
@@ -577,15 +789,16 @@ class BertrandOSDCSIDriver:
         return b""
 
     def _node_expand_volume(self, request: bytes, context: Any) -> bytes:
+        self._require_role(context, "node", "NodeExpandVolume")
         volume_id = _first_string(request, 1)
         if not volume_id:
             _abort(context, "INVALID_ARGUMENT", "NodeExpandVolume missing volume_id")
-        return self._run_csi(
-            context,
-            self._node_expand_volume_payload,
-            volume_id,
-            not_found=True,
-        )
+
+        async def invoke(kube: Kube) -> bytes:
+            record = await self._record_for_volume(kube, volume_id)
+            return _field_varint(1, record.target_bytes)
+
+        return self._rpc(context, invoke)
 
 
 def _generic_rpc_handlers(grpc: Any, driver: BertrandOSDCSIDriver) -> tuple[Any, ...]:
@@ -601,9 +814,7 @@ def _generic_rpc_handlers(grpc: Any, driver: BertrandOSDCSIDriver) -> tuple[Any,
             "csi.v1.Identity",
             {
                 "GetPluginInfo": raw_handler(driver._get_plugin_info),
-                "GetPluginCapabilities": raw_handler(
-                    driver._get_plugin_capabilities
-                ),
+                "GetPluginCapabilities": raw_handler(driver._get_plugin_capabilities),
                 "Probe": raw_handler(driver._probe),
             },
         ),
@@ -615,9 +826,7 @@ def _generic_rpc_handlers(grpc: Any, driver: BertrandOSDCSIDriver) -> tuple[Any,
                 ),
                 "CreateVolume": raw_handler(driver._create_volume),
                 "DeleteVolume": raw_handler(driver._delete_volume),
-                "ControllerExpandVolume": raw_handler(
-                    driver._controller_expand_volume
-                ),
+                "ControllerExpandVolume": raw_handler(driver._controller_expand_volume),
                 "ValidateVolumeCapabilities": raw_handler(
                     driver._validate_volume_capabilities
                 ),

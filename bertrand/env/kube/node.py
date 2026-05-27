@@ -87,15 +87,14 @@ class Node(
 
     _obj: kubernetes.client.V1Node
 
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1Node]] = (
-        BuiltinResource.cluster(
-            api="core",
-            kind="Node",
-            slug="node",
-            expected=kubernetes.client.V1Node,
-            list_type=kubernetes.client.V1NodeList,
-            watch=True,
-        )
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1Node]] = BuiltinResource(
+        scope="cluster",
+        api="core",
+        kind="Node",
+        slug="node",
+        expected=kubernetes.client.V1Node,
+        list_type=kubernetes.client.V1NodeList,
+        can_watch=True,
     )
 
     @classmethod
@@ -796,8 +795,7 @@ def _classify_node_drain_pods(
             continue
         if pod.uses_emptydir and not force:
             blocked.append(
-                f"{namespace}/{name}: uses emptyDir volume "
-                "(set force=True to allow)"
+                f"{namespace}/{name}: uses emptyDir volume (set force=True to allow)"
             )
             continue
         if not pod.has_supported_controller() and not force:
@@ -849,9 +847,7 @@ async def _evict_node_drain_candidates(
                         f"node {node.name!r}"
                     )
                     raise TimeoutError(msg) from err
-                await asyncio.sleep(
-                    deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS)
-                )
+                await asyncio.sleep(deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS))
 
 
 async def _wait_node_drain_convergence(

@@ -32,18 +32,17 @@ class Lease(
 
     _obj: kube_client.V1Lease
 
-    resource: ClassVar[BuiltinResource[kube_client.V1Lease]] = (
-        BuiltinResource.namespaced(
-            api="coordination",
-            kind="Lease",
-            slug="lease",
-            expected=kube_client.V1Lease,
-            list_type=kube_client.V1LeaseList,
-            create=True,
-            patch=True,
-            delete=True,
-            watch=True,
-        )
+    resource: ClassVar[BuiltinResource[kube_client.V1Lease]] = BuiltinResource(
+        scope="namespaced",
+        api="coordination",
+        kind="Lease",
+        slug="lease",
+        expected=kube_client.V1Lease,
+        list_type=kube_client.V1LeaseList,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
+        can_watch=True,
     )
 
     @staticmethod
@@ -339,13 +338,14 @@ class Lease(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )
 
     @property

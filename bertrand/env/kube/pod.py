@@ -106,17 +106,16 @@ class Pod(
 
     _obj: kubernetes.client.V1Pod
 
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1Pod]] = (
-        BuiltinResource.namespaced(
-            api="core",
-            kind="Pod",
-            slug="pod",
-            expected=kubernetes.client.V1Pod,
-            list_type=kubernetes.client.V1PodList,
-            create=True,
-            delete=True,
-            watch=True,
-        )
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1Pod]] = BuiltinResource(
+        scope="namespaced",
+        api="core",
+        kind="Pod",
+        slug="pod",
+        expected=kubernetes.client.V1Pod,
+        list_type=kubernetes.client.V1PodList,
+        can_create=True,
+        can_delete=True,
+        can_watch=True,
     )
 
     @staticmethod
@@ -213,16 +212,17 @@ class Pod(
             pod_template=pod_template,
             annotations=annotations,
         )
-        return await cls.resource.create_manifest(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
-            malformed_message=(
-                f"malformed Kubernetes Pod payload while creating {name!r}"
-            ),
+        return cls(
+            _obj=await cls.resource.create(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+                malformed_message=(
+                    f"malformed Kubernetes Pod payload while creating {name!r}"
+                ),
+            )
         )
 
     @property

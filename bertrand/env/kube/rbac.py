@@ -19,50 +19,50 @@ type _RoleKind = Literal["ClusterRole", "Role"]
 type _BindingKind = Literal["ClusterRoleBinding", "RoleBinding"]
 type RbacResourceKind = _RoleKind | _BindingKind
 
-_CLUSTER_ROLE_RESOURCE = BuiltinResource.cluster(
+_CLUSTER_ROLE_RESOURCE = BuiltinResource(
+    scope="cluster",
     api="rbac",
     kind="ClusterRole",
     slug="cluster_role",
     expected=kube_client.V1ClusterRole,
     list_type=kube_client.V1ClusterRoleList,
-    create=True,
-    patch=True,
-    delete=True,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
 )
-_CLUSTER_ROLE_BINDING_RESOURCE = BuiltinResource.cluster(
+_CLUSTER_ROLE_BINDING_RESOURCE = BuiltinResource(
+    scope="cluster",
     api="rbac",
     kind="ClusterRoleBinding",
     slug="cluster_role_binding",
     expected=kube_client.V1ClusterRoleBinding,
     list_type=kube_client.V1ClusterRoleBindingList,
-    create=True,
-    patch=True,
-    delete=True,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
 )
-_ROLE_RESOURCE = BuiltinResource.namespaced(
+_ROLE_RESOURCE = BuiltinResource(
+    scope="namespaced",
     api="rbac",
     kind="Role",
     slug="role",
     expected=kube_client.V1Role,
     list_type=kube_client.V1RoleList,
-    create=True,
-    patch=True,
-    delete=True,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
 )
-_ROLE_BINDING_RESOURCE = BuiltinResource.namespaced(
+_ROLE_BINDING_RESOURCE = BuiltinResource(
+    scope="namespaced",
     api="rbac",
     kind="RoleBinding",
     slug="role_binding",
     expected=kube_client.V1RoleBinding,
     list_type=kube_client.V1RoleBindingList,
-    create=True,
-    patch=True,
-    delete=True,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
 )
-
-
-def _raw_payload[T](*, _obj: T) -> T:
-    return _obj
 
 
 def _rule_manifests(rules: Collection[PolicyRuleManifest]) -> list[dict[str, object]]:
@@ -220,28 +220,24 @@ async def get_rbac_resource(
     if kind == "ClusterRole":
         return await _CLUSTER_ROLE_RESOURCE.get(
             kube,
-            owner=_raw_payload,
             name=name,
             timeout=timeout,
         )
     if kind == "ClusterRoleBinding":
         return await _CLUSTER_ROLE_BINDING_RESOURCE.get(
             kube,
-            owner=_raw_payload,
             name=name,
             timeout=timeout,
         )
     if kind == "Role":
         return await _ROLE_RESOURCE.get(
             kube,
-            owner=_raw_payload,
             namespace=namespace or "",
             name=name,
             timeout=timeout,
         )
     return await _ROLE_BINDING_RESOURCE.get(
         kube,
-        owner=_raw_payload,
         namespace=namespace or "",
         name=name,
         timeout=timeout,
@@ -306,7 +302,6 @@ async def upsert_rbac_role(
             raise OSError(msg)
         return await _CLUSTER_ROLE_RESOURCE.upsert(
             kube,
-            owner=_raw_payload,
             name=name,
             manifest=_role_manifest(
                 kind=kind,
@@ -325,7 +320,6 @@ async def upsert_rbac_role(
         raise OSError(msg)
     return await _ROLE_RESOURCE.upsert(
         kube,
-        owner=_raw_payload,
         namespace=namespace,
         name=name,
         manifest=_role_manifest(
@@ -410,7 +404,6 @@ async def upsert_rbac_binding(
             raise OSError(msg)
         return await _CLUSTER_ROLE_BINDING_RESOURCE.upsert(
             kube,
-            owner=_raw_payload,
             name=name,
             manifest=_binding_manifest(
                 kind=kind,
@@ -438,7 +431,6 @@ async def upsert_rbac_binding(
         raise OSError(msg)
     return await _ROLE_BINDING_RESOURCE.upsert(
         kube,
-        owner=_raw_payload,
         namespace=namespace,
         name=name,
         manifest=_binding_manifest(

@@ -42,15 +42,16 @@ class NetworkPolicy(
     _obj: kubernetes.client.V1NetworkPolicy
 
     resource: ClassVar[BuiltinResource[kubernetes.client.V1NetworkPolicy]] = (
-        BuiltinResource.namespaced(
+        BuiltinResource(
+            scope="namespaced",
             api="networking",
             kind="NetworkPolicy",
             slug="network_policy",
             expected=kubernetes.client.V1NetworkPolicy,
             list_type=kubernetes.client.V1NetworkPolicyList,
-            create=True,
-            patch=True,
-            delete=True,
+            can_create=True,
+            can_patch=True,
+            can_delete=True,
         )
     )
 
@@ -157,13 +158,14 @@ class NetworkPolicy(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )
 
     @property

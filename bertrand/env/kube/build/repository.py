@@ -428,13 +428,6 @@ def image_repository_labels() -> dict[str, str]:
     }
 
 
-def _image_repository_maintenance_labels() -> dict[str, str]:
-    return {
-        **image_repository_labels(),
-        IMAGE_REPOSITORY_MAINTENANCE_LABEL: IMAGE_REPOSITORY_MAINTENANCE_LABEL_VALUE,
-    }
-
-
 def image_repository_selector() -> dict[str, str]:
     """Return the image repository pod selector.
 
@@ -532,22 +525,6 @@ async def image_repository_maintenance_status(
     return ImageRepositoryMaintenanceStatus.from_data(status.data)
 
 
-async def _write_maintenance_status(
-    kube: Kube,
-    *,
-    status: ImageRepositoryMaintenanceStatus,
-    timeout: float,
-) -> None:
-    await ConfigMap.upsert(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
-        labels=_image_repository_maintenance_labels(),
-        data=status.data(),
-        timeout=timeout,
-    )
-
-
 async def start_image_repository_maintenance(
     kube: Kube,
     *,
@@ -569,13 +546,21 @@ async def start_image_repository_maintenance(
     current = await image_repository_maintenance_status(
         kube, timeout=deadline.remaining()
     )
-    await _write_maintenance_status(
+    status = current.start_maintenance(
+        reason=reason,
+        message=message,
+        now=datetime.now(UTC),
+    )
+    labels = image_repository_labels()
+    labels[IMAGE_REPOSITORY_MAINTENANCE_LABEL] = (
+        IMAGE_REPOSITORY_MAINTENANCE_LABEL_VALUE
+    )
+    await ConfigMap.upsert(
         kube,
-        status=current.start_maintenance(
-            reason=reason,
-            message=message,
-            now=datetime.now(UTC),
-        ),
+        namespace=BERTRAND_NAMESPACE,
+        name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
+        labels=labels,
+        data=status.data(),
         timeout=deadline.remaining(),
     )
 
@@ -590,9 +575,16 @@ async def clear_image_repository_maintenance(
     current = await image_repository_maintenance_status(
         kube, timeout=deadline.remaining()
     )
-    await _write_maintenance_status(
+    labels = image_repository_labels()
+    labels[IMAGE_REPOSITORY_MAINTENANCE_LABEL] = (
+        IMAGE_REPOSITORY_MAINTENANCE_LABEL_VALUE
+    )
+    await ConfigMap.upsert(
         kube,
-        status=current.clear_maintenance(),
+        namespace=BERTRAND_NAMESPACE,
+        name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
+        labels=labels,
+        data=current.clear_maintenance().data(),
         timeout=deadline.remaining(),
     )
 
@@ -619,9 +611,17 @@ async def mark_image_repository_storage_dirty(
     current = await image_repository_maintenance_status(
         kube, timeout=deadline.remaining()
     )
-    await _write_maintenance_status(
+    status = current.mark_storage_dirty(count=count, now=datetime.now(UTC))
+    labels = image_repository_labels()
+    labels[IMAGE_REPOSITORY_MAINTENANCE_LABEL] = (
+        IMAGE_REPOSITORY_MAINTENANCE_LABEL_VALUE
+    )
+    await ConfigMap.upsert(
         kube,
-        status=current.mark_storage_dirty(count=count, now=datetime.now(UTC)),
+        namespace=BERTRAND_NAMESPACE,
+        name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
+        labels=labels,
+        data=status.data(),
         timeout=deadline.remaining(),
     )
 
@@ -637,9 +637,16 @@ async def clear_image_repository_storage_dirty(
     current = await image_repository_maintenance_status(
         kube, timeout=deadline.remaining()
     )
-    await _write_maintenance_status(
+    labels = image_repository_labels()
+    labels[IMAGE_REPOSITORY_MAINTENANCE_LABEL] = (
+        IMAGE_REPOSITORY_MAINTENANCE_LABEL_VALUE
+    )
+    await ConfigMap.upsert(
         kube,
-        status=current.clear_storage_dirty(last_gc_at=last_gc_at),
+        namespace=BERTRAND_NAMESPACE,
+        name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
+        labels=labels,
+        data=current.clear_storage_dirty(last_gc_at=last_gc_at).data(),
         timeout=deadline.remaining(),
     )
 
@@ -898,9 +905,7 @@ async def image_repository_status(
         available_replicas = (
             deployment.available_replicas if deployment is not None else 0
         )
-        updated_replicas = (
-            deployment.updated_replicas if deployment is not None else 0
-        )
+        updated_replicas = deployment.updated_replicas if deployment is not None else 0
         observed_generation = (
             deployment.observed_generation if deployment is not None else 0
         )
@@ -946,20 +951,15 @@ async def image_repository_status(
         )
         desired_buildkit_hash = _config_hash(desired_buildkit_config)
         installed_buildkit_hash = (
-            _config_hash(buildkit_config.data)
-            if buildkit_config is not None
-            else ""
+            _config_hash(buildkit_config.data) if buildkit_config is not None else ""
         )
         desired_registry_config = registry_config_data(read_only=False)
         desired_read_only_registry_config = registry_config_data(read_only=True)
-        registry_config_current = (
-            registry_config is not None
-            and (
-                registry_config.data == desired_registry_config
-                or (
-                    maintenance.active
-                    and registry_config.data == desired_read_only_registry_config
-                )
+        registry_config_current = registry_config is not None and (
+            registry_config.data == desired_registry_config
+            or (
+                maintenance.active
+                and registry_config.data == desired_read_only_registry_config
             )
         )
         buildkit_config_current = installed_buildkit_hash == desired_buildkit_hash
@@ -1248,21 +1248,7 @@ async def _rollout_registry_config(
         data=registry_config_data(read_only=read_only),
         timeout=deadline.remaining(),
     )
-    deployment = await _upsert_deployment(
-        kube,
-        config_hash=_config_hash(config.data),
-        timeout=deadline.remaining(),
-    )
-    await deployment.wait_rollout(kube, timeout=deadline.remaining())
-
-
-async def _upsert_deployment(
-    kube: Kube,
-    *,
-    config_hash: str,
-    timeout: float,
-) -> Deployment:
-    return await Deployment.upsert(
+    deployment = await Deployment.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=IMAGE_REPOSITORY_NAME,
@@ -1298,11 +1284,14 @@ async def _upsert_deployment(
                 )
             ],
             volumes=_volumes(),
-            annotations={IMAGE_REPOSITORY_CONFIG_HASH_ANNOTATION: config_hash},
+            annotations={
+                IMAGE_REPOSITORY_CONFIG_HASH_ANNOTATION: _config_hash(config.data)
+            },
         ),
         strategy={"type": "Recreate", "rollingUpdate": None},
-        timeout=timeout,
+        timeout=deadline.remaining(),
     )
+    await deployment.wait_rollout(kube, timeout=deadline.remaining())
 
 
 def _volume_mounts() -> tuple[Mapping[str, object], ...]:
@@ -1383,7 +1372,25 @@ def image_repository_pull_ref(ref: str) -> str:
     )
 
 
-def _digest_delete_url(digest_ref: str) -> str:
+async def delete_image_manifest(
+    digest_ref: str,
+    *,
+    timeout: float = INFINITY,
+) -> None:
+    """Delete one image manifest by immutable registry digest reference.
+
+    Raises
+    ------
+    OSError
+        If the registry rejects the delete request.
+    TimeoutError
+        If `timeout` is non-positive or the registry request times out.
+    ValueError
+        If `digest_ref` is not an immutable ref in Bertrand's image repository.
+    """
+    if timeout <= 0:
+        msg = "image manifest delete timeout must be non-negative"
+        raise TimeoutError(msg)
     ref = digest_ref.strip()
     prefix = f"{IMAGE_REPOSITORY_PULL_HOST}/"
     if not ref.startswith(prefix):
@@ -1402,30 +1409,7 @@ def _digest_delete_url(digest_ref: str) -> str:
         raise ValueError(msg)
     encoded_path = urllib.parse.quote(repo_path, safe="/")
     encoded_digest = urllib.parse.quote(digest, safe=":")
-    return (
-        f"{IMAGE_REPOSITORY_PULL_SERVER}/v2/"
-        f"{encoded_path}/manifests/{encoded_digest}"
-    )
-
-
-async def delete_image_manifest(
-    digest_ref: str,
-    *,
-    timeout: float = INFINITY,
-) -> None:
-    """Delete one image manifest by immutable registry digest reference.
-
-    Raises
-    ------
-    OSError
-        If the registry rejects the delete request.
-    TimeoutError
-        If `timeout` is non-positive or the registry request times out.
-    """
-    if timeout <= 0:
-        msg = "image manifest delete timeout must be non-negative"
-        raise TimeoutError(msg)
-    url = _digest_delete_url(digest_ref)
+    url = f"{IMAGE_REPOSITORY_PULL_SERVER}/v2/{encoded_path}/manifests/{encoded_digest}"
     request_timeout = None if math.isinf(timeout) else timeout
     try:
         status = await asyncio.to_thread(

@@ -9,13 +9,16 @@ from typing import TYPE_CHECKING, cast
 
 from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
 from bertrand.env.kube.ceph.capacity import (
+    STORAGE_ACTION_PHASES,
     STORAGE_ACTION_RESOURCE,
     STORAGE_NODE_REPORT_MAX_AGE_SECONDS,
-    _storage_action_counts,
     read_storage_state,
 )
-from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
-from bertrand.env.kube.ceph.storage import CSI_CONTROLLER_NAME, CSI_NODE_NAME
+from bertrand.env.kube.ceph.csi import (
+    CSI_CONTROLLER_NAME,
+    CSI_DRIVER_NAME,
+    CSI_NODE_NAME,
+)
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
 
@@ -46,6 +49,16 @@ _COMMON_STATUS_FIELDS = (
     ("LVM shrink candidate", "lvm_shrink_candidate"),
     ("LVM shrink target bytes", "lvm_shrink_target_bytes"),
 )
+
+
+def _storage_action_counts(
+    actions: list[CephStorageActionRecord],
+) -> dict[str, int]:
+    counts: dict[str, int] = dict.fromkeys(STORAGE_ACTION_PHASES, 0)
+    for action in actions:
+        counts[action.status.phase] += 1
+    return counts
+
 
 _LOCAL_STATUS_FIELDS = (
     ("LVM preferred", "lvm_preferred"),
@@ -454,10 +467,7 @@ def print_cluster_storage_doctor(snapshot: StorageCliSnapshot) -> None:
         print("  no node reports a 'bertrand' LVM volume group with free PVs")
         print("  create a host LVM volume group named 'bertrand' for preferred OSDs")
     else:
-        total_lvm_free = sum(
-            report.lvm_free_bytes
-            for report in snapshot.reports
-        )
+        total_lvm_free = sum(report.lvm_free_bytes for report in snapshot.reports)
         print(f"  reported free LVM bytes in 'bertrand' VG: {total_lvm_free}")
     if not storage_csi_ready(snapshot.csi):
         print(
@@ -567,10 +577,7 @@ def storage_osd_line(osd: CephStorageOSD, *, include_ceph_id: bool) -> str:
     str
         Human-readable OSD status line.
     """
-    line = (
-        f"    {osd.name}: {osd.origin} "
-        f"{osd.phase} node={osd.node_name}"
-    )
+    line = f"    {osd.name}: {osd.origin} {osd.phase} node={osd.node_name}"
     if include_ceph_id and osd.ceph_osd_id is not None:
         line = f"{line} ceph=osd.{osd.ceph_osd_id}"
     return line
@@ -595,8 +602,7 @@ def _lvm_available(reports: list[CephStorageNodeReport]) -> bool:
 
 def _active_loop(osds: list[CephStorageOSD]) -> bool:
     return any(
-        osd.origin == "loop-fallback"
-        and osd.phase not in {"Retired", "Failed"}
+        osd.origin == "loop-fallback" and osd.phase not in {"Retired", "Failed"}
         for osd in osds
     )
 
@@ -643,10 +649,7 @@ def _print_stuck_osds(
             if osd.phase_changed_at is not None
             else "unknown"
         )
-        print(
-            f"  OSD {osd.name} is {osd.phase}; "
-            f"{message_prefix} {changed_at}"
-        )
+        print(f"  OSD {osd.name} is {osd.phase}; {message_prefix} {changed_at}")
 
 
 def _print_osd_errors(osds: list[CephStorageOSD]) -> None:
@@ -696,9 +699,7 @@ def _print_pending_reservations(
     limit: int | None,
 ) -> None:
     pending = [
-        reservation
-        for reservation in reservations
-        if reservation.phase == "Pending"
+        reservation for reservation in reservations if reservation.phase == "Pending"
     ]
     for reservation in pending[:limit]:
         print(

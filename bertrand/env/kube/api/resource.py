@@ -1,4 +1,4 @@
-"""Shared Kubernetes resource descriptor helpers."""
+"""Kubernetes generated-resource adapters and wrapper mixins."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from ._helpers import (
     _validate_delete_status,
     _wait_until_deleted,
 )
+from .watch import WatchEvent
 from .watch import watch as kube_watch
 
 if TYPE_CHECKING:
@@ -21,112 +22,97 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 
     from .client import Kube
-    from .watch import WatchEvent
 
 type ResourceScope = Literal["cluster", "namespaced"]
 
 
-class _DescriptorEngine:
-    """Shared execution plumbing for Kubernetes resource descriptors."""
+@dataclass(frozen=True)
+class BuiltinResource[PayloadT]:
+    """Raw adapter for one generated Kubernetes resource API.
+
+    Parameters
+    ----------
+    scope : {"cluster", "namespaced"}
+        Kubernetes resource scope.
+    api : str
+        Attribute on :class:`Kube` exposing the generated API family.
+    kind : str
+        Human-readable Kubernetes kind for diagnostics.
+    slug : str
+        Generated-client method slug, such as ``config_map`` or ``deployment``.
+    expected : type[PayloadT]
+        Kubernetes client payload type returned by single-object operations.
+    list_type : type[object]
+        Kubernetes client list payload type returned by list operations.
+    can_create : bool, default=False
+        Whether the generated API supports create for this resource.
+    can_patch : bool, default=False
+        Whether the generated API supports patch for this resource.
+    can_delete : bool, default=False
+        Whether the generated API supports delete for this resource.
+    can_watch : bool, default=False
+        Whether the generated API supports watch/list streaming.
+    """
 
     scope: ResourceScope
+    api: str
     kind: str
-    _cluster_namespace_phrase: ClassVar[str] = "in a namespace"
-    _cluster_watch_phrase: ClassVar[str] = "in a namespace"
+    slug: str
+    expected: type[PayloadT]
+    list_type: type[object]
+    can_create: bool = False
+    can_patch: bool = False
+    can_delete: bool = False
+    can_watch: bool = False
 
-    async def _run(
-        self,
-        kube: Kube,
-        fn: Callable[[float | None], object],
-        *,
-        timeout: float,
-        context: str,
-        missing_ok: bool = True,
-    ) -> object | None:
-        return await kube.run(
-            fn,
-            timeout=timeout,
-            context=context,
-            missing_ok=missing_ok,
-        )
-
-    async def _request(
-        self,
-        kube: Kube,
-        *,
-        endpoint: Callable[..., object],
-        api_kwargs: Mapping[str, object],
-        timeout: float,
-        context: str,
-        missing_ok: bool = False,
-    ) -> object | None:
-        return await self._run(
-            kube,
-            lambda request_timeout: endpoint(
-                **api_kwargs,
-                _request_timeout=request_timeout,
-            ),
-            timeout=timeout,
-            context=context,
-            missing_ok=missing_ok,
-        )
-
-    async def wait_deleted(
-        self,
-        *,
-        label: str,
-        timeout: float,
-        refresh: Callable[[float], Awaitable[object | None]],
-    ) -> None:
-        """Wait for a resource to disappear."""
-        await _wait_until_deleted(label=label, timeout=timeout, refresh=refresh)
-
-    async def get[WrapperT](
+    async def get(
         self,
         kube: Kube,
         *,
         name: str,
         timeout: float,
         namespace: str | None = None,
-        owner: Callable[..., WrapperT] | None = None,
         context: str | None = None,
-    ) -> WrapperT | None:
+    ) -> PayloadT | None:
         """Read one resource by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Resource name.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Namespace for namespaced resources.
+        context : str | None, optional
+            Error context override.
 
         Returns
         -------
-        WrapperT | None
-            Wrapped resource, or ``None`` when absent.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or another API error.
+        PayloadT | None
+            Raw Kubernetes payload, or ``None`` when absent.
         """
         namespace = self._single_namespace(namespace, action="read")
         label = self._object_label(name=name, namespace=namespace)
-        try:
-            payload = await self._run(
+        payload = await self._run(
+            kube,
+            lambda request_timeout: self._read(
                 kube,
-                lambda request_timeout: self._read(
-                    kube,
-                    namespace,
-                    name,
-                    request_timeout,
-                ),
-                timeout=timeout,
-                context=context or self._read_context(label),
-                missing_ok=self._read_missing_ok(),
-            )
-        except OSError as err:
-            if self._read_not_found(err):
-                return None
-            raise
+                namespace,
+                name,
+                request_timeout,
+            ),
+            timeout=timeout,
+            context=context or f"failed to read {self.kind} {label!r}",
+            missing_ok=True,
+        )
         if payload is None:
             return None
-        return self._wrap_payload(payload, owner=owner, context=self.kind)
+        return _typed_payload(payload, self.expected, context=self.kind)
 
-    async def list[WrapperT](
+    async def list(
         self,
         kube: Kube,
         *,
@@ -135,29 +121,51 @@ class _DescriptorEngine:
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
         field_selector: str | None = None,
-        owner: Callable[..., WrapperT] | None = None,
-    ) -> builtins.list[WrapperT]:
-        """List resources with optional namespace and label filtering.
+    ) -> builtins.list[PayloadT]:
+        """List resources with optional namespace and selector filtering.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Optional single namespace filter.
+        namespaces : Collection[str] | None, optional
+            Optional namespace filters for namespaced resources.
+        labels : Mapping[str, str] | None, optional
+            Optional exact-match label selector.
+        field_selector : str | None, optional
+            Raw Kubernetes field selector.
 
         Returns
         -------
-        list[WrapperT]
-            Wrapped resources matching the selectors.
+        list[PayloadT]
+            Raw Kubernetes payloads matching the filters.
         """
-        selected = self._list_namespaces(
-            namespace=namespace,
-            namespaces=namespaces,
-        )
+        selected = self._list_namespaces(namespace=namespace, namespaces=namespaces)
         payloads = await self._list_payloads(
             kube,
             timeout=timeout,
             namespaces=selected,
-            label_selector=self._label_selector(self._selector(labels)),
+            label_selector=_label_selector(labels),
             field_selector=self._field_selector(field_selector),
         )
-        return self._wrap_list_payloads(payloads, owner=owner)
+        items: builtins.list[PayloadT] = []
+        for payload in payloads:
+            items.extend(
+                _typed_list_items(
+                    payload,
+                    list_type=self.list_type,
+                    item_type=self.expected,
+                    list_context=self.kind,
+                    item_context=self.kind,
+                )
+            )
+        return items
 
-    async def watch_stream[WrapperT](
+    async def watch(
         self,
         kube: Kube,
         *,
@@ -166,64 +174,79 @@ class _DescriptorEngine:
         labels: Mapping[str, str] | None = None,
         field_selector: str | None = None,
         resource_version: str | None = None,
-        owner: Callable[..., WrapperT] | None = None,
-    ) -> AsyncIterator[WatchEvent[WrapperT]]:
-        """Watch this resource type.
+    ) -> AsyncIterator[WatchEvent[PayloadT]]:
+        """Watch this generated resource type.
 
         Yields
         ------
-        WatchEvent[WrapperT]
-            Typed watch events containing wrapped resources.
+        WatchEvent[PayloadT]
+            Typed watch events containing raw Kubernetes payloads.
         """
         namespace = self._watch_namespace(namespace)
-        if not self._supports_watch():
+        if not self.can_watch:
             msg = f"{self.kind} does not define a watch endpoint"
             raise NotImplementedError(msg)
-        watch_fn, api_kwargs, context = self._watch_request(
-            kube,
-            namespace=namespace,
-        )
+        watch_fn, api_kwargs, context = self._watch_request(kube, namespace=namespace)
         async for event in kube_watch(
             watch_fn,
-            wrapper=lambda payload: self._wrap_payload(
+            wrapper=lambda payload: _typed_payload(
                 payload,
-                owner=owner,
+                self.expected,
                 context=f"{self.kind} watch",
             ),
             timeout=timeout,
             context=context,
             resource_version=resource_version,
-            labels=self._selector(labels),
+            labels=labels,
             field_selector=field_selector,
             api_kwargs=api_kwargs,
         ):
             yield event
 
-    async def create_manifest[WrapperT](
+    async def create(
         self,
         kube: Kube,
         *,
         manifest: Mapping[str, object],
         timeout: float,
         namespace: str | None = None,
-        owner: Callable[..., WrapperT] | None = None,
         name: str | None = None,
         context: str | None = None,
-        missing_ok: bool = True,
         malformed_message: str | None = None,
-    ) -> WrapperT:
+        missing_ok: bool = True,
+    ) -> PayloadT:
         """Create one resource from a complete Kubernetes manifest.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        manifest : Mapping[str, object]
+            Complete Kubernetes manifest.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Namespace for namespaced resources.
+        name : str | None, optional
+            Name used in diagnostics.
+        context : str | None, optional
+            Error context override.
+        malformed_message : str | None, optional
+            Payload validation message override.
+        missing_ok : bool, optional
+            Whether HTTP 404 should be converted to ``None`` before payload
+            validation.
 
         Returns
         -------
-        WrapperT
-            Wrapped created resource.
+        PayloadT
+            Raw created Kubernetes payload.
         """
-        if not self._supports_create():
+        if not self.can_create:
             msg = f"{self.kind} does not define a create endpoint"
             raise NotImplementedError(msg)
         namespace = self._single_namespace(namespace, action="create")
-        label = self._manifest_label(manifest, namespace=namespace, name=name)
+        label = self._object_label(name=name or self.kind, namespace=namespace)
         payload = await self._run(
             kube,
             lambda request_timeout: self._create(
@@ -236,14 +259,9 @@ class _DescriptorEngine:
             context=context or f"failed to create {self.kind} {label}",
             missing_ok=missing_ok,
         )
-        return self._wrap_payload(
-            payload,
-            owner=owner,
-            context=self.kind,
-            malformed_message=malformed_message,
-        )
+        return self._typed(payload, malformed_message=malformed_message)
 
-    async def _upsert_manifest[WrapperT](
+    async def upsert(
         self,
         kube: Kube,
         *,
@@ -251,21 +269,33 @@ class _DescriptorEngine:
         manifest: Mapping[str, object],
         timeout: float,
         namespace: str | None = None,
-        owner: Callable[..., WrapperT] | None = None,
-    ) -> WrapperT:
+    ) -> PayloadT:
         """Create or patch one resource from a complete Kubernetes manifest.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Resource name.
+        manifest : Mapping[str, object]
+            Complete Kubernetes manifest.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Namespace for namespaced resources.
 
         Returns
         -------
-        WrapperT
-            Wrapped created or patched resource.
+        PayloadT
+            Raw created or patched Kubernetes payload.
 
         Raises
         ------
         OSError
-            If Kubernetes returns malformed data or another API error.
+            If Kubernetes create or patch fails.
         """
-        if not self._supports_create() or not self._supports_patch():
+        if not self.can_create or not self.can_patch:
             msg = f"{self.kind} does not define create/patch endpoints"
             raise NotImplementedError(msg)
         namespace = self._single_namespace(namespace, action="upsert")
@@ -299,7 +329,7 @@ class _DescriptorEngine:
                 context=f"failed to patch {self.kind} {label}",
                 missing_ok=False,
             )
-        return self._wrap_payload(payload, owner=owner, context=self.kind)
+        return self._typed(payload)
 
     async def delete_by_name(
         self,
@@ -309,8 +339,20 @@ class _DescriptorEngine:
         timeout: float,
         namespace: str | None = None,
     ) -> None:
-        """Delete one resource by name."""
-        if not self._supports_delete():
+        """Delete one resource by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Resource name.
+        timeout : float
+            Maximum request budget in seconds.
+        namespace : str | None, optional
+            Namespace for namespaced resources.
+        """
+        if not self.can_delete:
             msg = f"{self.kind} does not define a delete endpoint"
             raise NotImplementedError(msg)
         namespace = self._single_namespace(namespace, action="delete")
@@ -325,9 +367,45 @@ class _DescriptorEngine:
             ),
             timeout=timeout,
             context=f"failed to delete {self.kind} {label}",
-            missing_ok=self._delete_missing_ok(),
+            missing_ok=True,
         )
-        self._validate_delete_payload(payload, label=label)
+        _validate_delete_status(payload, label=f"{self.kind} {label}")
+
+    async def wait_deleted(
+        self,
+        *,
+        label: str,
+        timeout: float,
+        refresh: Callable[[float], Awaitable[object | None]],
+    ) -> None:
+        """Wait for a resource to disappear.
+
+        Parameters
+        ----------
+        label : str
+            Human-readable resource label.
+        timeout : float
+            Maximum wait budget in seconds.
+        refresh : Callable[[float], Awaitable[object | None]]
+            Callback that returns the live object, or ``None`` when absent.
+        """
+        await _wait_until_deleted(label=label, timeout=timeout, refresh=refresh)
+
+    async def _run(
+        self,
+        kube: Kube,
+        fn: Callable[[float | None], object],
+        *,
+        timeout: float,
+        context: str,
+        missing_ok: bool,
+    ) -> object | None:
+        return await kube.run(
+            fn,
+            timeout=timeout,
+            context=context,
+            missing_ok=missing_ok,
+        )
 
     async def _list_payloads(
         self,
@@ -411,19 +489,15 @@ class _DescriptorEngine:
                 request_timeout,
             ),
             timeout=timeout,
-            context=self._list_namespace_context(namespace),
+            context=f"failed to list {self.kind}s in namespace {namespace!r}",
             missing_ok=False,
         )
 
     def _single_namespace(self, namespace: str | None, *, action: str) -> str | None:
-        namespace = self._default_namespace(namespace)
         namespace = namespace.strip() if namespace is not None else ""
         if self.scope == "cluster":
             if namespace:
-                msg = (
-                    f"{self.kind} is cluster-scoped; cannot {action} "
-                    f"{self._cluster_namespace_phrase}"
-                )
+                msg = f"{self.kind} is cluster-scoped; cannot {action} in a namespace"
                 raise ValueError(msg)
             return None
         if not namespace:
@@ -432,14 +506,10 @@ class _DescriptorEngine:
         return namespace
 
     def _watch_namespace(self, namespace: str | None) -> str | None:
-        namespace = self._default_namespace(namespace)
         namespace = namespace.strip() if namespace is not None else ""
         if self.scope == "cluster":
             if namespace:
-                msg = (
-                    f"{self.kind} is cluster-scoped; cannot watch "
-                    f"{self._cluster_watch_phrase}"
-                )
+                msg = f"{self.kind} is cluster-scoped; cannot watch in a namespace"
                 raise ValueError(msg)
             return None
         return namespace or None
@@ -450,7 +520,6 @@ class _DescriptorEngine:
         namespace: str | None,
         namespaces: Collection[str] | None,
     ) -> Collection[str] | None:
-        namespace = self._default_namespace(namespace)
         namespace = namespace.strip() if namespace is not None else ""
         if self.scope == "cluster":
             if namespace or namespaces is not None:
@@ -461,297 +530,6 @@ class _DescriptorEngine:
             msg = f"{self.kind} list accepts either namespace or namespaces, not both"
             raise ValueError(msg)
         return (namespace,) if namespace else namespaces
-
-    def _selector(self, labels: Mapping[str, str] | None) -> Mapping[str, str] | None:
-        defaults = getattr(self, "labels", {})
-        if not defaults:
-            return labels
-        merged = dict(defaults)
-        merged.update(labels or {})
-        return merged
-
-    def _label_selector(self, labels: Mapping[str, str] | None) -> str | None:
-        return _label_selector(labels)
-
-    def _object_label(self, *, name: str, namespace: str | None) -> str:
-        return f"{namespace}/{name}" if namespace else name
-
-    @staticmethod
-    def _field_selector(field_selector: str | None) -> str | None:
-        field_selector = field_selector.strip() if field_selector is not None else None
-        return field_selector or None
-
-    def _default_namespace(self, namespace: str | None) -> str | None:
-        return namespace
-
-    def _read_context(self, label: str) -> str:
-        return f"failed to read {self.kind} {label!r}"
-
-    def _read_missing_ok(self) -> bool:
-        return True
-
-    def _read_not_found(self, err: OSError) -> bool:
-        del err
-        return False
-
-    def _list_all_context(self, *, all_namespaces: bool) -> str:
-        if all_namespaces:
-            return f"failed to list {self.kind}s across all namespaces"
-        return f"failed to list {self.kind}s"
-
-    def _list_namespace_context(self, namespace: str) -> str:
-        return f"failed to list {self.kind}s in namespace {namespace!r}"
-
-    def _manifest_label(
-        self,
-        manifest: Mapping[str, object],
-        *,
-        namespace: str | None,
-        name: str | None,
-    ) -> str:
-        del manifest
-        return self._object_label(name=name or self.kind, namespace=namespace)
-
-    def _delete_missing_ok(self) -> bool:
-        return True
-
-    def _validate_delete_payload(self, payload: object | None, *, label: str) -> None:
-        _validate_delete_status(payload, label=f"{self.kind} {label}")
-
-    def _supports_create(self) -> bool:
-        return bool(getattr(self, "create", True))
-
-    def _supports_patch(self) -> bool:
-        return bool(getattr(self, "patch", True))
-
-    def _supports_delete(self) -> bool:
-        return bool(getattr(self, "delete", True))
-
-    def _supports_watch(self) -> bool:
-        return bool(getattr(self, "watch", True))
-
-    def _read(
-        self,
-        kube: Kube,
-        namespace: str | None,
-        name: str,
-        request_timeout: float | None,
-    ) -> object:
-        raise NotImplementedError
-
-    def _list_all(
-        self,
-        kube: Kube,
-        label_selector: str | None,
-        field_selector: str | None,
-        request_timeout: float | None,
-    ) -> object:
-        raise NotImplementedError
-
-    def _list_namespace(
-        self,
-        kube: Kube,
-        namespace: str,
-        label_selector: str | None,
-        field_selector: str | None,
-        request_timeout: float | None,
-    ) -> object:
-        raise NotImplementedError
-
-    def _create(
-        self,
-        kube: Kube,
-        namespace: str | None,
-        manifest: Mapping[str, object],
-        request_timeout: float | None,
-    ) -> object:
-        raise NotImplementedError
-
-    def _patch(
-        self,
-        kube: Kube,
-        namespace: str | None,
-        name: str,
-        manifest: Mapping[str, object],
-        request_timeout: float | None,
-    ) -> object:
-        raise NotImplementedError
-
-    def _delete(
-        self,
-        kube: Kube,
-        namespace: str | None,
-        name: str,
-        request_timeout: float | None,
-    ) -> object:
-        raise NotImplementedError
-
-    def _watch_request(
-        self,
-        kube: Kube,
-        *,
-        namespace: str | None,
-    ) -> tuple[Callable[..., object], Mapping[str, object], str]:
-        raise NotImplementedError
-
-    def _wrap_payload[WrapperT](
-        self,
-        payload: object,
-        *,
-        owner: Callable[..., Any] | None,
-        context: str,
-        malformed_message: str | None = None,
-    ) -> Any:
-        raise NotImplementedError
-
-    def _wrap_list_payloads(
-        self,
-        payloads: builtins.list[object | None],
-        *,
-        owner: Callable[..., Any] | None,
-    ) -> builtins.list[Any]:
-        raise NotImplementedError
-
-    @staticmethod
-    def _required_namespace(namespace: str | None, *, action: str) -> str:
-        if namespace is None:
-            msg = f"cannot {action} namespaced resource without namespace"
-            raise RuntimeError(msg)
-        return namespace
-
-
-@dataclass(frozen=True)
-class BuiltinResource[PayloadT](_DescriptorEngine):
-    """Descriptor for one generated Kubernetes resource API.
-
-    Parameters
-    ----------
-    scope : {"cluster", "namespaced"}
-        Kubernetes resource scope.
-    api : str
-        Attribute on `Kube` exposing the generated API family.
-    kind : str
-        Human-readable Kubernetes kind for diagnostics.
-    slug : str
-        Generated-client method slug, such as ``config_map`` or ``deployment``.
-    expected : type[PayloadT]
-        Kubernetes client payload type returned by single-object operations.
-    list_type : type[object]
-        Kubernetes client list payload type returned by list operations.
-    create : bool, default=False
-        Whether the generated API supports create for this resource.
-    patch : bool, default=False
-        Whether the generated API supports patch for this resource.
-    delete : bool, default=False
-        Whether the generated API supports delete for this resource.
-    watch : bool, default=False
-        Whether the generated API supports watch/list streaming.
-    """
-
-    scope: ResourceScope
-    api: str
-    kind: str
-    slug: str
-    expected: type[PayloadT]
-    list_type: type[object]
-    create: bool = False
-    patch: bool = False
-    delete: bool = False
-    watch: bool = False
-
-    @classmethod
-    def cluster(
-        cls,
-        *,
-        api: str,
-        kind: str,
-        slug: str,
-        expected: type[PayloadT],
-        list_type: type[object],
-        create: bool = False,
-        patch: bool = False,
-        delete: bool = False,
-        watch: bool = False,
-    ) -> BuiltinResource[PayloadT]:
-        """Build a descriptor for a cluster-scoped generated resource.
-
-        Returns
-        -------
-        BuiltinResource[PayloadT]
-            Descriptor wired to standard generated Kubernetes endpoints.
-        """
-        return cls(
-            scope="cluster",
-            api=api,
-            kind=kind,
-            slug=slug,
-            expected=expected,
-            list_type=list_type,
-            create=create,
-            patch=patch,
-            delete=delete,
-            watch=watch,
-        )
-
-    @classmethod
-    def namespaced(
-        cls,
-        *,
-        api: str,
-        kind: str,
-        slug: str,
-        expected: type[PayloadT],
-        list_type: type[object],
-        create: bool = False,
-        patch: bool = False,
-        delete: bool = False,
-        watch: bool = False,
-    ) -> BuiltinResource[PayloadT]:
-        """Build a descriptor for a namespaced generated resource.
-
-        Returns
-        -------
-        BuiltinResource[PayloadT]
-            Descriptor wired to standard generated Kubernetes endpoints.
-        """
-        return cls(
-            scope="namespaced",
-            api=api,
-            kind=kind,
-            slug=slug,
-            expected=expected,
-            list_type=list_type,
-            create=create,
-            patch=patch,
-            delete=delete,
-            watch=watch,
-        )
-
-    async def upsert[WrapperT](
-        self,
-        kube: Kube,
-        *,
-        owner: Callable[..., WrapperT],
-        name: str,
-        manifest: Mapping[str, object],
-        timeout: float,
-        namespace: str | None = None,
-    ) -> WrapperT:
-        """Create or patch one generated Kubernetes resource.
-
-        Returns
-        -------
-        WrapperT
-            Wrapped created or patched resource.
-        """
-        return await self._upsert_manifest(
-            kube,
-            owner=owner,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
-            namespace=namespace,
-        )
 
     def _read(
         self,
@@ -843,12 +621,6 @@ class BuiltinResource[PayloadT](_DescriptorEngine):
             kwargs["namespace"] = self._required_namespace(namespace, action="delete")
         return self._method(kube, self._single_method("delete"))(**kwargs)
 
-    def _watch_all(self, kube: Kube) -> Callable[..., object]:
-        return self._method(kube, self._list_all_method())
-
-    def _watch_namespace_method(self, kube: Kube) -> Callable[..., object]:
-        return self._method(kube, f"list_namespaced_{self.slug}")
-
     def _watch_request(
         self,
         kube: Kube,
@@ -869,6 +641,12 @@ class BuiltinResource[PayloadT](_DescriptorEngine):
             f"failed to watch {self.kind}s in namespace {namespace!r}",
         )
 
+    def _watch_all(self, kube: Kube) -> Callable[..., object]:
+        return self._method(kube, self._list_all_method())
+
+    def _watch_namespace_method(self, kube: Kube) -> Callable[..., object]:
+        return self._method(kube, f"list_namespaced_{self.slug}")
+
     def _method(self, kube: Kube, name: str) -> Callable[..., object]:
         api = getattr(kube, self.api)
         return cast("Callable[..., object]", getattr(api, name))
@@ -883,51 +661,47 @@ class BuiltinResource[PayloadT](_DescriptorEngine):
             return f"list_{self.slug}_for_all_namespaces"
         return f"list_{self.slug}"
 
-    def _wrap_payload[WrapperT](
+    def _list_all_context(self, *, all_namespaces: bool) -> str:
+        if all_namespaces:
+            return f"failed to list {self.kind}s across all namespaces"
+        return f"failed to list {self.kind}s"
+
+    def _object_label(self, *, name: str, namespace: str | None) -> str:
+        return f"{namespace}/{name}" if namespace else name
+
+    def _typed(
         self,
         payload: object,
         *,
-        owner: Callable[..., WrapperT] | None,
-        context: str,
         malformed_message: str | None = None,
-    ) -> WrapperT:
-        if owner is None:
-            msg = f"{self.kind} wrapper owner is required"
-            raise RuntimeError(msg)
-        if malformed_message is not None and not isinstance(payload, self.expected):
-            raise OSError(malformed_message)
-        return owner(_obj=_typed_payload(payload, self.expected, context=context))
+    ) -> PayloadT:
+        if not isinstance(payload, self.expected):
+            if malformed_message is not None:
+                raise OSError(malformed_message)
+            msg = f"malformed Kubernetes {self.kind} payload"
+            raise OSError(msg)
+        return payload
 
-    def _wrap_list_payloads[WrapperT](
-        self,
-        payloads: builtins.list[object | None],
-        *,
-        owner: Callable[..., WrapperT] | None,
-    ) -> builtins.list[WrapperT]:
-        if owner is None:
-            msg = f"{self.kind} wrapper owner is required"
+    @staticmethod
+    def _field_selector(field_selector: str | None) -> str | None:
+        field_selector = field_selector.strip() if field_selector is not None else None
+        return field_selector or None
+
+    @staticmethod
+    def _required_namespace(namespace: str | None, *, action: str) -> str:
+        if namespace is None:
+            msg = f"cannot {action} namespaced resource without namespace"
             raise RuntimeError(msg)
-        items: builtins.list[PayloadT] = []
-        for payload in payloads:
-            items.extend(
-                _typed_list_items(
-                    payload,
-                    list_type=self.list_type,
-                    item_type=self.expected,
-                    list_context=self.kind,
-                    item_context=self.kind,
-                )
-        )
-        return [owner(_obj=item) for item in items]
+        return namespace
 
 
 class BuiltinResourceObject[PayloadT]:
-    """Base methods for wrappers backed by a `BuiltinResource` descriptor.
+    """Base methods for wrappers backed by a :class:`BuiltinResource`.
 
     Attributes
     ----------
     resource : BuiltinResource[PayloadT]
-        Descriptor for the generated Kubernetes API backing the wrapper.
+        Raw descriptor for the generated Kubernetes API backing the wrapper.
     """
 
     resource: ClassVar[BuiltinResource[Any]]
@@ -943,29 +717,19 @@ class BuiltinResourceObject[PayloadT]:
     ) -> Self | None:
         """Read one Kubernetes resource by name.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        name : str
-            Resource name to read.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespace : str | None, optional
-            Namespace for namespaced resources.
-
         Returns
         -------
         Self | None
-            Wrapped Kubernetes object, or ``None`` if it does not exist.
+            Wrapped Kubernetes object, or ``None`` when absent.
         """
-        return await cls.resource.get(
+        payload = await cls.resource.get(
             kube,
-            owner=cls,
             name=name,
             namespace=namespace,
             timeout=timeout,
         )
+        wrapper = cast("Callable[..., Self]", cls)
+        return None if payload is None else wrapper(_obj=payload)
 
     @classmethod
     async def list(
@@ -980,35 +744,21 @@ class BuiltinResourceObject[PayloadT]:
     ) -> builtins.list[Self]:
         """List Kubernetes resources.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        namespace : str | None, optional
-            Optional single namespace filter.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filters for namespaced resources.
-        labels : Mapping[str, str] | None, optional
-            Optional exact-match label selector.
-        field_selector : str | None, optional
-            Raw Kubernetes field selector.
-
         Returns
         -------
         list[Self]
             Wrapped Kubernetes resources matching the filters.
         """
-        return await cls.resource.list(
+        payloads = await cls.resource.list(
             kube,
-            owner=cls,
             timeout=timeout,
             namespace=namespace,
             namespaces=namespaces,
             labels=labels,
             field_selector=field_selector,
         )
+        wrapper = cast("Callable[..., Self]", cls)
+        return [wrapper(_obj=payload) for payload in payloads]
 
     @classmethod
     async def watch(
@@ -1023,46 +773,28 @@ class BuiltinResourceObject[PayloadT]:
     ) -> AsyncIterator[WatchEvent[Self]]:
         """Watch Kubernetes resources.
 
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum watch budget in seconds. If infinite, wait indefinitely.
-        namespace : str | None, optional
-            Optional namespace filter.
-        labels : Mapping[str, str] | None, optional
-            Optional exact-match label selector.
-        field_selector : str | None, optional
-            Raw Kubernetes field selector.
-        resource_version : str | None, optional
-            Resource version to watch from.
-
         Yields
         ------
         WatchEvent[Self]
             Typed watch events containing wrapped resources.
         """
-        async for event in cls.resource.watch_stream(
+        async for event in cls.resource.watch(
             kube,
-            owner=cls,
             timeout=timeout,
             namespace=namespace,
             labels=labels,
             field_selector=field_selector,
             resource_version=resource_version,
         ):
-            yield event
+            yield WatchEvent(
+                type=event.type,
+                object=cast("Callable[..., Self]", cls)(_obj=event.object),
+                resource_version=event.resource_version,
+                raw_type=event.raw_type,
+            )
 
     async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
         """Re-read this resource by its metadata identity.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
         -------
@@ -1092,7 +824,7 @@ class BuiltinResourceObject[PayloadT]:
         kube : Kube
             Active Kubernetes API context.
         timeout : float
-            Maximum request budget in seconds. If infinite, wait indefinitely.
+            Maximum request budget in seconds.
         """
         resource = type(self).resource
         if resource.scope == "cluster":

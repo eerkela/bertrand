@@ -117,16 +117,15 @@ class Job(
 
     _obj: kubernetes.client.V1Job
 
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1Job]] = (
-        BuiltinResource.namespaced(
-            api="batch",
-            kind="Job",
-            slug="job",
-            expected=kubernetes.client.V1Job,
-            list_type=kubernetes.client.V1JobList,
-            create=True,
-            watch=True,
-        )
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1Job]] = BuiltinResource(
+        scope="namespaced",
+        api="batch",
+        kind="Job",
+        slug="job",
+        expected=kubernetes.client.V1Job,
+        list_type=kubernetes.client.V1JobList,
+        can_create=True,
+        can_watch=True,
     )
 
     @staticmethod
@@ -253,16 +252,17 @@ class Job(
             completions=completions,
             completion_mode=completion_mode,
         )
-        return await cls.resource.create_manifest(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
-            malformed_message=(
-                f"malformed Kubernetes Job payload while creating {name!r}"
-            ),
+        return cls(
+            _obj=await cls.resource.create(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+                malformed_message=(
+                    f"malformed Kubernetes Job payload while creating {name!r}"
+                ),
+            )
         )
 
     @property

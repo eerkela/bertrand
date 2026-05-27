@@ -202,7 +202,7 @@ async def maintain_repository_snapshots(
             namespace=BERTRAND_NAMESPACE,
             timeout=deadline.remaining(),
         )
-        if record.phase == "Ready"
+        if record.spec.phase == "Ready"
     ]
     snapshots_by_repo: dict[str, list[CustomObject]] = {}
     for snapshot in retained:
@@ -231,7 +231,7 @@ async def maintain_repository_snapshots(
                 namespace=BERTRAND_NAMESPACE,
                 timeout=deadline.remaining(),
             )
-            if record.phase == "Ready"
+            if record.spec.phase == "Ready"
         ]
         snapshots_by_repo = {}
         for snapshot in retained:
@@ -241,10 +241,10 @@ async def maintain_repository_snapshots(
 
     created = 0
     fresh_boundary = now - timedelta(seconds=interval_seconds)
-    for record in sorted(active_records, key=lambda item: item.repo_id):
+    for record in sorted(active_records, key=lambda item: item.spec.repo_id):
         if created >= create_limit:
             break
-        repo_snapshots = snapshots_by_repo.get(record.repo_id, [])
+        repo_snapshots = snapshots_by_repo.get(record.spec.repo_id, [])
         fresh = False
         for snapshot in repo_snapshots:
             created_at = volume_snapshot_created_at(snapshot)
@@ -259,7 +259,7 @@ async def maintain_repository_snapshots(
             continue
         await create_repository_snapshot(
             kube,
-            repo_id=record.repo_id,
+            repo_id=record.spec.repo_id,
             timeout=deadline.remaining(),
         )
         created += 1
@@ -319,7 +319,7 @@ async def next_repository_snapshot_time(
             namespace=BERTRAND_NAMESPACE,
             timeout=deadline.remaining(),
         )
-        if record.phase == "Ready"
+        if record.spec.phase == "Ready"
     ]
     snapshots_by_repo: dict[str, list[CustomObject]] = {}
     for snapshot in retained:
@@ -338,7 +338,7 @@ async def next_repository_snapshot_time(
     interval = timedelta(seconds=interval_seconds)
     for record in active_records:
         ready: list[datetime] = []
-        for snapshot in snapshots_by_repo.get(record.repo_id, []):
+        for snapshot in snapshots_by_repo.get(record.spec.repo_id, []):
             created_at = volume_snapshot_created_at(snapshot)
             if volume_snapshot_ready_to_use(snapshot) and created_at is not None:
                 ready.append(created_at)

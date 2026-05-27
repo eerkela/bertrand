@@ -74,7 +74,8 @@ class StorageClass(
     _obj: kubernetes.client.V1StorageClass
 
     resource: ClassVar[BuiltinResource[kubernetes.client.V1StorageClass]] = (
-        BuiltinResource.cluster(
+        BuiltinResource(
+            scope="cluster",
             api="storage",
             kind="StorageClass",
             slug="storage_class",
@@ -236,15 +237,16 @@ class PersistentVolumeClaim(
 
     _obj: kubernetes.client.V1PersistentVolumeClaim
 
-    resource: ClassVar[
-        BuiltinResource[kubernetes.client.V1PersistentVolumeClaim]
-    ] = BuiltinResource.namespaced(
-        api="core",
-        kind="PersistentVolumeClaim",
-        slug="persistent_volume_claim",
-        expected=kubernetes.client.V1PersistentVolumeClaim,
-        list_type=kubernetes.client.V1PersistentVolumeClaimList,
-        create=True,
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1PersistentVolumeClaim]] = (
+        BuiltinResource(
+            scope="namespaced",
+            api="core",
+            kind="PersistentVolumeClaim",
+            slug="persistent_volume_claim",
+            expected=kubernetes.client.V1PersistentVolumeClaim,
+            list_type=kubernetes.client.V1PersistentVolumeClaimList,
+            can_create=True,
+        )
     )
 
     @staticmethod
@@ -350,18 +352,19 @@ class PersistentVolumeClaim(
         )
 
         try:
-            return await cls.resource.create_manifest(
-                kube,
-                owner=cls,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                timeout=deadline.remaining(),
-                malformed_message=(
-                    "malformed Kubernetes PVC payload while creating "
-                    f"{namespace}/{name}"
-                ),
-                missing_ok=False,
+            return cls(
+                _obj=await cls.resource.create(
+                    kube,
+                    namespace=namespace,
+                    name=name,
+                    manifest=manifest,
+                    timeout=deadline.remaining(),
+                    malformed_message=(
+                        "malformed Kubernetes PVC payload while creating "
+                        f"{namespace}/{name}"
+                    ),
+                    missing_ok=False,
+                )
             )
         except OSError as err:
             if not _is_conflict(err):
@@ -468,24 +471,25 @@ class PersistentVolumeClaim(
                 "name": snapshot_name,
             },
         )
-        return await cls.resource.create_manifest(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
-            context=(
-                "failed to create PersistentVolumeClaim "
-                f"{namespace}/{name} from VolumeSnapshot "
-                f"{snapshot_name!r}"
-            ),
-            missing_ok=False,
-            malformed_message=(
-                "malformed Kubernetes PVC payload while creating "
-                f"{namespace}/{name} from VolumeSnapshot "
-                f"{snapshot_name!r}"
-            ),
+        return cls(
+            _obj=await cls.resource.create(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+                context=(
+                    "failed to create PersistentVolumeClaim "
+                    f"{namespace}/{name} from VolumeSnapshot "
+                    f"{snapshot_name!r}"
+                ),
+                missing_ok=False,
+                malformed_message=(
+                    "malformed Kubernetes PVC payload while creating "
+                    f"{namespace}/{name} from VolumeSnapshot "
+                    f"{snapshot_name!r}"
+                ),
+            )
         )
 
     def _assert_upsert_compatible(
@@ -812,7 +816,8 @@ class PersistentVolume(
     _obj: kubernetes.client.V1PersistentVolume
 
     resource: ClassVar[BuiltinResource[kubernetes.client.V1PersistentVolume]] = (
-        BuiltinResource.cluster(
+        BuiltinResource(
+            scope="cluster",
             api="core",
             kind="PersistentVolume",
             slug="persistent_volume",

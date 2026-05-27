@@ -63,6 +63,11 @@ def _watch_resource_version(value: object) -> str:
     attr = getattr(value, "resource_version", None)
     if isinstance(attr, str):
         return attr.strip()
+    metadata_attr = getattr(value, "metadata", None)
+    if metadata_attr is not None:
+        metadata_version = getattr(metadata_attr, "resource_version", None)
+        if isinstance(metadata_version, str):
+            return metadata_version.strip()
     if isinstance(value, Mapping):
         value = cast("Mapping[str, object]", value)
         metadata = value.get("metadata")

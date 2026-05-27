@@ -48,16 +48,17 @@ class Deployment(
     _obj: kubernetes.client.V1Deployment
 
     resource: ClassVar[BuiltinResource[kubernetes.client.V1Deployment]] = (
-        BuiltinResource.namespaced(
+        BuiltinResource(
+            scope="namespaced",
             api="apps",
             kind="Deployment",
             slug="deployment",
             expected=kubernetes.client.V1Deployment,
             list_type=kubernetes.client.V1DeploymentList,
-            create=True,
-            patch=True,
-            delete=True,
-            watch=True,
+            can_create=True,
+            can_patch=True,
+            can_delete=True,
+            can_watch=True,
         )
     )
 
@@ -204,13 +205,14 @@ class Deployment(
             paused=paused,
         )
 
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )
 
     @property

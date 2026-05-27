@@ -33,17 +33,16 @@ class Secret(
 
     _obj: kube_client.V1Secret
 
-    resource: ClassVar[BuiltinResource[kube_client.V1Secret]] = (
-        BuiltinResource.namespaced(
-            api="core",
-            kind="Secret",
-            slug="secret",
-            expected=kube_client.V1Secret,
-            list_type=kube_client.V1SecretList,
-            create=True,
-            patch=True,
-            delete=True,
-        )
+    resource: ClassVar[BuiltinResource[kube_client.V1Secret]] = BuiltinResource(
+        scope="namespaced",
+        api="core",
+        kind="Secret",
+        slug="secret",
+        expected=kube_client.V1Secret,
+        list_type=kube_client.V1SecretList,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
     )
 
     @classmethod
@@ -95,13 +94,14 @@ class Secret(
             "data": {"value": base64.b64encode(payload).decode("ascii")},
         }
 
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )
 
     @property

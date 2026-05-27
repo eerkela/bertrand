@@ -46,18 +46,17 @@ class CronJob(
 
     _obj: kubernetes.client.V1CronJob
 
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1CronJob]] = (
-        BuiltinResource.namespaced(
-            api="batch",
-            kind="CronJob",
-            slug="cron_job",
-            expected=kubernetes.client.V1CronJob,
-            list_type=kubernetes.client.V1CronJobList,
-            create=True,
-            patch=True,
-            delete=True,
-            watch=True,
-        )
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1CronJob]] = BuiltinResource(
+        scope="namespaced",
+        api="batch",
+        kind="CronJob",
+        slug="cron_job",
+        expected=kubernetes.client.V1CronJob,
+        list_type=kubernetes.client.V1CronJobList,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
+        can_watch=True,
     )
 
     @staticmethod
@@ -255,13 +254,14 @@ class CronJob(
             failed_jobs_history_limit=failed_jobs_history_limit,
             time_zone=time_zone,
         )
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )
 
     @property

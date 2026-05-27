@@ -33,17 +33,16 @@ class Namespace(
 
     _obj: kube_client.V1Namespace
 
-    resource: ClassVar[BuiltinResource[kube_client.V1Namespace]] = (
-        BuiltinResource.cluster(
-            api="core",
-            kind="Namespace",
-            slug="namespace",
-            expected=kube_client.V1Namespace,
-            list_type=kube_client.V1NamespaceList,
-            create=True,
-            patch=True,
-            delete=True,
-        )
+    resource: ClassVar[BuiltinResource[kube_client.V1Namespace]] = BuiltinResource(
+        scope="cluster",
+        api="core",
+        kind="Namespace",
+        slug="namespace",
+        expected=kube_client.V1Namespace,
+        list_type=kube_client.V1NamespaceList,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
     )
 
     @staticmethod
@@ -104,12 +103,13 @@ class Namespace(
             msg = "Namespace upsert requires non-empty name"
             raise OSError(msg)
         manifest = cls._manifest(name=name, labels=labels, annotations=annotations)
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )
 
     @property

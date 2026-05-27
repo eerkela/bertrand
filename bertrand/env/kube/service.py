@@ -64,17 +64,16 @@ class Service(
 
     _obj: kubernetes.client.V1Service
 
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1Service]] = (
-        BuiltinResource.namespaced(
-            api="core",
-            kind="Service",
-            slug="service",
-            expected=kubernetes.client.V1Service,
-            list_type=kubernetes.client.V1ServiceList,
-            create=True,
-            patch=True,
-            delete=True,
-        )
+    resource: ClassVar[BuiltinResource[kubernetes.client.V1Service]] = BuiltinResource(
+        scope="namespaced",
+        api="core",
+        kind="Service",
+        slug="service",
+        expected=kubernetes.client.V1Service,
+        list_type=kubernetes.client.V1ServiceList,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
     )
 
     @staticmethod
@@ -167,13 +166,14 @@ class Service(
             annotations=annotations,
             service_type=service_type,
         )
-        return await cls.resource.upsert(
-            kube,
-            owner=cls,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            timeout=timeout,
+        return cls(
+            _obj=await cls.resource.upsert(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                timeout=timeout,
+            )
         )
 
     @property

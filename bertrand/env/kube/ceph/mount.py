@@ -82,36 +82,6 @@ def _current_host_id() -> str:
         raise OSError(msg) from err
 
 
-def _warn(message: str) -> None:
-    print(f"bertrand: warning: {message}", file=sys.stderr)
-
-
-def _staged_alias_path(target: Path, repo_id: str) -> Path:
-    return target.parent / f".{target.name}.bertrand.mount.{repo_id}"
-
-
-def _swap_path(target: Path, repo_id: str) -> Path:
-    return target.parent / f".{target.name}.bertrand.swap.{repo_id}"
-
-
-async def _record_repository_mount(
-    kube: Kube,
-    *,
-    repo_id: str,
-    host_id: str,
-    alias_path: Path,
-    timeout: float,
-) -> None:
-    await ensure_repository_mount_record(
-        kube,
-        repo_id=repo_id,
-        host_id=host_id,
-        alias_path=alias_path.as_posix(),
-        node_name=platform.node(),
-        timeout=timeout,
-    )
-
-
 def _single_repository_volume(
     repo_id: str,
     volumes: Sequence[PersistentVolumeClaim],
@@ -238,46 +208,6 @@ class MountInfo:
         if not suffix.startswith("/"):
             return None
         return PosixPath(suffix)
-
-    @classmethod
-    def resolve(cls, path: Path) -> tuple[UUIDHex | None, Self | None]:
-        """Resolve managed-alias ancestry for a host path.
-
-        This inspects `path` and its ancestors (deepest-first) to find Bertrand-
-        managed alias symlinks.  Managed ownership is strict: the raw symlink target
-        must be absolute and exactly match Bertrand's hidden mount layout.
-
-        Parameters
-        ----------
-        path : Path
-            Host path to inspect for managed alias ancestry.
-
-        Returns
-        -------
-        tuple[UUIDHex | None, MountInfo | None]
-            `(None, None)` if no managed alias ancestor is present.
-            `(repo_id, None)` if a managed alias ancestor exists but its hidden mount
-            is not currently active.
-            `(repo_id, mount)` if a managed alias ancestor exists and hidden mount is
-            currently active.
-
-        Raises
-        ------
-        OSError
-            If a symlink target points into Bertrand's hidden mount namespace but does
-            not match expected layout or contains an invalid repository UUID.
-        """  # noqa: DOC502 - helper raises documented alias validation errors.
-        inspected = abspath(path)
-        for candidate in (inspected, *inspected.parents):
-            if not candidate.is_symlink():
-                continue
-            managed = _managed_alias_target(candidate)
-            if managed is None:
-                continue
-            repo_id, hidden_mount = managed
-            return repo_id, cls.search(hidden_mount)
-
-        return None, None
 
     @classmethod
     def local(cls) -> dict[Path, Self]:
@@ -848,7 +778,7 @@ async def ensure_repository_mount(
         ceph_path=ceph_path,
         timeout=deadline.remaining(),
     )
-    staged_alias = _staged_alias_path(target, repo_id)
+    staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
     target_occupied = target.exists() or target.is_symlink()
     if not target_occupied or symlink_points_to(target, hidden_mount):
         alias = target
@@ -872,27 +802,15 @@ async def ensure_repository_mount(
         repo_id,
         encoding="utf-8",
     )
-    await _record_repository_mount(
+    await ensure_repository_mount_record(
         kube,
         repo_id=repo_id,
         host_id=_current_host_id(),
-        alias_path=alias,
+        alias_path=alias.as_posix(),
+        node_name=platform.node(),
         timeout=deadline.remaining(),
     )
     return alias
-
-
-def _path_exists(path: Path) -> bool:
-    return path.exists() or path.is_symlink()
-
-
-def _ensure_existing_final_alias(target: Path, hidden_mount: Path) -> None:
-    if not symlink_points_to(target, hidden_mount):
-        msg = (
-            f"cannot finalize repository at {target}: alias path {target} does "
-            f"not target expected mount path {hidden_mount}"
-        )
-        raise OSError(msg)
 
 
 def _resume_repository_cutover(
@@ -901,7 +819,7 @@ def _resume_repository_cutover(
     alias: Path,
     hidden_mount: Path,
 ) -> None:
-    if _path_exists(target):
+    if target.exists() or target.is_symlink():
         if not symlink_points_to(target, hidden_mount):
             msg = (
                 f"cannot resume repository cutover at {target}: alias path "
@@ -910,7 +828,7 @@ def _resume_repository_cutover(
             raise OSError(msg)
         return
 
-    if not _path_exists(alias):
+    if not (alias.exists() or alias.is_symlink()):
         msg = (
             f"cannot resume repository cutover at {target}: neither staged "
             "alias nor destination path exists while swap path is present"
@@ -933,8 +851,8 @@ def _promote_repository_alias(
     swap_path: Path,
     replace_existing: bool,
 ) -> None:
-    if _path_exists(target):
-        if not _path_exists(alias):
+    if target.exists() or target.is_symlink():
+        if not (alias.exists() or alias.is_symlink()):
             msg = (
                 f"cannot cut over repository at {target}: staged alias does not exist "
                 f"({alias})"
@@ -953,13 +871,15 @@ def _promote_repository_alias(
         try:
             alias.rename(target)
         except OSError as err:
-            if _path_exists(swap_path) and not _path_exists(target):
+            if (swap_path.exists() or swap_path.is_symlink()) and not (
+                target.exists() or target.is_symlink()
+            ):
                 swap_path.rename(target)
             msg = f"failed to atomically swap repository path at {target}"
             raise OSError(msg) from err
         return
 
-    if not _path_exists(alias):
+    if not (alias.exists() or alias.is_symlink()):
         msg = (
             f"cannot finalize repository cutover at {target}: staged alias does "
             f"not exist ({alias})"
@@ -972,79 +892,6 @@ def _promote_repository_alias(
         )
         raise OSError(msg)
     alias.rename(target)
-
-
-def _ensure_final_repository_alias(target: Path, hidden_mount: Path) -> None:
-    if not symlink_points_to(target, hidden_mount):
-        msg = (
-            f"repository cutover failed for destination path {target}: alias path "
-            f"{target} does not target expected mount path {hidden_mount}"
-        )
-        raise OSError(msg)
-
-
-def _cleanup_repository_swap(swap_path: Path) -> None:
-    if not _path_exists(swap_path):
-        return
-    try:
-        if not swap_path.is_symlink() and swap_path.is_dir():
-            shutil.rmtree(swap_path)
-        else:
-            swap_path.unlink()
-    except OSError as err:
-        _warn(f"failed to delete conversion swap path at {swap_path}: {err}")
-
-
-async def _retire_stale_repository_aliases(
-    kube: Kube,
-    *,
-    repo_id: UUIDHex,
-    host_id: str,
-    target: Path,
-    alias: Path,
-    staged_alias: Path,
-    hidden_mount: Path,
-    deadline: Deadline,
-) -> None:
-    for stale_alias in (alias, staged_alias):
-        if (
-            stale_alias != target
-            and _path_exists(stale_alias)
-            and symlink_points_to(stale_alias, hidden_mount)
-        ):
-            mount = MountInfo(mount_point=hidden_mount)
-            async with mount.aliases(timeout=deadline.remaining()) as aliases:
-                aliases.unlink(stale_alias)
-        if stale_alias != target:
-            await retire_repository_mount(
-                kube,
-                repo_id=repo_id,
-                host_id=host_id,
-                alias_path=stale_alias.as_posix(),
-                timeout=deadline.remaining(),
-            )
-
-
-async def _mark_repository_mount_finalized(
-    kube: Kube,
-    *,
-    repo_id: UUIDHex,
-    host_id: str,
-    target: Path,
-    deadline: Deadline,
-) -> None:
-    await _record_repository_mount(
-        kube,
-        repo_id=repo_id,
-        host_id=host_id,
-        alias_path=target,
-        timeout=deadline.remaining(),
-    )
-    await mark_repository_volume_ready(
-        kube,
-        repo_id=repo_id,
-        timeout=deadline.remaining(),
-    )
 
 
 async def finalize_repository_mount(
@@ -1095,13 +942,18 @@ async def finalize_repository_mount(
         raise TimeoutError(message)
     deadline = Deadline.from_timeout(timeout, message=message)
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
-    staged_alias = _staged_alias_path(target, repo_id)
-    swap_path = _swap_path(target, repo_id)
+    staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
+    swap_path = target.parent / f".{target.name}.bertrand.swap.{repo_id}"
     host_id = _current_host_id()
 
     if alias == target:
-        _ensure_existing_final_alias(target, hidden_mount)
-    elif _path_exists(swap_path):
+        if not symlink_points_to(target, hidden_mount):
+            msg = (
+                f"cannot finalize repository at {target}: alias path {target} does "
+                f"not target expected mount path {hidden_mount}"
+            )
+            raise OSError(msg)
+    elif swap_path.exists() or swap_path.is_symlink():
         _resume_repository_cutover(
             target=target,
             alias=alias,
@@ -1115,24 +967,56 @@ async def finalize_repository_mount(
             swap_path=swap_path,
             replace_existing=replace_existing,
         )
-    _ensure_final_repository_alias(target, hidden_mount)
-    _cleanup_repository_swap(swap_path)
-    await _retire_stale_repository_aliases(
+    if not symlink_points_to(target, hidden_mount):
+        msg = (
+            f"repository cutover failed for destination path {target}: alias path "
+            f"{target} does not target expected mount path {hidden_mount}"
+        )
+        raise OSError(msg)
+
+    if swap_path.exists() or swap_path.is_symlink():
+        try:
+            if not swap_path.is_symlink() and swap_path.is_dir():
+                shutil.rmtree(swap_path)
+            else:
+                swap_path.unlink()
+        except OSError as err:
+            print(
+                "bertrand: warning: failed to delete conversion swap path at "
+                f"{swap_path}: {err}",
+                file=sys.stderr,
+            )
+
+    for stale_alias in (alias, staged_alias):
+        if (
+            stale_alias != target
+            and (stale_alias.exists() or stale_alias.is_symlink())
+            and symlink_points_to(stale_alias, hidden_mount)
+        ):
+            mount = MountInfo(mount_point=hidden_mount)
+            async with mount.aliases(timeout=deadline.remaining()) as aliases:
+                aliases.unlink(stale_alias)
+        if stale_alias != target:
+            await retire_repository_mount(
+                kube,
+                repo_id=repo_id,
+                host_id=host_id,
+                alias_path=stale_alias.as_posix(),
+                timeout=deadline.remaining(),
+            )
+
+    await ensure_repository_mount_record(
         kube,
         repo_id=repo_id,
         host_id=host_id,
-        target=target,
-        alias=alias,
-        staged_alias=staged_alias,
-        hidden_mount=hidden_mount,
-        deadline=deadline,
+        alias_path=target.as_posix(),
+        node_name=platform.node(),
+        timeout=deadline.remaining(),
     )
-    await _mark_repository_mount_finalized(
+    await mark_repository_volume_ready(
         kube,
         repo_id=repo_id,
-        host_id=host_id,
-        target=target,
-        deadline=deadline,
+        timeout=deadline.remaining(),
     )
 
     return target
@@ -1251,11 +1135,12 @@ async def _resurrect_repository_mount_record(
         )
         async with mount.aliases(timeout=deadline.remaining()) as aliases:
             aliases.link(candidate)
-        await _record_repository_mount(
+        await ensure_repository_mount_record(
             kube,
             repo_id=repo_id,
             host_id=_current_host_id(),
-            alias_path=candidate,
+            alias_path=candidate.as_posix(),
+            node_name=platform.node(),
             timeout=deadline.remaining(),
         )
         return repo_id, mount
@@ -1297,13 +1182,14 @@ async def resurrect_repository_mount(
     deadline = Deadline.from_timeout(timeout, message=message)
 
     # Search for managed Bertrand symlink alias pointing to a mounted volume.
-    repo_id, mount = MountInfo.resolve(path)
-    if repo_id is None:
+    managed = _managed_alias_ancestor(path)
+    if managed is None:
         return await _resurrect_repository_mount_record(
             kube,
             path,
             timeout=deadline.remaining(),
         )
+    _, repo_id, mount = managed
     if mount is not None:
         return repo_id, mount
 
@@ -1354,16 +1240,17 @@ async def refresh_repository_alias_for_path(
     if managed is not None:
         alias, repo_id, mount = managed
         if mount is None:
-            mount = await _mount_repository_volume(
+            await _mount_repository_volume(
                 kube,
                 repo_id=repo_id,
                 timeout=deadline.remaining(),
             )
-        await _record_repository_mount(
+        await ensure_repository_mount_record(
             kube,
             repo_id=repo_id,
             host_id=_current_host_id(),
-            alias_path=alias,
+            alias_path=alias.as_posix(),
+            node_name=platform.node(),
             timeout=deadline.remaining(),
         )
         return repo_id

@@ -12,8 +12,6 @@ from bertrand.env.kube.api.client import KubeApiError
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping
 
-    from .client import Kube
-
 KUBE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 
@@ -126,39 +124,6 @@ def _is_missing_api_resource(err: OSError) -> bool:
         return False
     detail = err.detail.lower() if isinstance(err, KubeApiError) else str(err).lower()
     return "the server could not find the requested resource" in detail
-
-
-async def _create_or_patch[T](
-    kube: Kube,
-    *,
-    timeout: float,
-    create: Callable[[float | None], object],
-    patch: Callable[[float | None], object],
-    create_context: str,
-    patch_context: str,
-    expected: type[T],
-    payload_context: str,
-) -> T:
-    try:
-        created = await kube.run(
-            create,
-            timeout=timeout,
-            context=create_context,
-            missing_ok=False,
-        )
-    except OSError as err:
-        if not _is_conflict(err):
-            raise
-    else:
-        return _typed_payload(created, expected, context=payload_context)
-
-    patched = await kube.run(
-        patch,
-        timeout=timeout,
-        context=patch_context,
-        missing_ok=False,
-    )
-    return _typed_payload(patched, expected, context=payload_context)
 
 
 def _normalized_namespaces(
