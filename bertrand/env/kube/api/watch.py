@@ -14,8 +14,6 @@ from kubernetes.client.rest import ApiException
 
 from bertrand.env.git import Deadline
 
-from ._helpers import _label_selector
-
 type WatchEventType = Literal["ADDED", "MODIFIED", "DELETED", "BOOKMARK", "ERROR"]
 _WATCH_EVENT_TYPES: frozenset[str] = frozenset(
     {"ADDED", "MODIFIED", "DELETED", "BOOKMARK", "ERROR"}
@@ -103,14 +101,15 @@ def _watch_kwargs(
     *,
     timeout: float,
     resource_version: str | None,
-    labels: Mapping[str, str] | None,
+    label_selector: str | None,
     field_selector: str | None,
     api_kwargs: Mapping[str, object] | None,
 ) -> dict[str, object]:
     kwargs = dict(api_kwargs or {})
-    label_selector = _label_selector(labels)
     if label_selector is not None:
-        kwargs["label_selector"] = label_selector
+        label_selector = label_selector.strip()
+        if label_selector:
+            kwargs["label_selector"] = label_selector
     if field_selector is not None:
         field_selector = field_selector.strip()
         if field_selector:
@@ -199,7 +198,7 @@ async def watch[T](
     timeout: float,
     context: str,
     resource_version: str | None = None,
-    labels: Mapping[str, str] | None = None,
+    label_selector: str | None = None,
     field_selector: str | None = None,
     api_kwargs: Mapping[str, object] | None = None,
 ) -> AsyncIterator[WatchEvent[T]]:
@@ -217,8 +216,8 @@ async def watch[T](
         Human-readable context for timeout and API error messages.
     resource_version : str | None, optional
         Resource version to watch from.
-    labels : Mapping[str, str] | None, optional
-        Optional label selector key/value pairs.
+    label_selector : str | None, optional
+        Optional raw Kubernetes label selector.
     field_selector : str | None, optional
         Raw Kubernetes field selector.
     api_kwargs : Mapping[str, object] | None, optional
@@ -231,24 +230,19 @@ async def watch[T](
 
     Raises
     ------
-    TimeoutError
-        If the watch exceeds the timeout budget.
     WatchExpired
         If Kubernetes returns HTTP 410 for an expired resource version.
     OSError
         If Kubernetes returns malformed watch data or any non-410 API failure.
     """
-    if timeout <= 0:
-        msg = f"{context} watch timed out before request could start"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
         timeout,
-        message=f"{context} watch timed out before request could start",
+        message=f"{context} watch timeout must be positive",
     )
     kwargs = _watch_kwargs(
         timeout=timeout,
         resource_version=resource_version,
-        labels=labels,
+        label_selector=label_selector,
         field_selector=field_selector,
         api_kwargs=api_kwargs,
     )

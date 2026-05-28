@@ -7,6 +7,7 @@ CRDs, and deterministic resource names rather than snap ownership.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from collections.abc import Mapping
@@ -16,6 +17,7 @@ from urllib.parse import urlparse
 import yaml
 
 from bertrand.env.git import (
+    BERTRAND_ENV,
     BERTRAND_NAMESPACE,
     INFINITY,
     CommandError,
@@ -158,15 +160,13 @@ async def microk8s_config_payload(*, timeout: float) -> str:
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     OSError
         If MicroK8s returns an empty payload.
     """
-    msg = "kubeconfig timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message=msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="kubeconfig timeout must be positive",
+    )
     result = await run(
         ["microk8s", "config"],
         capture_output=True,
@@ -368,35 +368,25 @@ async def _wait_microk8s_ready(
 async def _add_bertrand_kube_namespace(*, timeout: float) -> None:
     deadline = Deadline.from_timeout(
         timeout,
-        message="Bertrand namespace bootstrap timeout must be non-negative",
+        message="Bertrand namespace bootstrap timeout must be positive",
     )
-    existing = await kubectl(
-        ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
-        check=False,
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+            "name": BERTRAND_NAMESPACE,
+            "labels": {
+                BERTRAND_ENV: "1",
+                "app.kubernetes.io/part-of": "bertrand",
+            },
+        },
+    }
+    await kubectl(
+        ["apply", "--server-side", "-f", "-"],
+        stdin=json.dumps(manifest, separators=(",", ":")),
         capture_output=True,
         timeout=deadline.remaining(),
     )
-    if existing.returncode == 0:
-        return
-
-    created = await kubectl(
-        ["create", "namespace", BERTRAND_NAMESPACE],
-        check=False,
-        capture_output=True,
-        timeout=deadline.remaining(),
-    )
-    if created.returncode == 0:
-        return
-
-    raced = await kubectl(
-        ["get", "namespace", BERTRAND_NAMESPACE, "-o", "name"],
-        check=False,
-        capture_output=True,
-        timeout=deadline.remaining(),
-    )
-    if raced.returncode == 0:
-        return
-    raise CommandError(created.returncode, created.args, created.stdout, created.stderr)
 
 
 async def start_microk8s(*, timeout: float) -> None:
@@ -414,9 +404,7 @@ async def start_microk8s(*, timeout: float) -> None:
     OSError
         If MicroK8s is missing, startup fails, or namespace bootstrap fails.
     """
-    message = "MicroK8s timeout must be non-negative."
-    if timeout <= 0:
-        raise TimeoutError(message)
+    message = "MicroK8s timeout must be positive"
     if not shutil.which("microk8s"):
         msg = (
             "MicroK8s CLI was not found in PATH. Run `bertrand init` to install "
@@ -487,13 +475,11 @@ async def microk8s_join_token(*, worker: bool, timeout: float) -> str:
     ------
     OSError
         If MicroK8s is unavailable or no join command can be parsed.
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    msg = "MicroK8s add-node timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message=msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="MicroK8s add-node timeout must be positive",
+    )
     if not await microk8s_cluster_ready(timeout=deadline.remaining()):
         msg = "MicroK8s must be running before generating a join token"
         raise OSError(msg)
@@ -510,7 +496,7 @@ async def microk8s_join_token(*, worker: bool, timeout: float) -> str:
     preferred = [
         target for target, worker_flag in matches if bool(worker_flag) == worker
     ]
-    return (preferred or [matches[0][0]])[0]
+    return (preferred or [matches[0][0]])[0].strip()
 
 
 async def join_microk8s_cluster(
@@ -535,13 +521,11 @@ async def join_microk8s_cluster(
     ------
     OSError
         If this host already appears to belong to a MicroK8s cluster or join fails.
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    message = "MicroK8s join timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="MicroK8s join timeout must be positive",
+    )
     if await microk8s_cluster_ready(timeout=deadline.remaining()):
         msg = (
             "local MicroK8s already reports a ready cluster; refusing to join it to "
@@ -552,7 +536,10 @@ async def join_microk8s_cluster(
     target = token.strip()
     match = MICROK8S_JOIN_PATTERN.search(target)
     if match is not None:
-        target = match.group(1)
+        target = match.group(1).strip()
+    if not target:
+        msg = "MicroK8s join token cannot be empty"
+        raise OSError(msg)
     argv = ["microk8s", "join", target]
     if worker:
         argv.append("--worker")
@@ -582,7 +569,7 @@ async def ensure_microk8s_kubeconfig(*, timeout: float) -> Path:
     """
     deadline = Deadline.from_timeout(
         timeout,
-        message="kubeconfig timeout must be non-negative",
+        message="kubeconfig timeout must be positive",
     )
     payload = await microk8s_config_payload(timeout=deadline.remaining())
 

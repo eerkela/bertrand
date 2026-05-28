@@ -40,8 +40,6 @@ async def bertrand_scale(
     ------
     ValueError
         If `replicas` or `grace_period_seconds` is negative.
-    TimeoutError
-        If the operation cannot start before `timeout` expires.
     """
     if replicas < 0:
         msg = "scale replicas cannot be negative"
@@ -49,9 +47,6 @@ async def bertrand_scale(
     if grace_period_seconds < 0:
         msg = "scale grace period cannot be negative"
         raise ValueError(msg)
-    if timeout <= 0:
-        msg = "scale timeout must be positive"
-        raise TimeoutError(msg)
 
     async with _project_command_context(target, timeout=timeout) as (
         kube,

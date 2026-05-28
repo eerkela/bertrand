@@ -76,14 +76,9 @@ async def _publish_project_image_manifest(
 
     Raises
     ------
-    TimeoutError
-        If the assembly Job cannot complete before `timeout`.
     ValueError
         If image refs, auth IDs, or platform refs are malformed.
     """
-    if timeout <= 0:
-        msg = "image manifest publish timeout must be non-negative"
-        raise TimeoutError(msg)
     image = validate_tagged_ref(spec.image, label="internal manifest target")
     internal_service_ref = image_repository_service_ref(image)
     if image_repository_pull_ref(internal_service_ref) != image:
@@ -105,7 +100,7 @@ async def _publish_project_image_manifest(
 
     deadline = Deadline.from_timeout(
         timeout,
-        message="image manifest publish timeout must be non-negative",
+        message="image manifest publish timeout must be positive",
     )
     auth_secret = await _resolve_auth_secret(
         kube,

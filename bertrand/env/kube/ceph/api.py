@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, TypedDict, overload
+from typing import Any, Literal, overload
 
 from bertrand.env.git import (
     INFINITY,
@@ -44,13 +44,55 @@ class CephCapacitySnapshot:
     used_ratio: float
 
 
-class _LvmPV(TypedDict):
+@dataclass(frozen=True)
+class _LvmPV:
     """One physical volume belonging to Bertrand's preferred LVM volume group."""
 
     pv_name: str
     pv_uuid: str
     size_bytes: int
     free_bytes: int
+
+
+@dataclass(frozen=True)
+class _LvmLV:
+    """One logical volume belonging to Bertrand's preferred LVM volume group."""
+
+    lv_name: str
+    lv_path: str
+    size_bytes: int
+    devices: str
+    tags: frozenset[str]
+
+    @property
+    def first_pv(self) -> str:
+        """Return the first physical volume backing this LV."""
+        for chunk in re.split(r"[, ]+", self.devices):
+            if chunk:
+                return chunk.split("(", 1)[0].strip()
+        return ""
+
+    def tag_value(self, prefix: str) -> str:
+        """Return a tag value for one `prefix=...` LVM tag.
+
+        Returns
+        -------
+        str
+            Tag suffix after the requested prefix, or an empty string.
+        """
+        prefix = prefix.rstrip("=") + "="
+        for tag in self.tags:
+            if tag.startswith(prefix):
+                return tag.removeprefix(prefix).strip()
+        return ""
+
+
+@dataclass(frozen=True)
+class _LoopDevice:
+    """One host loop device and its backing file."""
+
+    name: str
+    back_file: str
 
 
 @dataclass(frozen=True)
@@ -435,14 +477,14 @@ async def _lvm_inventory(*, timeout: float = 5.0) -> tuple[_LvmPV, ...]:
         pv_size = _parse_lvm_int(row.get("pv_size"))
         if pv_name and pv_uuid:
             pvs.append(
-                {
-                    "pv_name": pv_name,
-                    "pv_uuid": pv_uuid,
-                    "size_bytes": pv_size,
-                    "free_bytes": pv_free,
-                }
+                _LvmPV(
+                    pv_name=pv_name,
+                    pv_uuid=pv_uuid,
+                    size_bytes=pv_size,
+                    free_bytes=pv_free,
+                )
             )
-    return tuple(sorted(pvs, key=lambda item: (item["pv_uuid"], item["pv_name"])))
+    return tuple(sorted(pvs, key=lambda item: (item.pv_uuid, item.pv_name)))
 
 
 async def host_capacity_snapshot(
@@ -464,14 +506,14 @@ async def host_capacity_snapshot(
     return {
         "free_bytes": stats.f_bavail * stats.f_frsize,
         "path": path.as_posix(),
-        "lvm_free_bytes": sum(pv["free_bytes"] for pv in lvm_pvs),
-        "lvm_pvs": [pv["pv_name"] for pv in lvm_pvs],
+        "lvm_free_bytes": sum(pv.free_bytes for pv in lvm_pvs),
+        "lvm_pvs": [pv.pv_name for pv in lvm_pvs],
         "lvm_pv_inventory": [
             {
-                "pv_name": pv["pv_name"],
-                "pv_uuid": pv["pv_uuid"],
-                "pv_size_bytes": pv["size_bytes"],
-                "pv_free_bytes": pv["free_bytes"],
+                "pv_name": pv.pv_name,
+                "pv_uuid": pv.pv_uuid,
+                "pv_size_bytes": pv.size_bytes,
+                "pv_free_bytes": pv.free_bytes,
             }
             for pv in lvm_pvs
         ],
@@ -481,7 +523,7 @@ async def host_capacity_snapshot(
     }
 
 
-async def _lvs(*, timeout: float) -> list[dict[str, object]]:
+async def _lvm_lv_inventory(*, timeout: float) -> tuple[_LvmLV, ...]:
     payload = await _host_json(
         [
             "lvs",
@@ -502,34 +544,51 @@ async def _lvs(*, timeout: float) -> list[dict[str, object]]:
         for report in reports:
             if isinstance(report, dict) and isinstance(report.get("lv"), list):
                 rows.extend(row for row in report["lv"] if isinstance(row, dict))
-    return rows
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        if str(row.get("vg_name") or "").strip() != BERTRAND_LVM_VG:
+            continue
+        lv_name = str(row.get("lv_name") or "").strip()
+        if lv_name:
+            grouped.setdefault(lv_name, []).append(row)
+
+    lvs: list[_LvmLV] = []
+    for lv_name, matches in grouped.items():
+        first = matches[0]
+        segment_ranges = ",".join(
+            str(row.get("seg_pe_ranges") or "") for row in matches
+        )
+        devices = segment_ranges or ",".join(
+            str(row.get("devices") or "") for row in matches
+        )
+        tags: set[str] = set()
+        for row in matches:
+            tags.update(
+                tag.strip()
+                for tag in str(row.get("lv_tags") or "").split(",")
+                if tag.strip()
+            )
+        lvs.append(
+            _LvmLV(
+                lv_name=lv_name,
+                lv_path=str(
+                    first.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}"
+                ),
+                size_bytes=_parse_lvm_int(first.get("lv_size")),
+                devices=devices,
+                tags=frozenset(tags),
+            )
+        )
+    return tuple(sorted(lvs, key=lambda item: item.lv_name))
 
 
-async def _find_lv(lv_name: str, *, timeout: float) -> dict[str, object] | None:
-    matches = [
-        row
-        for row in await _lvs(timeout=timeout)
-        if str(row.get("vg_name") or "").strip() == BERTRAND_LVM_VG
-        and str(row.get("lv_name") or "").strip() == lv_name
-    ]
-    if not matches:
-        return None
-    merged = dict(matches[0])
-    merged["devices"] = ",".join(str(row.get("devices") or "") for row in matches)
-    merged["seg_pe_ranges"] = ",".join(
-        str(row.get("seg_pe_ranges") or "") for row in matches
-    )
-    return merged
-
-
-def _validate_lv_devices(row: dict[str, object], *, pv_name: str) -> None:
-    devices = str(row.get("seg_pe_ranges") or row.get("devices") or "")
-    if not devices:
+def _validate_lv_devices(lv: _LvmLV, *, pv_name: str) -> None:
+    if not lv.devices:
         msg = "LVM did not report devices for Bertrand OSD LV"
         raise OSError(msg)
     mismatched = [
         chunk
-        for chunk in re.split(r"[, ]+", devices)
+        for chunk in re.split(r"[, ]+", lv.devices)
         if chunk and not chunk.startswith(f"{pv_name}(")
     ]
     if mismatched:
@@ -539,29 +598,6 @@ def _validate_lv_devices(row: dict[str, object], *, pv_name: str) -> None:
             f"expected all extents on {pv_name!r}"
         )
         raise OSError(msg)
-
-
-def _lv_tags(row: dict[str, object]) -> frozenset[str]:
-    return frozenset(
-        tag.strip() for tag in str(row.get("lv_tags") or "").split(",") if tag.strip()
-    )
-
-
-def _tag_value(tags: frozenset[str], prefix: str) -> str:
-    prefix = prefix.rstrip("=") + "="
-    for tag in tags:
-        if tag.startswith(prefix):
-            return tag.removeprefix(prefix).strip()
-    return ""
-
-
-def _first_lvm_pv(row: dict[str, object]) -> str:
-    devices = str(row.get("seg_pe_ranges") or row.get("devices") or "")
-    for chunk in re.split(r"[, ]+", devices):
-        if not chunk:
-            continue
-        return chunk.split("(", 1)[0].strip()
-    return ""
 
 
 def _device_link(name: str) -> Path:
@@ -605,19 +641,23 @@ async def prepare_lvm_osd(
     if not pv_name:
         msg = "LVM OSD allocation requires a concrete PV name"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="LVM OSD preparation timeout must be positive",
+    )
     async with _host_lock(deadline.remaining()):
         inventory = await _lvm_inventory(timeout=deadline.remaining())
-        pv = next((item for item in inventory if item["pv_name"] == pv_name), None)
+        pv = next((item for item in inventory if item.pv_name == pv_name), None)
         if pv is None:
             msg = f"PV {pv_name!r} is not part of the {BERTRAND_LVM_VG!r} VG"
             raise OSError(msg)
         lv_name = (lv_name or f"bertrand-osd-{_safe_name(name)[-32:]}").strip()
-        existing = await _find_lv(lv_name, timeout=deadline.remaining())
+        lvs = await _lvm_lv_inventory(timeout=deadline.remaining())
+        existing = next((lv for lv in lvs if lv.lv_name == lv_name), None)
         if existing is None:
-            if pv["free_bytes"] < target_bytes:
+            if pv.free_bytes < target_bytes:
                 msg = (
-                    f"PV {pv_name!r} has only {pv['free_bytes']} bytes free; "
+                    f"PV {pv_name!r} has only {pv.free_bytes} bytes free; "
                     f"{target_bytes} bytes are required"
                 )
                 raise OSError(msg)
@@ -641,45 +681,41 @@ async def prepare_lvm_osd(
                 timeout=deadline.remaining(),
             )
         else:
-            current = _parse_lvm_int(existing.get("lv_size"))
+            current = existing.size_bytes
             if current < target_bytes:
-                if pv["free_bytes"] < target_bytes - current:
+                if pv.free_bytes < target_bytes - current:
                     msg = (
-                        f"PV {pv_name!r} has only {pv['free_bytes']} bytes free; "
+                        f"PV {pv_name!r} has only {pv.free_bytes} bytes free; "
                         f"{target_bytes - current} bytes are required"
                     )
                     raise OSError(msg)
-                lv_path = str(
-                    existing.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}"
-                )
                 await _host_text(
                     [
                         "lvextend",
                         "--yes",
                         "--size",
                         _lvm_size(target_bytes),
-                        lv_path,
+                        existing.lv_path,
                         pv_name,
                     ],
                     timeout=deadline.remaining(),
                 )
-        live = await _find_lv(lv_name, timeout=deadline.remaining())
+        lvs = await _lvm_lv_inventory(timeout=deadline.remaining())
+        live = next((lv for lv in lvs if lv.lv_name == lv_name), None)
         if live is None:
             msg = f"Bertrand OSD LV {lv_name!r} disappeared after allocation"
             raise OSError(msg)
         _validate_lv_devices(live, pv_name=pv_name)
-        lv_path = str(live.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}")
-        observed = _parse_lvm_int(live.get("lv_size"))
         block_path = _device_link(name)
-        _ensure_link(block_path, lv_path)
+        _ensure_link(block_path, live.lv_path)
         return PreparedOSD(
             block_path=block_path,
-            observed_bytes=observed,
-            pv_name=pv["pv_name"],
-            pv_uuid=pv["pv_uuid"],
-            pv_device=pv["pv_name"],
+            observed_bytes=live.size_bytes,
+            pv_name=pv.pv_name,
+            pv_uuid=pv.pv_uuid,
+            pv_device=pv.pv_name,
             lv_name=lv_name,
-            lv_path=lv_path,
+            lv_path=live.lv_path,
         )
 
 
@@ -691,69 +727,70 @@ async def discover_lvm_osds(*, timeout: float) -> tuple[tuple[str, PreparedOSD],
     tuple[tuple[str, PreparedOSD], ...]
         Prepared LVM OSD substrates recovered from host LVM tags.
     """
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="LVM OSD discovery timeout must be positive",
+    )
     async with _host_lock(deadline.remaining()):
         pvs = await _lvm_inventory(timeout=deadline.remaining())
-        inventory = {item["pv_name"]: item for item in pvs}
+        inventory = {item.pv_name: item for item in pvs}
         discoveries: list[tuple[str, PreparedOSD]] = []
-        for row in await _lvs(timeout=deadline.remaining()):
-            if str(row.get("vg_name") or "").strip() != BERTRAND_LVM_VG:
+        for lv in await _lvm_lv_inventory(timeout=deadline.remaining()):
+            if LVM_TAG not in lv.tags:
                 continue
-            tags = _lv_tags(row)
-            if LVM_TAG not in tags:
+            name = lv.tag_value("bertrand.osd")
+            if not name or not lv.lv_name:
                 continue
-            name = _tag_value(tags, "bertrand.osd")
-            lv_name = str(row.get("lv_name") or "").strip()
-            if not name or not lv_name:
-                continue
-            pv_name = _first_lvm_pv(row)
+            pv_name = lv.first_pv
             pv = inventory.get(pv_name)
             if pv is None:
                 continue
-            live = await _find_lv(lv_name, timeout=deadline.remaining())
-            if live is None:
-                continue
-            _validate_lv_devices(live, pv_name=pv_name)
-            lv_path = str(live.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}")
+            _validate_lv_devices(lv, pv_name=pv_name)
             block_path = _device_link(name)
-            _ensure_link(block_path, lv_path)
+            _ensure_link(block_path, lv.lv_path)
             discoveries.append(
                 (
                     name,
                     PreparedOSD(
                         block_path=block_path,
-                        observed_bytes=_parse_lvm_int(live.get("lv_size")),
-                        pv_name=pv["pv_name"],
-                        pv_uuid=pv["pv_uuid"],
-                        pv_device=pv["pv_name"],
-                        lv_name=lv_name,
-                        lv_path=lv_path,
+                        observed_bytes=lv.size_bytes,
+                        pv_name=pv.pv_name,
+                        pv_uuid=pv.pv_uuid,
+                        pv_device=pv.pv_name,
+                        lv_name=lv.lv_name,
+                        lv_path=lv.lv_path,
                     ),
                 )
             )
         return tuple(sorted(discoveries, key=lambda item: item[0]))
 
 
-async def _loop_devices(*, timeout: float) -> list[dict[str, object]]:
+async def _loop_inventory(*, timeout: float) -> tuple[_LoopDevice, ...]:
     try:
         payload = await _host_json(
             ["losetup", "--json", "--list", "--output", "NAME,BACK-FILE"],
             timeout=timeout,
         )
     except OSError:
-        return []
+        return ()
     devices = payload.get("loopdevices")
     if not isinstance(devices, list):
-        return []
-    return [item for item in devices if isinstance(item, dict)]
+        return ()
+    out: list[_LoopDevice] = []
+    for item in devices:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        back_file = str(item.get("back-file") or "").strip()
+        if name:
+            out.append(_LoopDevice(name=name, back_file=back_file))
+    return tuple(sorted(out, key=lambda item: item.name))
 
 
 async def _loop_device_for_file(path: Path, *, timeout: float) -> str | None:
-    for item in await _loop_devices(timeout=timeout):
-        if str(item.get("back-file") or "") == path.as_posix():
-            name = str(item.get("name") or "").strip()
-            if name:
-                return name
+    for item in await _loop_inventory(timeout=timeout):
+        if item.back_file == path.as_posix():
+            return item.name
     return None
 
 
@@ -780,7 +817,10 @@ async def prepare_loop_fallback_osd(
     if target_bytes <= 0:
         msg = "loop fallback OSD target size must be positive"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="loop fallback OSD preparation timeout must be positive",
+    )
     async with _host_lock(deadline.remaining()):
         file_path = LOOP_FALLBACK_STORAGE_PATH / f"{_safe_name(name)}.img"
         local_file = _local_path(file_path)
@@ -839,14 +879,12 @@ async def discover_loop_fallback_osd(
     )
 
 
-async def drain_loop_osd(osd_id: int, *, timeout: float) -> None:
-    """Mark a loop-backed fallback OSD out and wait until Ceph says it is safe."""
-    await drain_ceph_osd(osd_id, timeout=timeout)
-
-
 async def drain_ceph_osd(osd_id: int, *, timeout: float) -> None:
     """Mark an OSD out and wait until Ceph says it is safe to destroy."""
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="Ceph OSD drain timeout must be positive",
+    )
     await ceph(["osd", "out", str(osd_id)], timeout=deadline.remaining())
 
     async def safe_to_destroy(remaining: float) -> None:
@@ -867,11 +905,6 @@ async def drain_ceph_osd(osd_id: int, *, timeout: float) -> None:
         interval=5.0,
         action=f"waiting for osd.{osd_id} to become safe to destroy",
     )
-
-
-async def purge_loop_osd(osd_id: int, *, timeout: float) -> None:
-    """Purge a loop-backed fallback OSD after Rook has stopped owning it."""
-    await purge_ceph_osd(osd_id, timeout=timeout)
 
 
 async def purge_ceph_osd(osd_id: int, *, timeout: float) -> None:
@@ -901,17 +934,19 @@ async def delete_lvm_osd_substrate(
     if not lv_name:
         msg = "LVM OSD deletion requires a non-empty LV name"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="LVM OSD substrate deletion timeout must be positive",
+    )
     async with _host_lock(deadline.remaining()):
-        row = await _find_lv(lv_name, timeout=deadline.remaining())
-        if row is not None:
-            tags = _lv_tags(row)
-            if LVM_TAG not in tags:
+        lvs = await _lvm_lv_inventory(timeout=deadline.remaining())
+        lv = next((item for item in lvs if item.lv_name == lv_name), None)
+        if lv is not None:
+            if LVM_TAG not in lv.tags:
                 msg = f"refusing to delete unmanaged LV {lv_name!r}"
                 raise OSError(msg)
-            lv_path = str(row.get("lv_path") or f"/dev/{BERTRAND_LVM_VG}/{lv_name}")
             await _host_text(
-                ["lvremove", "--yes", lv_path],
+                ["lvremove", "--yes", lv.lv_path],
                 timeout=deadline.remaining(),
             )
         if block_path.strip():
@@ -927,11 +962,15 @@ async def delete_loop_fallback_substrate(
     timeout: float,
 ) -> None:
     """Detach and remove a retired loop fallback substrate."""
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="loop fallback OSD substrate deletion timeout must be positive",
+    )
     async with _host_lock(deadline.remaining()):
         device = loop_device.strip()
-        file_path = Path(loop_file)
-        if file_path.as_posix():
+        loop_file = loop_file.strip()
+        file_path = Path(loop_file) if loop_file else None
+        if file_path is not None:
             device = device or (
                 await _loop_device_for_file(file_path, timeout=deadline.remaining())
                 or ""
@@ -944,7 +983,7 @@ async def delete_loop_fallback_substrate(
         if block_path.strip():
             with contextlib.suppress(OSError):
                 _local_path(Path(block_path)).unlink()
-        if file_path.as_posix():
+        if file_path is not None:
             with contextlib.suppress(OSError):
                 _local_path(file_path).unlink()
 
@@ -969,7 +1008,10 @@ async def bind_block_device(
     if not block or not target:
         msg = "block device bind mount requires non-empty source and target paths"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="block device bind mount timeout must be positive",
+    )
     async with _host_lock(deadline.remaining()):
         local_target = _local_path(Path(target))
         local_target.parent.mkdir(parents=True, exist_ok=True)
@@ -1028,7 +1070,10 @@ async def unbind_block_device(*, target_path: str, timeout: float) -> None:
     if not target:
         msg = "block device unmount requires a non-empty target path"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="block device unmount timeout must be positive",
+    )
     async with _host_lock(deadline.remaining()):
         with contextlib.suppress(OSError, TimeoutError):
             await _host_text(["umount", target], timeout=deadline.remaining())

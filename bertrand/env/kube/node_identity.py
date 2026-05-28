@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bertrand.env.config.core import _check_uuid
-from bertrand.env.git import BERTRAND_ENV
+from bertrand.env.git import BERTRAND_ENV, Deadline
 from bertrand.env.host import HOST_ID_FILE
 from bertrand.env.kube.custom_object import (
     CustomObjectMetadata,
@@ -172,18 +172,19 @@ async def ensure_local_bertrand_node(
     BertrandNodeRecord
         Converged local node identity record.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    if timeout <= 0:
-        msg = "BertrandNode convergence timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="BertrandNode convergence timeout must be positive",
+    )
     host_id = current_host_id() if host_id is None else _check_uuid(host_id)
-    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=timeout)
-    node = await Node.local(kube, timeout=timeout)
-    existing = await get_bertrand_node(kube, host_id=host_id, timeout=timeout)
+    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    node = await Node.local(kube, timeout=deadline.remaining())
+    existing = await get_bertrand_node(
+        kube,
+        host_id=host_id,
+        timeout=deadline.remaining(),
+    )
     now = datetime.now(UTC)
     created_at = existing.spec.created_at if existing is not None else now
     if display_name is None:
@@ -210,7 +211,7 @@ async def ensure_local_bertrand_node(
             BERTRAND_NODE_KUBE_LABEL: _hash_label(node.name),
             BERTRAND_NODE_PHASE_LABEL: "active",
         },
-        timeout=timeout,
+        timeout=deadline.remaining(),
     )
 
 
@@ -256,17 +257,18 @@ async def retire_bertrand_node(
     BertrandNodeRecord | None
         Retired record, or None when no record exists.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or retirement exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "BertrandNode retirement timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="BertrandNode retirement timeout must be positive",
+    )
     host_id = current_host_id() if host_id is None else _check_uuid(host_id)
-    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=timeout)
-    existing = await get_bertrand_node(kube, host_id=host_id, timeout=timeout)
+    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    existing = await get_bertrand_node(
+        kube,
+        host_id=host_id,
+        timeout=deadline.remaining(),
+    )
     if existing is None:
         return None
     now = datetime.now(UTC)
@@ -288,7 +290,7 @@ async def retire_bertrand_node(
             BERTRAND_NODE_KUBE_LABEL: _hash_label(existing.node_name),
             BERTRAND_NODE_PHASE_LABEL: "retired",
         },
-        timeout=timeout,
+        timeout=deadline.remaining(),
     )
 
 

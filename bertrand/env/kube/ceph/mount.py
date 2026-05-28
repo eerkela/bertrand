@@ -15,7 +15,6 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     HOST_MOUNTS,
     METADATA_REPO_ID,
-    REPO_ID_ENV,
     CommandError,
     Deadline,
     HostLock,
@@ -29,17 +28,12 @@ from bertrand.env.git import (
 from bertrand.env.host import HOST_ID_FILE, REPO_DIR, REPO_LOCK_EXT, REPO_MOUNT_EXT
 from bertrand.env.kube.ceph.auth import RepoCredentials
 from bertrand.env.kube.ceph.volume import (
-    REPOSITORY_MOUNT_HOST_HASH_LABEL,
-    REPOSITORY_MOUNT_PATH_HASH_LABEL,
-    REPOSITORY_MOUNT_PHASE_LABEL,
     REPOSITORY_STATE_RESOURCE,
     ensure_repository_mount_record,
     ensure_repository_volume_claim,
     ensure_repository_volume_record,
     list_repository_volume_claims,
     mark_repository_volume_ready,
-    repository_mount_host_hash,
-    repository_mount_path_hash,
     resolve_repository_volume_ceph_path,
     retire_repository_mount,
     retire_repository_mount_record,
@@ -336,8 +330,6 @@ class MountInfo:
             If `ceph_secretfile` is missing or is not a regular file.
         OSError
             If mount convergence fails or an incompatible mount already exists.
-        TimeoutError
-            If timeout is non-positive.
         ValueError
             If the repository identity or mount inputs are invalid.
         """
@@ -347,10 +339,10 @@ class MountInfo:
         if os.name != "posix" or platform.system() != "Linux":
             msg = "repository mounts are only supported on Linux platforms"
             raise OSError(msg)
-        message = "timeout must be non-negative"
-        if timeout <= 0:
-            raise TimeoutError(message)
-        deadline = Deadline.from_timeout(timeout, message=message)
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="repository mount timeout must be positive",
+        )
 
         ceph_user = ceph_user.strip()
         if not ceph_user:
@@ -448,17 +440,16 @@ class MountInfo:
 
         Raises
         ------
-        TimeoutError
-            If `timeout` is non-positive.
         OSError
             If unmounting fails or the mount remains attached.
         """
         if os.name != "posix" or platform.system() != "Linux":
             msg = "repository mounts are only supported on Linux platforms"
             raise OSError(msg)
-        if timeout <= 0:
-            msg = "timeout must be non-negative"
-            raise TimeoutError(msg)
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="repository unmount timeout must be positive",
+        )
 
         cmd = ["umount"]
         if force:
@@ -468,7 +459,7 @@ class MountInfo:
             await run(
                 sudo(cmd),
                 capture_output=True,
-                timeout=timeout,
+                timeout=deadline.remaining(),
             )
         except CommandError as err:
             # Treat a stale-entry race as idempotent success.
@@ -512,7 +503,7 @@ class MountInfo:
                 If `timeout` is non-positive.
             """
             if self.timeout <= 0:
-                msg = "timeout must be non-negative"
+                msg = "repository alias lock timeout must be positive"
                 raise TimeoutError(msg)
             if self.mount.repo_id is None:
                 msg = (
@@ -539,7 +530,7 @@ class MountInfo:
             # symlinks cannot drift across concurrent init/clean callers
             self._deadline = Deadline.from_timeout(
                 self.timeout,
-                message="timeout must be non-negative",
+                message="repository alias lock timeout must be positive",
             )
             self._root.mkdir(parents=True, exist_ok=True)
             self._lock = HostLock(
@@ -719,15 +710,13 @@ async def ensure_repository_mount(
     ------
     OSError
         If an existing repository claim or hidden mount is ambiguous or incompatible.
-    TimeoutError
-        If `timeout` is non-positive.
     """
     repo_id = _check_uuid(repo_id)
     target = abspath(target)
-    message = "timed out before repository mount convergence started"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository mount convergence timeout must be positive",
+    )
 
     candidates = (
         list(volumes)
@@ -937,10 +926,10 @@ async def finalize_repository_mount(
     repo_id = _check_uuid(repo_id)
     target = abspath(target)
     alias = abspath(alias)
-    message = "timed out before repository mount finalization started"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository mount finalization timeout must be positive",
+    )
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
     staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
     swap_path = target.parent / f".{target.name}.bertrand.swap.{repo_id}"
@@ -1030,7 +1019,7 @@ async def _mount_repository_volume(
 ) -> MountInfo:
     deadline = Deadline.from_timeout(
         timeout,
-        message="timed out before repository volume remount started",
+        message="repository volume remount timeout must be positive",
     )
     volumes = await list_repository_volume_claims(
         kube,
@@ -1085,7 +1074,7 @@ async def _resurrect_repository_mount_record(
 ) -> tuple[UUIDHex, MountInfo] | None:
     deadline = Deadline.from_timeout(
         timeout,
-        message="timed out before repository mount record recovery started",
+        message="repository mount record recovery timeout must be positive",
     )
     inspected = abspath(path)
     await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
@@ -1101,9 +1090,7 @@ async def _resurrect_repository_mount_record(
             record
             for state in states
             for record in state.status.mounts.values()
-            if record.alias_path == alias_path
-            and record.labels.get(REPOSITORY_MOUNT_PATH_HASH_LABEL)
-            == repository_mount_path_hash(alias_path)
+            if record.alias_path == alias_path and record.phase == "Active"
         ]
         if not records:
             continue
@@ -1171,15 +1158,11 @@ async def resurrect_repository_mount(
         `(repo_id, mount)` when a managed alias or mount record is found and mounted,
         or None when no managed recovery metadata is present.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    message = "timed out before repository mount resurrection started"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository mount resurrection timeout must be positive",
+    )
 
     # Search for managed Bertrand symlink alias pointing to a mounted volume.
     managed = _managed_alias_ancestor(path)
@@ -1226,15 +1209,11 @@ async def refresh_repository_alias_for_path(
         Repository UUID when a managed alias was refreshed or resurrected, otherwise
         None.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    message = "timed out before repository alias refresh started"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository alias refresh timeout must be positive",
+    )
 
     managed = _managed_alias_ancestor(path)
     if managed is not None:
@@ -1292,13 +1271,11 @@ async def prune_repository_mount_aliases(
     ------
     OSError
         If a recorded alias path is occupied by unmanaged content.
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    message = "timed out before repository alias pruning started"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository alias pruning timeout must be positive",
+    )
     repo_id = _check_uuid(repo_id)
     host_id = _current_host_id()
     states = await REPOSITORY_STATE_RESOURCE.list(
@@ -1310,16 +1287,13 @@ async def prune_repository_mount_aliases(
         record
         for state in states
         for record in state.status.mounts.values()
-        if record.labels.get(REPO_ID_ENV) == repo_id
-        and record.labels.get(REPOSITORY_MOUNT_HOST_HASH_LABEL)
-        == repository_mount_host_hash(host_id)
-        and record.labels.get(REPOSITORY_MOUNT_PHASE_LABEL) == "active"
+        if record.repo_id == repo_id
+        and record.host_id == host_id
+        and record.phase == "Active"
     ]
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
     live = False
     for record in records:
-        if record.repo_id != repo_id or record.host_id != host_id:
-            continue
         alias = Path(record.alias_path)
         if symlink_points_to(alias, hidden_mount):
             live = True
@@ -1362,15 +1336,13 @@ async def prune_repository_mounts(
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     ValueError
         If `limit` is negative.
     """
-    message = "timed out before repository mount pruning started"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository mount pruning timeout must be positive",
+    )
     if limit < 0:
         msg = "repository mount prune limit cannot be negative"
         raise ValueError(msg)

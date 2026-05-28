@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import Deadline, until
@@ -37,25 +38,22 @@ async def ensure_network_backend(kube: Kube, *, timeout: float) -> None:
     timeout : float
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
 
-    Raises
-    ------
-    TimeoutError
-        If convergence cannot start before `timeout` expires.
     """
-    if timeout <= 0:
-        msg = "network backend convergence timeout must be positive"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
         timeout,
         message="network backend convergence timeout must be positive",
     )
     await _apply_envoy_gateway(timeout=deadline.remaining())
-    for crd_name in GATEWAY_API_CRDS:
-        await _wait_crd_established(
-            kube,
-            name=crd_name,
-            timeout=deadline.remaining(),
+    await asyncio.gather(
+        *(
+            _wait_crd_established(
+                kube,
+                name=crd_name,
+                timeout=deadline.remaining(),
+            )
+            for crd_name in GATEWAY_API_CRDS
         )
+    )
     await _wait_envoy_gateway_available(kube, timeout=deadline.remaining())
 
 

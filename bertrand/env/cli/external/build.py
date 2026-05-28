@@ -259,7 +259,10 @@ async def _publish_project_image(
     quiet: bool = False,
     ensure_crds: bool = True,
 ) -> BuildKitBuildRecord:
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="project image publication timeout must be positive",
+    )
     await _assert_build_runtime(kube, timeout=deadline.remaining())
     spec = project_image_spec(config, repo_id=repo_id)
     external_image = (
@@ -404,10 +407,10 @@ def _print_request(name: str) -> None:
 
 
 async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
-    msg = "image build runtime readiness timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message=msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="image build runtime readiness timeout must be positive",
+    )
     registry = await image_repository_status(kube, timeout=deadline.remaining())
     buildkit = await buildkit_pool_status(
         kube,

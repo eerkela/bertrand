@@ -23,20 +23,14 @@ from bertrand.env.kube.network.workload import (
     prune_workload_http_routes,
 )
 from bertrand.env.kube.pod import Pod
-from bertrand.env.kube.workload.base import (
-    WORKLOAD_ID_LABEL,
-    WORKLOAD_LABEL,
-    WORKLOAD_LABEL_VALUE,
-    WorkloadIdentity,
-    WorkloadPod,
-)
+from bertrand.env.kube.workload.base import WorkloadIdentity, WorkloadPod
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from bertrand.env.config.bertrand import BertrandModel
-    from bertrand.env.kube.api._helpers import DeletionPropagationPolicy
     from bertrand.env.kube.api.client import Kube
+    from bertrand.env.kube.api.resource import DeletionPropagationPolicy
     from bertrand.env.kube.api.spec import (
         DeploymentRollingUpdateManifest,
         DeploymentStrategyManifest,
@@ -151,10 +145,6 @@ class WorkloadRemoveResult:
         )
 
 
-def _deadline(timeout: float, *, message: str) -> Deadline:
-    return Deadline.from_timeout(timeout, message=message)
-
-
 async def ensure_workload_controller(
     kube: Kube,
     *,
@@ -188,15 +178,9 @@ async def ensure_workload_controller(
     Deployment | CronJob | None
         Converged stable controller, or ``None`` for Job/no-workload topology.
 
-    Raises
-    ------
-    TimeoutError
-        If convergence cannot start before `timeout` expires.
     """
     message = "workload controller convergence timeout must be positive"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = _deadline(timeout, message=message)
+    deadline = Deadline.from_timeout(timeout, message=message)
     kind = _topology_kind(config)
 
     if kind == "deployment":
@@ -218,11 +202,13 @@ async def ensure_workload_controller(
             primary_args=primary_args,
         )
 
-    await _delete_stable_resources_if_present(
-        kube,
-        identity=_identity(workload),
-        deadline=deadline,
-    )
+    identity = _identity(workload)
+    if identity is not None:
+        await _delete_stable_resources(
+            kube,
+            identity=identity,
+            timeout=deadline.remaining(),
+        )
     return None
 
 
@@ -333,20 +319,6 @@ async def _ensure_cronjob_controller(
     )
 
 
-async def _delete_stable_resources_if_present(
-    kube: Kube,
-    *,
-    identity: WorkloadIdentity | None,
-    deadline: Deadline,
-) -> None:
-    if identity is not None:
-        await _delete_stable_resources(
-            kube,
-            identity=identity,
-            timeout=deadline.remaining(),
-        )
-
-
 async def create_workload_job_run(
     kube: Kube,
     *,
@@ -380,15 +352,11 @@ async def create_workload_job_run(
 
     Raises
     ------
-    TimeoutError
-        If creation cannot start before `timeout` expires.
     ValueError
         If `config` does not select Job topology.
     """
     message = "workload Job run creation timeout must be positive"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = _deadline(timeout, message=message)
+    deadline = Deadline.from_timeout(timeout, message=message)
     if _topology_kind(config) != "job":
         msg = "generated workload Job runs require Job topology"
         raise ValueError(msg)
@@ -478,17 +446,12 @@ async def scale_workload(
 
     Raises
     ------
-    TimeoutError
-        If Kubernetes API work cannot start before `timeout` expires or selected
-        pods remain after the grace/proof window.
     ValueError
         If `replicas` or `grace_period_seconds` is negative, or the topology cannot
         be scaled to the requested logical count.
     """
     message = "workload scale timeout must be positive"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = _deadline(timeout, message=message)
+    deadline = Deadline.from_timeout(timeout, message=message)
     if replicas < 0:
         msg = "workload scale replicas cannot be negative"
         raise ValueError(msg)
@@ -608,16 +571,11 @@ async def remove_workload(
 
     Raises
     ------
-    TimeoutError
-        If Kubernetes API work cannot start before `timeout` expires or selected
-        pods remain after the grace/proof window.
     ValueError
         If `grace_period_seconds` is negative.
     """
     message = "workload removal timeout must be positive"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = _deadline(timeout, message=message)
+    deadline = Deadline.from_timeout(timeout, message=message)
     if grace_period_seconds < 0:
         msg = "workload removal grace period cannot be negative"
         raise ValueError(msg)
@@ -679,9 +637,10 @@ async def ensure_workload_claim_templates(
         timeout,
         message="DRA ResourceClaimTemplate convergence timeout must be positive",
     )
-    for container_name, capability_ids in (
-        workload.resource_claim_capabilities_by_container.items()
-    ):
+    for (
+        container_name,
+        capability_ids,
+    ) in workload.resource_claim_capabilities_by_container.items():
         await upsert_resource_claim_templates(
             kube,
             namespace=BERTRAND_NAMESPACE,
@@ -893,7 +852,7 @@ async def _active_workload_jobs(
     jobs = await Job.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
-        labels=_runtime_labels(identity),
+        labels=identity.managed_selector,
         timeout=timeout,
     )
     active = tuple(job for job in jobs if not job.is_complete and not job.is_failed)
@@ -911,7 +870,7 @@ async def _active_workload_pods(
     pods = await Pod.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
-        labels=_runtime_labels(identity),
+        labels=identity.managed_selector,
         timeout=timeout,
     )
     active = tuple(pod for pod in pods if not pod.is_terminal)
@@ -952,12 +911,6 @@ async def _wait_workload_pods_stopped(
         if not pods:
             return
         await asyncio.sleep(deadline.bounded(_KILL_POD_POLL_SECONDS))
-
-
-def _runtime_labels(identity: WorkloadIdentity) -> dict[str, str]:
-    labels = {WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE}
-    labels.update(identity.selector)
-    return labels
 
 
 async def _delete_deployment(
@@ -1029,11 +982,7 @@ def _assert_managed(
     if resource is None:
         return
     labels = resource.labels
-    expected = {
-        WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE,
-        WORKLOAD_ID_LABEL: identity.workload_id,
-    }
-    expected.update(identity.selector)
+    expected = identity.managed_selector
     if all(labels.get(key) == value for key, value in expected.items()):
         return
     msg = (

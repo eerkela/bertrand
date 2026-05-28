@@ -28,8 +28,6 @@ CODE_OPEN_LABEL_VALUE = "code-open"
 CODE_OPEN_SESSION_LABEL = "bertrand.dev/code-open-session"
 CODE_OPEN_REQUEST_LABEL = "bertrand.dev/code-open-request"
 CODE_OPEN_HOST_LABEL = "bertrand.dev/code-open-host"
-CODE_OPEN_WORKTREE_LABEL = "bertrand.dev/code-open-worktree"
-CODE_OPEN_PHASE_LABEL = "bertrand.dev/code-open-phase"
 
 type CodeOpenPhase = Literal[
     "Pending",
@@ -271,9 +269,6 @@ async def wait_code_open_request(
     OSError
         If the request disappears before completion.
     """
-    if timeout <= 0:
-        msg = f"timed out waiting for {CODE_OPEN_KIND} {name!r}"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
         timeout,
         message=f"timed out waiting for {CODE_OPEN_KIND} {name!r}",
@@ -323,8 +318,6 @@ def code_open_request_labels(spec: CodeOpenSpec, host_id: str) -> dict[str, str]
         CODE_OPEN_SESSION_LABEL: _label_value(spec.session_id),
         CODE_OPEN_REQUEST_LABEL: _label_value(spec.request_id),
         CODE_OPEN_HOST_LABEL: _hash_label(host_id),
-        CODE_OPEN_WORKTREE_LABEL: _hash_label(spec.worktree),
-        CODE_OPEN_PHASE_LABEL: "pending",
         REPO_ID_ENV: _label_value(spec.repo_id),
     }
 

@@ -12,7 +12,7 @@ import kubernetes
 
 from bertrand.env.git import Deadline
 
-from .api._helpers import _is_too_many_requests
+from .api.client import KubeApiError
 from .api.metadata import KubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 from .pod import Pod
@@ -743,8 +743,6 @@ class Node(
 
         Raises
         ------
-        TimeoutError
-            If eviction admission or post-eviction convergence exceed timeout.
         OSError
             If the node cannot be drained safely under the selected policy.
 
@@ -754,10 +752,10 @@ class Node(
         pods, always skip DaemonSets, respect PDB backpressure (429 retries), and
         require explicit force for potentially disruptive cases.
         """
-        if timeout <= 0:
-            msg = "node drain timeout must be non-negative"
-            raise TimeoutError(msg)
-        deadline = _node_drain_deadline(timeout)
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="node drain timeout must be positive",
+        )
 
         await self.cordon(kube=kube, timeout=deadline.remaining())
         pods = await self.pods(kube=kube, timeout=deadline.remaining())
@@ -768,13 +766,6 @@ class Node(
         pending = _node_drain_pending(candidates)
         await _evict_node_drain_candidates(self, kube, candidates, deadline=deadline)
         await _wait_node_drain_convergence(self, kube, pending, deadline=deadline)
-
-
-def _node_drain_deadline(timeout: float) -> Deadline:
-    return Deadline.from_timeout(
-        timeout,
-        message="node drain timeout must be non-negative",
-    )
 
 
 def _classify_node_drain_pods(
@@ -838,7 +829,7 @@ async def _evict_node_drain_candidates(
                 await pod.evict(kube, timeout=deadline.remaining())
                 break
             except OSError as err:
-                if not _is_too_many_requests(err):
+                if not isinstance(err, KubeApiError) or err.status != 429:
                     raise
                 remaining = deadline.remaining()
                 if remaining <= 0:

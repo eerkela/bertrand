@@ -310,15 +310,13 @@ async def observe_rook_osd(
     tuple[int | None, bool]
         Observed Ceph OSD ID and whether the OSD is up and in the cluster.
     """
-    deadline = (
-        Deadline(
-            expires_at=asyncio.get_running_loop().time(),
-            timeout=timeout,
-        )
-        if timeout <= 0
-        else Deadline.from_timeout(timeout, message="")
-    )
     observed_id = record.ceph_osd_id
+    if timeout <= 0:
+        return observed_id, False
+    deadline = Deadline.from_timeout(
+        timeout,
+        message=f"Rook OSD observation timeout for {record.name!r} must be positive",
+    )
     while deadline.remaining() > 0:
         claims = await PersistentVolumeClaim.list(
             kube,

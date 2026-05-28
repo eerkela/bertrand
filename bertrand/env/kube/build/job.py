@@ -40,7 +40,7 @@ from bertrand.env.kube.capability.device import (
 )
 from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
 from bertrand.env.kube.configmap import ConfigMap
-from bertrand.env.kube.dra import delete_resource_claim_template
+from bertrand.env.kube.dra import RESOURCE_CLAIM_TEMPLATE_RESOURCE
 from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
@@ -209,16 +209,12 @@ async def publish_project_platforms(
 
     Raises
     ------
-    TimeoutError
-        If platform publication cannot start before `timeout`.
     ValueError
         If a generated platform output ref is empty.
     """
-    if timeout <= 0:
-        msg = "BuildKit platform image build timeout must be non-negative"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
+        timeout,
+        message="BuildKit platform image build timeout must be positive",
     )
     async with _prepared_source(
         kube,
@@ -243,10 +239,7 @@ async def publish_project_platforms(
             image = platform_output_ref(spec.image, platform, run_id)
             image = image.strip()
             if not image:
-                msg = (
-                    "BuildKit platform output ref is empty for platform "
-                    f"{platform!r}"
-                )
+                msg = f"BuildKit platform output ref is empty for platform {platform!r}"
                 raise ValueError(msg)
             digest = await _publish_target(
                 kube,
@@ -287,11 +280,9 @@ async def _publish_target(
     timeout: float,
     job_observer: Callable[[Job], Awaitable[None]] | None = None,
 ) -> str:
-    if timeout <= 0:
-        msg = "BuildKit target image build timeout must be non-negative"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
+        timeout,
+        message="BuildKit target image build timeout must be positive",
     )
     labels = _build_labels()
     job_name = _build_job_name(spec)
@@ -398,10 +389,13 @@ async def _publish_target(
         return _parse_build_digest(logs)
     finally:
         for template in created_claim_templates:
+            if not template.namespace or not template.name:
+                continue
             try:
-                await delete_resource_claim_template(
+                await RESOURCE_CLAIM_TEMPLATE_RESOURCE.delete_by_name(
                     kube,
-                    template,
+                    namespace=template.namespace,
+                    name=template.name,
                     timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
                 )
             except (OSError, TimeoutError):
@@ -416,11 +410,9 @@ async def _prepared_source(
     build_name: str,
     timeout: float,
 ) -> AsyncIterator[tuple[tuple[VolumeSpec, ...], tuple[Mapping[str, object], ...]]]:
-    if timeout <= 0:
-        msg = "BuildKit source preparation timeout must be non-negative"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
+        timeout,
+        message="BuildKit source preparation timeout must be positive",
     )
     config_name: str | None = None
     async with prepared_repository_build_source(
@@ -484,7 +476,8 @@ async def _capability_mounts(
     dict[str, str],
 ]:
     deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
+        timeout,
+        message="BuildKit capability mount timeout must be positive",
     )
     volumes: list[VolumeSpec] = []
     mounts: list[Mapping[str, object]] = []
@@ -534,11 +527,9 @@ async def _schedule(
     *,
     timeout: float,
 ) -> dict[str, tuple[str, ...]]:
-    if timeout <= 0:
-        msg = "BuildKit build scheduling timeout must be non-negative"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
-        timeout, message="timeout must be non-negative"
+        timeout,
+        message="BuildKit build scheduling timeout must be positive",
     )
     config_hash = await current_buildkit_config_hash(
         kube,

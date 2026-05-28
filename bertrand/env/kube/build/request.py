@@ -7,6 +7,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
@@ -30,7 +31,6 @@ from bertrand.env.git import (
     WORKTREE_ID_ENV,
     Deadline,
 )
-from bertrand.env.kube.api._helpers import _is_missing_api_resource
 from bertrand.env.kube.build.refs import DIGEST_REF_RE, digest_from_ref, digest_ref
 from bertrand.env.kube.build.repository import delete_image_manifest
 from bertrand.env.kube.custom_object import (
@@ -307,6 +307,147 @@ class BuildKitBuildStatus(BaseModel):
             allow_empty=True,
         )
 
+    def running(
+        self,
+        *,
+        generation: int,
+        message: str,
+        active_job: str = "",
+        active_platform: str = "",
+        reset: bool = False,
+    ) -> BuildKitBuildStatus:
+        """Return status for an active controller reconciliation.
+
+        Returns
+        -------
+        BuildKitBuildStatus
+            Updated running status.
+        """
+        updates: dict[str, object] = {
+            "phase": "Running",
+            "observed_generation": generation,
+            "active_job": active_job,
+            "active_platform": active_platform,
+            "message": message,
+        }
+        if reset:
+            updates.update(
+                {
+                    "started_at": datetime.now(UTC),
+                    "completed_at": None,
+                    "internal_digest_ref": "",
+                    "external_digest_ref": "",
+                    "platform_images": {},
+                    "image_phase": "Pending",
+                    "published_at": None,
+                    "retired_at": None,
+                    "last_gc_at": None,
+                    "image_last_error": "",
+                    "log_excerpt": "",
+                }
+            )
+        return type(self).model_validate({**self.model_dump(mode="python"), **updates})
+
+    def succeeded(
+        self,
+        *,
+        generation: int,
+        completed_at: datetime,
+        internal_digest_ref: str,
+        external_digest_ref: str | None,
+        platform_images: Mapping[str, str],
+    ) -> BuildKitBuildStatus:
+        """Return status for a successful image publication.
+
+        Returns
+        -------
+        BuildKitBuildStatus
+            Updated successful status.
+        """
+        return type(self).model_validate(
+            {
+                **self.model_dump(mode="python"),
+                "phase": "Succeeded",
+                "observed_generation": generation,
+                "completed_at": completed_at,
+                "active_job": "",
+                "active_platform": "",
+                "internal_digest_ref": internal_digest_ref,
+                "external_digest_ref": external_digest_ref or "",
+                "platform_images": dict(platform_images),
+                "image_phase": "Active",
+                "published_at": completed_at,
+                "retired_at": None,
+                "last_gc_at": None,
+                "image_last_error": "",
+                "message": "BuildKit build succeeded",
+                "log_excerpt": "",
+            }
+        )
+
+    def failed(
+        self,
+        *,
+        generation: int,
+        completed_at: datetime,
+        message: str,
+        log_excerpt: str,
+    ) -> BuildKitBuildStatus:
+        """Return status for a failed reconciliation.
+
+        Returns
+        -------
+        BuildKitBuildStatus
+            Updated failed status.
+        """
+        return type(self).model_validate(
+            {
+                **self.model_dump(mode="python"),
+                "phase": "Failed",
+                "observed_generation": generation,
+                "completed_at": completed_at,
+                "active_job": "",
+                "active_platform": "",
+                "internal_digest_ref": "",
+                "external_digest_ref": "",
+                "platform_images": {},
+                "image_phase": "Pending",
+                "published_at": None,
+                "retired_at": None,
+                "last_gc_at": None,
+                "image_last_error": "",
+                "message": message,
+                "log_excerpt": log_excerpt,
+            }
+        )
+
+    def with_image_phase(
+        self,
+        *,
+        generation: int,
+        image_phase: BuildKitImagePhase,
+        retired_at: datetime | None = None,
+        last_gc_at: datetime | None = None,
+        image_last_error: str = "",
+    ) -> BuildKitBuildStatus:
+        """Return status with an updated project image lifecycle phase.
+
+        Returns
+        -------
+        BuildKitBuildStatus
+            Updated image lifecycle status.
+        """
+        return type(self).model_validate(
+            {
+                **self.model_dump(mode="python"),
+                "observed_generation": generation,
+                "image_phase": image_phase,
+                "retired_at": retired_at,
+                "last_gc_at": last_gc_at,
+                "image_last_error": image_last_error,
+            }
+        )
+
 
 class BuildKitBuildRecord(BaseModel):
     """Read-only model for one `BuildKitBuild` custom object.
@@ -539,6 +680,62 @@ BUILDKIT_BUILD_RESOURCE = CustomObjectResource[BuildKitBuildRecord](
 )
 
 
+@dataclass(frozen=True)
+class _ProjectImageGcInventory:
+    records: tuple[BuildKitBuildRecord, ...]
+    pods: tuple[Pod, ...]
+
+    @classmethod
+    async def collect(
+        cls,
+        kube: Kube,
+        *,
+        timeout: float,
+    ) -> _ProjectImageGcInventory:
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="project image GC inventory timeout must be positive",
+        )
+        await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+        records_task = asyncio.create_task(
+            BUILDKIT_BUILD_RESOURCE.list(kube, timeout=deadline.remaining())
+        )
+        pods_task = asyncio.create_task(Pod.list(kube, timeout=deadline.remaining()))
+        await asyncio.gather(records_task, pods_task)
+        return cls(
+            records=tuple(records_task.result()),
+            pods=tuple(pods_task.result()),
+        )
+
+    def retired_records(self) -> tuple[BuildKitBuildRecord, ...]:
+        return tuple(
+            sorted(
+                (record for record in self.records if record.image_phase == "Retired"),
+                key=lambda item: (
+                    item.retired_at or datetime.max.replace(tzinfo=UTC),
+                    item.name,
+                ),
+            )
+        )
+
+    def active_digest_refs(self) -> set[str]:
+        refs: set[str] = set()
+        for record in self.records:
+            if record.image_phase != "Active":
+                continue
+            for ref in (record.digest_ref, *record.platform_images.values()):
+                if ref:
+                    refs.add(ref)
+        return refs
+
+    def live_image_refs(self) -> set[str]:
+        refs: set[str] = set()
+        for pod in self.pods:
+            if pod.is_active:
+                refs.update(pod.image_refs)
+        return refs
+
+
 async def submit_buildkit_build(
     kube: Kube,
     *,
@@ -561,15 +758,11 @@ async def submit_buildkit_build(
     BuildKitBuildRecord
         Submitted build request.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or request creation exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "BuildKitBuild submit timeout must be non-negative"
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="BuildKitBuild submit timeout must be positive",
+    )
     return await BUILDKIT_BUILD_RESOURCE.create(
         kube,
         name=_buildkit_build_name(spec),
@@ -594,15 +787,13 @@ async def require_active_project_image(
 
     Raises
     ------
-    TimeoutError
-        If lookup cannot start before `timeout` expires.
     OSError
         If no active image exists or lifecycle invariants are violated.
     """
-    if timeout <= 0:
-        msg = "active project image lookup timeout must be non-negative"
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="active project image lookup timeout must be positive",
+    )
     await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await BUILDKIT_BUILD_RESOURCE.list(
         kube,
@@ -682,17 +873,13 @@ async def retire_project_images(
     list[BuildKitBuildRecord]
         Build records transitioned from active to retired.
 
-    Raises
-    ------
-    TimeoutError
-        If retirement cannot start before `timeout` expires.
     """
-    if timeout <= 0:
-        msg = "project image retirement timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="project image retirement timeout must be positive",
+    )
     repo_id = _check_uuid(repo_id)
     worktree_id = _check_uuid(worktree_id)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await BUILDKIT_BUILD_RESOURCE.list(
         kube,
@@ -715,12 +902,15 @@ async def retire_project_images(
         ):
             continue
         retired.append(
-            await transition_buildkit_image(
+            await patch_buildkit_build_status(
                 kube,
                 record=record,
-                image_phase="Retired",
-                retired_at=record.retired_at or now,
-                image_last_error="",
+                status=record.status.with_image_phase(
+                    generation=record.generation,
+                    image_phase="Retired",
+                    retired_at=record.retired_at or now,
+                    image_last_error="",
+                ),
                 timeout=deadline.remaining(),
             )
         )
@@ -743,14 +933,13 @@ async def gc_project_images(
 
     Raises
     ------
-    TimeoutError
-        If GC cannot start before `timeout` expires.
     ValueError
         If `grace_seconds` or `limit` is negative.
     """
-    if timeout <= 0:
-        msg = "project image GC timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="project image GC timeout must be positive",
+    )
     if grace_seconds < 0:
         msg = "project image GC grace_seconds must be non-negative"
         raise ValueError(msg)
@@ -760,41 +949,16 @@ async def gc_project_images(
     if limit == 0:
         return []
 
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
-    await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
-    records = await BUILDKIT_BUILD_RESOURCE.list(
+    inventory = await _ProjectImageGcInventory.collect(
         kube,
-        labels={BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "retired"},
         timeout=deadline.remaining(),
     )
-    active_records = await BUILDKIT_BUILD_RESOURCE.list(
-        kube,
-        labels={BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "active"},
-        timeout=deadline.remaining(),
-    )
-    live_refs: set[str] = set()
-    for pod in await Pod.list(kube, timeout=deadline.remaining()):
-        if pod.is_active:
-            live_refs.update(pod.image_refs)
-
-    active_digest_refs: set[str] = set()
-    for active in active_records:
-        if active.image_phase != "Active":
-            continue
-        for ref in (active.digest_ref, *active.platform_images.values()):
-            if ref:
-                active_digest_refs.add(ref)
-
+    active_digest_refs = inventory.active_digest_refs()
+    live_refs = inventory.live_image_refs()
     now = datetime.now(UTC)
     grace = timedelta(seconds=grace_seconds)
     collected: list[BuildKitBuildRecord] = []
-    for record in sorted(
-        records,
-        key=lambda item: (
-            item.retired_at or datetime.max.replace(tzinfo=UTC),
-            item.name,
-        ),
-    ):
+    for record in inventory.retired_records():
         if len(collected) >= limit:
             break
 
@@ -820,24 +984,30 @@ async def gc_project_images(
                     timeout=deadline.remaining(),
                 )
             collected.append(
-                await transition_buildkit_image(
+                await patch_buildkit_build_status(
                     kube,
                     record=record,
-                    image_phase="Collected",
-                    retired_at=record.retired_at,
-                    last_gc_at=now,
-                    image_last_error="",
+                    status=record.status.with_image_phase(
+                        generation=record.generation,
+                        image_phase="Collected",
+                        retired_at=record.retired_at,
+                        last_gc_at=now,
+                        image_last_error="",
+                    ),
                     timeout=deadline.remaining(),
                 )
             )
         except (OSError, TimeoutError, ValueError) as err:
-            await transition_buildkit_image(
+            await patch_buildkit_build_status(
                 kube,
                 record=record,
-                image_phase="Retired",
-                retired_at=record.retired_at,
-                last_gc_at=now,
-                image_last_error=str(err),
+                status=record.status.with_image_phase(
+                    generation=record.generation,
+                    image_phase="Retired",
+                    retired_at=record.retired_at,
+                    last_gc_at=now,
+                    image_last_error=str(err),
+                ),
                 timeout=deadline.remaining(),
             )
             continue
@@ -859,19 +1029,17 @@ async def next_project_image_gc_time(
 
     Raises
     ------
-    TimeoutError
-        If scheduling lookup cannot start before `timeout` expires.
     ValueError
         If `grace_seconds` is negative.
     """
-    if timeout <= 0:
-        msg = "project image GC scheduling timeout must be non-negative"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="project image GC scheduling timeout must be positive",
+    )
     if grace_seconds < 0:
         msg = "project image GC scheduling grace_seconds must be non-negative"
         raise ValueError(msg)
 
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
     await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
     records = await BUILDKIT_BUILD_RESOURCE.list(
         kube,
@@ -889,87 +1057,6 @@ async def next_project_image_gc_time(
         if record.image_phase == "Retired"
     ]
     return min(next_times) if next_times else None
-
-
-async def has_active_buildkit_builds(
-    kube: Kube,
-    *,
-    timeout: float,
-    repo_id: str | None = None,
-) -> bool:
-    """Return whether matching BuildKit requests may still mutate resources.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum request budget in seconds.
-    repo_id : str | None, optional
-        Stable repository UUID to filter by.
-
-    Returns
-    -------
-    bool
-        True when any current-generation or stale-generation matching request has
-        not reached a terminal phase.
-
-    Raises
-    ------
-    OSError
-        If Kubernetes listing fails or returns malformed objects.
-    """
-    repo_id = _check_uuid(repo_id) if repo_id is not None else None
-    labels = (
-        {BUILDKIT_BUILD_REPO_LABEL: buildkit_build_label_hash(repo_id)}
-        if repo_id is not None
-        else None
-    )
-    try:
-        records = await BUILDKIT_BUILD_RESOURCE.list(
-            kube,
-            timeout=timeout,
-            labels=labels,
-        )
-    except OSError as err:
-        if _is_missing_api_resource(err):
-            return False
-        raise
-    for record in records:
-        if repo_id is not None and record.spec.repo_id != repo_id:
-            continue
-        if record.is_active:
-            return True
-    return False
-
-
-async def active_buildkit_build_names(kube: Kube, *, timeout: float) -> set[str]:
-    """Return names for BuildKit requests that may still own resources.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    timeout : float
-        Maximum request budget in seconds.
-
-    Returns
-    -------
-    set[str]
-        Active BuildKit request names.
-
-    Raises
-    ------
-    OSError
-        If Kubernetes listing fails or returns malformed objects.
-    """
-    try:
-        records = await BUILDKIT_BUILD_RESOURCE.list(kube, timeout=timeout)
-    except OSError as err:
-        if _is_missing_api_resource(err):
-            return set()
-        raise
-    return {record.name for record in records if record.is_active}
 
 
 async def wait_buildkit_build(
@@ -1004,10 +1091,10 @@ async def wait_buildkit_build(
     OSError
         If the request disappears while waiting.
     """
-    if timeout <= 0:
-        msg = "BuildKitBuild wait timeout must be non-negative"
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="BuildKitBuild wait timeout must be positive",
+    )
     seen_version = ""
     while True:
         remaining = deadline.remaining()
@@ -1034,11 +1121,9 @@ async def wait_buildkit_build(
 async def patch_buildkit_build_status(
     kube: Kube,
     *,
-    name: str,
-    phase: BuildKitBuildPhase,
-    generation: int,
+    record: BuildKitBuildRecord,
+    status: BuildKitBuildStatus,
     timeout: float,
-    **updates: object,
 ) -> BuildKitBuildRecord:
     """Patch one BuildKit request status subresource.
 
@@ -1046,90 +1131,46 @@ async def patch_buildkit_build_status(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    name : str
-        Build request name.
-    phase : {"Pending", "Running", "Succeeded", "Failed"}
-        Status phase to record.
-    generation : int
-        Observed metadata generation.
+    record : BuildKitBuildRecord
+        Build request snapshot to patch.
+    status : BuildKitBuildStatus
+        Complete status payload to apply.
     timeout : float
         Maximum patch budget in seconds.
-    **updates : object
-        Additional status fields to patch.
 
     Returns
     -------
     BuildKitBuildRecord
         Updated build request record.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    if timeout <= 0:
-        msg = "BuildKitBuild status patch timeout must be non-negative"
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
-    payload: dict[str, object] = {}
-    payload.update(updates)
-    payload["phase"] = phase
-    payload["observedGeneration"] = generation
-    status = BuildKitBuildStatus.model_validate(payload).model_dump(
-        mode="json",
-        by_alias=True,
-        exclude_unset=True,
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="BuildKitBuild status patch timeout must be positive",
     )
-    record = await BUILDKIT_BUILD_RESOURCE.patch_status(
-        kube,
-        name=name,
-        status=status,
-        timeout=deadline.remaining(),
-    )
-    if "image_phase" not in updates:
-        return record
-    return await _patch_buildkit_image_labels(
-        kube,
-        record=record,
-        timeout=deadline.remaining(),
-    )
-
-
-async def transition_buildkit_image(
-    kube: Kube,
-    *,
-    record: BuildKitBuildRecord,
-    image_phase: BuildKitImagePhase,
-    timeout: float,
-    retired_at: datetime | None = None,
-    last_gc_at: datetime | None = None,
-    image_last_error: str = "",
-) -> BuildKitBuildRecord:
-    """Patch one successful build record's image lifecycle state.
-
-    Returns
-    -------
-    BuildKitBuildRecord
-        Updated build record.
-
-    Raises
-    ------
-    TimeoutError
-        If the transition cannot start before `timeout` expires.
-    """
-    if timeout <= 0:
-        msg = "project image phase transition timeout must be non-negative"
-        raise TimeoutError(msg)
-    return await patch_buildkit_build_status(
+    updated = await BUILDKIT_BUILD_RESOURCE.patch_status(
         kube,
         name=record.name,
-        phase=record.status.phase,
-        generation=record.generation,
-        image_phase=image_phase,
-        retired_at=None if retired_at is None else retired_at.isoformat(),
-        last_gc_at=None if last_gc_at is None else last_gc_at.isoformat(),
-        image_last_error=image_last_error,
-        timeout=timeout,
+        status=status.model_dump(mode="json", by_alias=True),
+        timeout=deadline.remaining(),
+    )
+    image_phase_label = (
+        status.image_phase.lower() if status.image_phase != "Pending" else None
+    )
+    if (
+        updated.metadata.labels.get(BUILDKIT_BUILD_IMAGE_PHASE_LABEL)
+        == image_phase_label
+    ):
+        return updated
+    return await BUILDKIT_BUILD_RESOURCE.patch(
+        kube,
+        name=updated.name,
+        body={
+            "metadata": {
+                "labels": {BUILDKIT_BUILD_IMAGE_PHASE_LABEL: image_phase_label}
+            }
+        },
+        timeout=deadline.remaining(),
+        context=f"patch {BUILDKIT_BUILD_KIND} image lifecycle labels",
     )
 
 
@@ -1175,22 +1216,6 @@ def _normalize_worktree(worktree: str) -> str:
         msg = f"BuildKit PVC worktree must be a relative subpath: {worktree!r}"
         raise ValueError(msg)
     return path.as_posix()
-
-
-async def _patch_buildkit_image_labels(
-    kube: Kube,
-    *,
-    record: BuildKitBuildRecord,
-    timeout: float,
-) -> BuildKitBuildRecord:
-    phase = record.image_phase.lower() if record.image_phase != "Pending" else None
-    return await BUILDKIT_BUILD_RESOURCE.patch(
-        kube,
-        name=record.name,
-        body={"metadata": {"labels": {BUILDKIT_BUILD_IMAGE_PHASE_LABEL: phase}}},
-        timeout=timeout,
-        context=f"patch {BUILDKIT_BUILD_KIND} image lifecycle labels",
-    )
 
 
 def _validate_platform_images(

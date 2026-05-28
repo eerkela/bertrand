@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_ENV, Deadline, until
@@ -33,12 +34,15 @@ METALLB_V1BETA1 = "v1beta1"
 METALLB_V1BETA2 = "v1beta2"
 METALLB_LABEL = "bertrand.dev/load-balancer"
 METALLB_LABEL_VALUE = "v1"
+_METALLB_MANAGED_SELECTOR = {
+    BERTRAND_ENV: "1",
+    METALLB_LABEL: METALLB_LABEL_VALUE,
+}
 METALLB_LABELS = {
     "app.kubernetes.io/name": "metallb",
     "app.kubernetes.io/part-of": "bertrand",
     "app.kubernetes.io/component": "load-balancer",
-    BERTRAND_ENV: "1",
-    METALLB_LABEL: METALLB_LABEL_VALUE,
+    **_METALLB_MANAGED_SELECTOR,
 }
 METALLB_NAMESPACE_LABELS = {
     **METALLB_LABELS,
@@ -317,28 +321,27 @@ async def ensure_metallb(kube: Kube, *, timeout: float) -> None:
     timeout : float
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    if timeout <= 0:
-        msg = "MetalLB convergence timeout must be positive"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
         timeout,
         message="MetalLB convergence timeout must be positive",
     )
     await _ensure_managed_metallb_namespace(kube, timeout=deadline.remaining())
     await _apply_metallb(timeout=deadline.remaining())
-    for crd_name in METALLB_CRDS:
-        await _wait_crd_established(
-            kube,
-            name=crd_name,
-            timeout=deadline.remaining(),
+    await asyncio.gather(
+        *(
+            _wait_crd_established(
+                kube,
+                name=crd_name,
+                timeout=deadline.remaining(),
+            )
+            for crd_name in METALLB_CRDS
         )
-    await _wait_controller_available(kube, timeout=deadline.remaining())
-    await _wait_speaker_available(kube, timeout=deadline.remaining())
+    )
+    await asyncio.gather(
+        _wait_controller_available(kube, timeout=deadline.remaining()),
+        _wait_speaker_available(kube, timeout=deadline.remaining()),
+    )
 
 
 async def metallb_status(kube: Kube, *, timeout: float) -> dict[str, object]:
@@ -356,56 +359,60 @@ async def metallb_status(kube: Kube, *, timeout: float) -> dict[str, object]:
     dict[str, object]
         JSON-serializable MetalLB readiness and configuration summary.
     """
-    namespace = await Namespace.get(kube, name=METALLB_NAMESPACE, timeout=timeout)
-    managed = _labels_managed(namespace.labels) if namespace is not None else False
-    controller = await Deployment.get(
-        kube,
-        namespace=METALLB_NAMESPACE,
-        name=METALLB_CONTROLLER_DEPLOYMENT,
-        timeout=timeout,
-    )
-    speaker = await DaemonSet.get(
-        kube,
-        namespace=METALLB_NAMESPACE,
-        name=METALLB_SPEAKER_DAEMONSET,
-        timeout=timeout,
+    namespace, controller, speaker = await asyncio.gather(
+        Namespace.get(kube, name=METALLB_NAMESPACE, timeout=timeout),
+        Deployment.get(
+            kube,
+            namespace=METALLB_NAMESPACE,
+            name=METALLB_CONTROLLER_DEPLOYMENT,
+            timeout=timeout,
+        ),
+        DaemonSet.get(
+            kube,
+            namespace=METALLB_NAMESPACE,
+            name=METALLB_SPEAKER_DAEMONSET,
+            timeout=timeout,
+        ),
     )
     crds = await _crd_status(kube, timeout=timeout)
-    pools = await _safe_resource_list(
-        _IP_ADDRESS_POOL_RESOURCE,
-        kube,
-        timeout=timeout,
+    pools, l2, peers, bgp, config_states, l2_status, bgp_status = await asyncio.gather(
+        _safe_resource_list(
+            _IP_ADDRESS_POOL_RESOURCE,
+            kube,
+            timeout=timeout,
+        ),
+        _safe_resource_list(
+            _L2_ADVERTISEMENT_RESOURCE,
+            kube,
+            timeout=timeout,
+        ),
+        _safe_resource_list(
+            _BGP_PEER_RESOURCE,
+            kube,
+            timeout=timeout,
+        ),
+        _safe_resource_list(
+            _BGP_ADVERTISEMENT_RESOURCE,
+            kube,
+            timeout=timeout,
+        ),
+        _safe_resource_list(
+            _CONFIGURATION_STATE_RESOURCE,
+            kube,
+            timeout=timeout,
+        ),
+        _safe_resource_list(
+            _SERVICE_L2_STATUS_RESOURCE,
+            kube,
+            timeout=timeout,
+        ),
+        _safe_resource_list(
+            _SERVICE_BGP_STATUS_RESOURCE,
+            kube,
+            timeout=timeout,
+        ),
     )
-    l2 = await _safe_resource_list(
-        _L2_ADVERTISEMENT_RESOURCE,
-        kube,
-        timeout=timeout,
-    )
-    peers = await _safe_resource_list(
-        _BGP_PEER_RESOURCE,
-        kube,
-        timeout=timeout,
-    )
-    bgp = await _safe_resource_list(
-        _BGP_ADVERTISEMENT_RESOURCE,
-        kube,
-        timeout=timeout,
-    )
-    config_states = await _safe_resource_list(
-        _CONFIGURATION_STATE_RESOURCE,
-        kube,
-        timeout=timeout,
-    )
-    l2_status = await _safe_resource_list(
-        _SERVICE_L2_STATUS_RESOURCE,
-        kube,
-        timeout=timeout,
-    )
-    bgp_status = await _safe_resource_list(
-        _SERVICE_BGP_STATUS_RESOURCE,
-        kube,
-        timeout=timeout,
-    )
+    managed = _labels_managed(namespace.labels) if namespace is not None else False
     ready = (
         namespace is not None
         and controller is not None
@@ -583,11 +590,16 @@ async def _wait_speaker_available(kube: Kube, *, timeout: float) -> DaemonSet:
 
 
 async def _crd_status(kube: Kube, *, timeout: float) -> dict[str, bool]:
-    out: dict[str, bool] = {}
-    for name in METALLB_CRDS:
-        crd = await CustomResourceDefinition.get(kube, name=name, timeout=timeout)
-        out[name] = crd is not None and crd.is_established
-    return out
+    crds = await asyncio.gather(
+        *(
+            CustomResourceDefinition.get(kube, name=name, timeout=timeout)
+            for name in METALLB_CRDS
+        )
+    )
+    return {
+        name: crd is not None and crd.is_established
+        for name, crd in zip(METALLB_CRDS, crds, strict=True)
+    }
 
 
 async def _managed_upsert[T](
@@ -641,9 +653,8 @@ def _assert_managed(resource: object | None, *, kind: str) -> None:
 
 
 def _labels_managed(labels: Mapping[str, str]) -> bool:
-    return (
-        labels.get(BERTRAND_ENV) == "1"
-        and labels.get(METALLB_LABEL) == METALLB_LABEL_VALUE
+    return all(
+        labels.get(key) == value for key, value in _METALLB_MANAGED_SELECTOR.items()
     )
 
 

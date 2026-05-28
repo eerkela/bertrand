@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
-from bertrand.env.kube.api._helpers import _is_conflict, _is_not_found
+from bertrand.env.kube.api.client import KubeApiError
 from bertrand.env.kube.lease import Lease
 
 if TYPE_CHECKING:
@@ -233,7 +233,7 @@ class ClusterLock:
                 annotations=self._annotations(),
             )
         except OSError as err:
-            if _is_conflict(err):
+            if isinstance(err, KubeApiError) and err.status == 409:
                 return False
             raise
         return True
@@ -260,7 +260,7 @@ class ClusterLock:
                 annotations=self._annotations(),
             )
         except OSError as err:
-            if _is_conflict(err) or _is_not_found(err):
+            if isinstance(err, KubeApiError) and err.status in (404, 409):
                 return False
             raise
         return True
@@ -388,14 +388,10 @@ class ClusterLock:
             If the Lease cannot be read, created, renewed, or cleaned up after a failed
             acquisition.
         """
-        if self.timeout <= 0:
-            msg = f"could not acquire cluster lock within {self.timeout} seconds"
-            raise TimeoutError(msg)
-
         owner = self._get_owner()
         deadline = Deadline.from_timeout(
             self.timeout,
-            message=f"could not acquire cluster lock within {self.timeout} seconds",
+            message="cluster lock timeout must be positive",
         )
         while True:
             with CLUSTER_LOCK_GUARD:

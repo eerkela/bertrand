@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -350,25 +351,27 @@ async def storage_csi_status(kube: Kube) -> dict[str, object]:
     dict[str, object]
         JSON-serializable CSI readiness payload.
     """
-    driver = await kube.run(
-        lambda request_timeout: kube.storage.read_csi_driver(
-            name=CSI_DRIVER_NAME,
-            _request_timeout=request_timeout,
+    driver, controller, node = await asyncio.gather(
+        kube.run(
+            lambda request_timeout: kube.storage.read_csi_driver(
+                name=CSI_DRIVER_NAME,
+                _request_timeout=request_timeout,
+            ),
+            timeout=INFINITY,
+            context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
         ),
-        timeout=INFINITY,
-        context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
-    )
-    controller = await Deployment.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=CSI_CONTROLLER_NAME,
-        timeout=INFINITY,
-    )
-    node = await DaemonSet.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=CSI_NODE_NAME,
-        timeout=INFINITY,
+        Deployment.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=CSI_CONTROLLER_NAME,
+            timeout=INFINITY,
+        ),
+        DaemonSet.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=CSI_NODE_NAME,
+            timeout=INFINITY,
+        ),
     )
     return {
         "driver": driver is not None,

@@ -47,25 +47,6 @@ STORAGE_CONTROLLER_LABELS = {
     STORAGE_CONTROLLER_LABEL: STORAGE_CONTROLLER_LABEL_VALUE,
 }
 STORAGE_ACTION_PHASES = ("Pending", "Running", "Succeeded", "Failed")
-STORAGE_RESERVATION_PHASES = (
-    "Pending",
-    "Ready",
-    "Released",
-    "Expired",
-    "Failed",
-)
-STORAGE_OSD_PHASES = (
-    "Pending",
-    "Preparing",
-    "HostPrepared",
-    "Binding",
-    "Ready",
-    "Expanding",
-    "Shrinking",
-    "Failed",
-    "Retiring",
-    "Retired",
-)
 STORAGE_OSD_IN_FLIGHT_PHASES = frozenset(
     {
         "Pending",
@@ -364,8 +345,15 @@ class CephStorageActionSpec(BaseModel):
     @model_validator(mode="after")
     def _validate_operation_contract(self) -> CephStorageActionSpec:
         if self.operation in ("expand-lvm", "expand-loop"):
-            if self.target_bytes is None or self.osd_id is not None:
-                msg = f"{self.operation} actions require target_bytes only"
+            if (
+                self.target_bytes is None
+                or self.osd_id is not None
+                or not (self.storage_osd_name or "").strip()
+            ):
+                msg = (
+                    f"{self.operation} actions require target_bytes and "
+                    "storage_osd_name, and cannot set osd_id"
+                )
                 raise ValueError(msg)
             if self.operation == "expand-lvm" and not (self.pv_name or "").strip():
                 msg = "expand-lvm actions require pv_name"
@@ -555,54 +543,6 @@ class CephStorageStateStatus(BaseModel):
     nodes: dict[str, CephStorageNodeReport] = Field(default_factory=dict)
     osds: dict[str, CephStorageOSD] = Field(default_factory=dict)
 
-    def with_policy(
-        self,
-        policy: CephStoragePolicyStatus | None,
-    ) -> CephStorageStateStatus:
-        """Return a copy with the policy summary replaced.
-
-        Returns
-        -------
-        CephStorageStateStatus
-            Updated storage-state status.
-        """
-        return self.model_copy(update={"policy": policy})
-
-    def with_reservation(
-        self,
-        entry: CephStorageReservation,
-    ) -> CephStorageStateStatus:
-        """Return a copy with one reservation entry replaced.
-
-        Returns
-        -------
-        CephStorageStateStatus
-            Updated storage-state status.
-        """
-        return self.model_copy(
-            update={"reservations": {**self.reservations, entry.name: entry}},
-        )
-
-    def with_osd(self, entry: CephStorageOSD) -> CephStorageStateStatus:
-        """Return a copy with one OSD entry replaced.
-
-        Returns
-        -------
-        CephStorageStateStatus
-            Updated storage-state status.
-        """
-        return self.model_copy(update={"osds": {**self.osds, entry.name: entry}})
-
-    def with_node(self, entry: CephStorageNodeReport) -> CephStorageStateStatus:
-        """Return a copy with one node report replaced.
-
-        Returns
-        -------
-        CephStorageStateStatus
-            Updated storage-state status.
-        """
-        return self.model_copy(update={"nodes": {**self.nodes, entry.name: entry}})
-
 
 class CephStorageStateRecord(BaseModel):
     """Validated `CephStorageState` custom-resource payload."""
@@ -690,7 +630,7 @@ async def ensure_ceph_capacity_crds(kube: Kube, *, timeout: float) -> None:
     """
     deadline = Deadline.from_timeout(
         timeout,
-        message="Ceph capacity CRD timeout must be non-negative",
+        message="Ceph capacity CRD timeout must be positive",
     )
     for resource in _STORAGE_RESOURCES:
         await resource.ensure_crd(kube, timeout=deadline.remaining())
@@ -713,20 +653,6 @@ async def ensure_default_storage_policy(kube: Kube, *, timeout: float) -> None:
         name=STORAGE_STATE_NAME,
         spec=_CephStoragePolicySpec(),
         timeout=deadline.remaining(),
-    )
-
-
-def storage_watch_targets() -> tuple[tuple[CustomObjectResource[Any], str], ...]:
-    """Return capacity resources watched by the storage controller.
-
-    Returns
-    -------
-    tuple[tuple[CustomObjectResource[Any], str], ...]
-        Resource/context pairs for storage state and action queue updates.
-    """
-    return (
-        (STORAGE_STATE_RESOURCE, STORAGE_STATE_PLURAL),
-        (STORAGE_ACTION_RESOURCE, STORAGE_ACTION_PLURAL),
     )
 
 
@@ -760,21 +686,6 @@ async def read_storage_state(kube: Kube, *, timeout: float) -> CephStorageStateR
         msg = f"{STORAGE_STATE_KIND} {STORAGE_STATE_NAME!r} is missing"
         raise OSError(msg)
     return record
-
-
-async def _patch_storage_state(
-    kube: Kube,
-    *,
-    status: CephStorageStateStatus,
-    timeout: float,
-) -> CephStorageStateRecord:
-    return await STORAGE_STATE_RESOURCE.patch_status(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        status=status,
-        timeout=timeout,
-    )
 
 
 async def upsert_storage_reservation(
@@ -815,9 +726,18 @@ async def upsert_storage_reservation(
         observed_free_bytes=0,
         last_error="",
     )
-    refreshed = await _patch_storage_state(
+    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
-        status=state.status.with_reservation(entry),
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
+        status=state.status.model_copy(
+            update={
+                "reservations": {
+                    **state.status.reservations,
+                    entry.name: entry,
+                }
+            },
+        ),
         timeout=timeout,
     )
     return refreshed.status.reservations.get(name, entry)
@@ -841,9 +761,18 @@ async def patch_storage_reservation_status(
         {**reservation.model_dump(mode="python"), **dict(status)}
     )
     state = await read_storage_state(kube, timeout=timeout)
-    refreshed = await _patch_storage_state(
+    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
-        status=state.status.with_reservation(patched),
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
+        status=state.status.model_copy(
+            update={
+                "reservations": {
+                    **state.status.reservations,
+                    patched.name: patched,
+                }
+            },
+        ),
         timeout=timeout,
     )
     return refreshed.status.reservations.get(reservation.name, patched)
@@ -1066,9 +995,13 @@ async def upsert_storage_osd(
             "last_error": "",
         }
     )
-    refreshed = await _patch_storage_state(
+    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
-        status=state.status.with_osd(entry),
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
+        status=state.status.model_copy(
+            update={"osds": {**state.status.osds, entry.name: entry}},
+        ),
         timeout=timeout,
     )
     return refreshed.status.osds.get(name, entry)
@@ -1102,9 +1035,13 @@ async def patch_storage_osd_status(
         {**osd.model_dump(mode="python"), **payload}
     )
     state = await read_storage_state(kube, timeout=timeout)
-    refreshed = await _patch_storage_state(
+    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
-        status=state.status.with_osd(patched),
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
+        status=state.status.model_copy(
+            update={"osds": {**state.status.osds, patched.name: patched}},
+        ),
         timeout=timeout,
     )
     return refreshed.status.osds.get(osd.name, patched)
@@ -1138,9 +1075,13 @@ async def upsert_storage_node_report(
     entry = CephStorageNodeReport.model_validate(
         {"name": name, "node_name": node_name, "host_id": host_id, **dict(status)}
     )
-    await _patch_storage_state(
+    await STORAGE_STATE_RESOURCE.patch_status(
         kube,
-        status=state.status.with_node(entry),
+        namespace=BERTRAND_NAMESPACE,
+        name=STORAGE_STATE_NAME,
+        status=state.status.model_copy(
+            update={"nodes": {**state.status.nodes, entry.name: entry}},
+        ),
         timeout=timeout,
     )
 

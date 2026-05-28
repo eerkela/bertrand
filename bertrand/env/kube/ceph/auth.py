@@ -232,8 +232,6 @@ class RepoCredentials:
         ------
         OSError
             If Ceph fails to create, read, or parse credentials.
-        TimeoutError
-            If `timeout` is non-positive.
         ValueError
             If `repo_id` or `ceph_path` is invalid.
 
@@ -246,9 +244,6 @@ class RepoCredentials:
         `repo_id` should never occur under normal operation, and if they do, they
         should fail gracefully.
         """
-        if timeout <= 0:
-            msg = "timeout must be non-negative"
-            raise TimeoutError(msg)
         repo_id, user, entity = cls._identity(repo_id)
         if not ceph_path.parts:
             msg = "Ceph repository path cannot be empty"
@@ -257,7 +252,7 @@ class RepoCredentials:
             ceph_path = PosixPath("/") / ceph_path
         deadline = Deadline.from_timeout(
             timeout,
-            message="timeout must be non-negative",
+            message="repository credential convergence timeout must be positive",
         )
 
         # `fs authorize` is idempotent and converges CephX caps for this identity.
@@ -309,19 +304,11 @@ class RepoCredentials:
             Fresh credentials for this repository identity, or None if credentials do
             not exist.
 
-        Raises
-        ------
-        TimeoutError
-            If `timeout` is non-positive.
         """
-        if timeout <= 0:
-            msg = "timeout must be non-negative"
-            raise TimeoutError(msg)
-
         repo_id, user, entity = cls._identity(repo_id)
         deadline = Deadline.from_timeout(
             timeout,
-            message="timeout must be non-negative",
+            message="repository credential lookup timeout must be positive",
         )
 
         # get repository credentials if they exist
@@ -361,8 +348,6 @@ class RepoCredentials:
         ------
         OSError
             If Ceph rejects credential deletion.
-        TimeoutError
-            If `timeout` is non-positive.
 
         Notes
         -----
@@ -370,13 +355,10 @@ class RepoCredentials:
         ensure/delete operations for the same `repo_id` may race in Ceph's auth DB.
         Callers should retry and revalidate on transient auth failures.
         """
-        if timeout <= 0:
-            msg = "timeout must be non-negative"
-            raise TimeoutError(msg)
         _, _, entity = self._identity(self.repo_id)
         deadline = Deadline.from_timeout(
             timeout,
-            message="timeout must be non-negative",
+            message="repository credential deletion timeout must be positive",
         )
 
         result = await ceph(

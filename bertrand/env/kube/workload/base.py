@@ -142,6 +142,22 @@ class WorkloadIdentity:
         )
 
     @property
+    def managed_selector(self) -> Mapping[str, str]:
+        """Return immutable labels that prove Bertrand workload ownership.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Minimal labels shared by every Kubernetes object owned by this
+            workload.
+        """
+        labels = {
+            WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE,
+        }
+        labels.update(self.selector)
+        return MappingProxyType(labels)
+
+    @property
     def labels(self) -> Mapping[str, str]:
         """Return stable Bertrand labels for workload-owned resources.
 

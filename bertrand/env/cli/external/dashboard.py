@@ -11,7 +11,7 @@ import sys
 import webbrowser
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.dashboard import DASHBOARD_NAME, ensure_dashboard_backend
 
@@ -45,24 +45,23 @@ async def bertrand_dashboard(
     ------
     ValueError
         If the requested port is invalid.
-    TimeoutError
-        If dashboard convergence or port-forward readiness times out.
     """
     if port < 0 or port > 65535:
         msg = "dashboard port must be between 0 and 65535"
         raise ValueError(msg)
-    if timeout <= 0:
-        msg = "dashboard timeout must be positive"
-        raise TimeoutError(msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="dashboard timeout must be positive",
+    )
 
     local_port = _free_port() if port == 0 else port
-    with await Kube.host(timeout=timeout) as kube:
-        await ensure_dashboard_backend(kube, timeout=timeout)
+    with await Kube.host(timeout=deadline.remaining()) as kube:
+        await ensure_dashboard_backend(kube, timeout=deadline.remaining())
 
     await _port_forward_dashboard(
         local_port,
         open_browser=open_browser,
-        timeout=timeout,
+        timeout=deadline.check("timed out before dashboard port-forward startup"),
     )
 
 

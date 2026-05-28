@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
@@ -15,7 +16,7 @@ from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
     from datetime import datetime
 
     from .api.client import Kube
@@ -23,6 +24,50 @@ if TYPE_CHECKING:
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type JobCompletionMode = Literal["NonIndexed", "Indexed"]
+
+
+async def _pod_logs(
+    kube: Kube,
+    pods: Sequence[Pod],
+    *,
+    deadline: Deadline,
+    tail_lines: int,
+    include_headers: bool,
+) -> str:
+    ordered = tuple(sorted(pods, key=lambda pod: (pod.namespace, pod.name)))
+    if not ordered or deadline.remaining() <= 0:
+        return ""
+    results = await asyncio.gather(
+        *(
+            pod.logs(
+                kube,
+                timeout=deadline.remaining(),
+                tail_lines=tail_lines,
+            )
+            for pod in ordered
+        ),
+        return_exceptions=True,
+    )
+    chunks: list[str] = []
+    for pod, result in zip(ordered, results, strict=True):
+        if isinstance(result, BaseException):
+            raise result
+        log = result.strip()
+        if not log:
+            continue
+        if include_headers:
+            chunks.append(f"--- {pod.namespace}/{pod.name} ---\n{log}")
+        else:
+            chunks.append(log)
+    separator = "\n\n" if include_headers else "\n"
+    return separator.join(chunks)
+
+
+def _pod_diagnostics(pods: Sequence[Pod]) -> str:
+    lines: list[str] = []
+    for pod in sorted(pods, key=lambda item: (item.namespace, item.name)):
+        lines.extend(pod.status_diagnostics)
+    return "\n".join(lines)
 
 
 def _validate_job_execution(
@@ -498,28 +543,16 @@ class Job(
         try:
             deadline = Deadline.from_timeout(
                 timeout,
-                message="timeout must be non-negative",
+                message="Job log collection timeout must be positive",
             )
             pods = await self.pods(kube, timeout=deadline.remaining())
-            chunks: list[str] = []
-            for pod in pods:
-                remaining = deadline.remaining()
-                if remaining <= 0:
-                    break
-                log = await pod.logs(
-                    kube,
-                    timeout=remaining,
-                    tail_lines=tail_lines,
-                )
-                log = log.strip()
-                if not log:
-                    continue
-                if include_headers:
-                    chunks.append(f"--- {pod.namespace}/{pod.name} ---\n{log}")
-                else:
-                    chunks.append(log)
-            separator = "\n\n" if include_headers else "\n"
-            return separator.join(chunks)
+            return await _pod_logs(
+                kube,
+                pods,
+                deadline=deadline,
+                tail_lines=tail_lines,
+                include_headers=include_headers,
+            )
         except (OSError, TimeoutError, ValueError) as err:
             return f"<failed to read {failure_label}: {err}>"
 
@@ -551,10 +584,7 @@ class Job(
             return ""
         try:
             pods = await self.pods(kube, timeout=timeout)
-            lines: list[str] = []
-            for pod in pods:
-                lines.extend(pod.status_diagnostics)
-            return "\n".join(lines)
+            return _pod_diagnostics(pods)
         except (OSError, TimeoutError, ValueError) as err:
             return f"<failed to read {failure_label}: {err}>"
 
@@ -581,7 +611,7 @@ class Job(
         try:
             deadline = Deadline.from_timeout(
                 timeout,
-                message="timeout must be non-negative",
+                message="Job cleanup timeout must be positive",
             )
             await self.delete(
                 kube,
@@ -649,20 +679,26 @@ class Job(
             if diagnostic_timeout > 0:
                 deadline = Deadline.from_timeout(
                     diagnostic_timeout,
-                    message="diagnostic timeout must be non-negative",
+                    message="Job diagnostic timeout must be positive",
                 )
-                logs = await self.logs(
-                    kube,
-                    timeout=deadline.remaining(),
-                    tail_lines=tail_lines,
-                    failure_label=log_failure_label,
-                    include_headers=include_log_headers,
-                )
-                diagnostics = await self.pod_diagnostics(
-                    kube,
-                    timeout=deadline.remaining(),
-                    failure_label="Job pod status diagnostics",
-                )
+                try:
+                    pods = await self.pods(kube, timeout=deadline.remaining())
+                    diagnostics = _pod_diagnostics(pods)
+                    try:
+                        logs = await _pod_logs(
+                            kube,
+                            pods,
+                            deadline=deadline,
+                            tail_lines=tail_lines,
+                            include_headers=include_log_headers,
+                        )
+                    except (OSError, TimeoutError, ValueError) as log_err:
+                        logs = f"<failed to read {log_failure_label}: {log_err}>"
+                except (OSError, TimeoutError, ValueError) as diagnostic_err:
+                    logs = f"<failed to read {log_failure_label}: {diagnostic_err}>"
+                    diagnostics = (
+                        f"<failed to read Job pod status diagnostics: {diagnostic_err}>"
+                    )
             await self.delete_quietly(kube, timeout=cleanup_timeout)
             msg = f"{failure_context}: {err}"
             diagnostics = diagnostics.strip()
@@ -726,12 +762,9 @@ class Job(
         OSError
             If the Job fails or disappears while waiting.
         """
-        if timeout <= 0:
-            msg = "observed Job timeout must be non-negative"
-            raise TimeoutError(msg)
         deadline = Deadline.from_timeout(
             timeout,
-            message="timeout must be non-negative",
+            message="observed Job timeout must be positive",
         )
         if observer is not None:
             await observer(self)

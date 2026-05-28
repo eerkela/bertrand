@@ -651,12 +651,9 @@ class Pod(
             If the pod is deleted before reaching a terminal phase.
         """
         namespace, name = self._require_namespace_name("wait for pod terminal phase")
-        if timeout <= 0:
-            msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
-            raise TimeoutError(msg)
         deadline = Deadline.from_timeout(
             timeout,
-            message=f"timed out waiting for pod {namespace}/{name} terminal phase",
+            message=f"pod {namespace}/{name} terminal wait timeout must be positive",
         )
         while True:
             remaining = deadline.remaining()

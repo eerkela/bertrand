@@ -23,19 +23,20 @@ from bertrand.env.kube.custom_object import (
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.dra import (
     DEVICE_CLASS_PLURAL,
+    DEVICE_CLASS_RESOURCE,
     DRA_GROUP,
     RESOURCE_CLAIM_PLURAL,
     RESOURCE_CLAIM_TEMPLATE_PLURAL,
+    RESOURCE_CLAIM_TEMPLATE_RESOURCE,
     RESOURCE_SLICE_PLURAL,
-    create_resource_claim_template,
+    RESOURCE_SLICE_RESOURCE,
     ensure_dra_api,
-    upsert_device_class,
-    upsert_resource_claim_template,
-    upsert_resource_slice,
 )
 from bertrand.env.kube.rbac import (
-    upsert_rbac_binding,
-    upsert_rbac_role,
+    CLUSTER_ROLE_BINDING_RESOURCE,
+    CLUSTER_ROLE_RESOURCE,
+    rbac_role_manifest,
+    rbac_service_account_binding_manifest,
 )
 from bertrand.env.kube.service_account import ServiceAccount
 
@@ -231,8 +232,6 @@ async def ensure_dra_backend(
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     ValueError
         If `image` is empty.
     """
@@ -240,43 +239,55 @@ async def ensure_dra_backend(
     if not image:
         msg = "DRA provider image cannot be empty"
         raise ValueError(msg)
-    message = "DRA backend convergence timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
-    await ensure_dra_api(kube, timeout=deadline.remaining())
-    await BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
-    await upsert_device_class(
-        kube,
-        name=DRA_DEVICE_CLASS,
-        spec=_device_class_spec(),
-        labels=_DRA_LABELS,
-        timeout=deadline.remaining(),
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="DRA backend convergence timeout must be positive",
     )
-    await ServiceAccount.upsert(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=DRA_PROVIDER_SERVICE_ACCOUNT,
-        labels=_DRA_LABELS,
-        timeout=deadline.remaining(),
+    await asyncio.gather(
+        ensure_dra_api(kube, timeout=deadline.remaining()),
+        BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining()),
     )
-    await upsert_rbac_role(
+    await asyncio.gather(
+        DEVICE_CLASS_RESOURCE.upsert(
+            kube,
+            name=DRA_DEVICE_CLASS,
+            spec=_device_class_spec(),
+            labels=_DRA_LABELS,
+            timeout=deadline.remaining(),
+        ),
+        ServiceAccount.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DRA_PROVIDER_SERVICE_ACCOUNT,
+            labels=_DRA_LABELS,
+            timeout=deadline.remaining(),
+        ),
+        CLUSTER_ROLE_RESOURCE.upsert(
+            kube,
+            name=DRA_PROVIDER_NAME,
+            manifest=rbac_role_manifest(
+                kind="ClusterRole",
+                namespace=None,
+                name=DRA_PROVIDER_NAME,
+                labels=_DRA_LABELS,
+                rules=_provider_rules(),
+            ),
+            timeout=deadline.remaining(),
+        ),
+    )
+    await CLUSTER_ROLE_BINDING_RESOURCE.upsert(
         kube,
-        kind="ClusterRole",
         name=DRA_PROVIDER_NAME,
-        labels=_DRA_LABELS,
-        rules=_provider_rules(),
-        timeout=deadline.remaining(),
-    )
-    await upsert_rbac_binding(
-        kube,
-        kind="ClusterRoleBinding",
-        name=DRA_PROVIDER_NAME,
-        role_kind="ClusterRole",
-        role_name=DRA_PROVIDER_NAME,
-        service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
-        service_account_namespace=BERTRAND_NAMESPACE,
-        labels=_DRA_LABELS,
+        manifest=rbac_service_account_binding_manifest(
+            kind="ClusterRoleBinding",
+            namespace=None,
+            name=DRA_PROVIDER_NAME,
+            role_kind="ClusterRole",
+            role_name=DRA_PROVIDER_NAME,
+            service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
+            service_account_namespace=BERTRAND_NAMESPACE,
+            labels=_DRA_LABELS,
+        ),
         timeout=deadline.remaining(),
     )
     daemonset = await DaemonSet.upsert(
@@ -413,7 +424,11 @@ async def upsert_device_inventory(
     )
     return await BERTRAND_DEVICE_RESOURCE.upsert(
         kube,
-        name=_device_inventory_name(spec),
+        name=_device_inventory_name(
+            host_id=spec.host_id,
+            capability_id=spec.capability_id,
+            device_name=spec.device_name,
+        ),
         spec=spec,
         labels={
             BERTRAND_DEVICE_CAPABILITY_LABEL: _label_value(spec.capability_id),
@@ -454,25 +469,36 @@ async def delete_device_inventory(
     -------
     bool
         Whether a matching inventory record was deleted.
+
+    Raises
+    ------
+    ValueError
+        If the requested inventory identity is malformed.
     """
-    spec = _BertrandDeviceSpec(
-        capability_id=capability_id,
+    capability_id = _check_kube_name(capability_id)
+    host_id = _check_uuid(host_id)
+    node_name = node_name.strip()
+    device_name = _check_kube_name(device_name)
+    if not node_name:
+        msg = "DRA device inventory text fields cannot be empty"
+        raise ValueError(msg)
+    name = _device_inventory_name(
         host_id=host_id,
-        node_name=node_name,
+        capability_id=capability_id,
         device_name=device_name,
-        cdi_selector="placeholder.invalid/device=0",
     )
-    name = _device_inventory_name(spec)
-    records = await list_device_inventory(
+    record = await BERTRAND_DEVICE_RESOURCE.get(
         kube,
-        capability_id=spec.capability_id,
-        host_ids=(spec.host_id,),
-        node_names=(spec.node_name,),
+        name=name,
         timeout=timeout,
     )
-    if not any(
-        record.name == name and record.spec.device_name == spec.device_name
-        for record in records
+    if record is None:
+        return False
+    if (
+        record.capability_id != capability_id
+        or record.host_id != host_id
+        or record.node_name != node_name
+        or record.spec.device_name != device_name
     ):
         return False
     await BERTRAND_DEVICE_RESOURCE.delete_by_name(
@@ -569,15 +595,13 @@ async def select_device_claims(
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     OSError
         If a required device capability has no matching inventory.
     """
-    message = "DRA device request resolution timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="DRA device request resolution timeout must be positive",
+    )
     selected: list[str] = []
     for raw_id, required in sorted(requests.items()):
         capability_id = _check_kube_name(str(raw_id))
@@ -628,11 +652,12 @@ def resource_claim_name(
     str
         Pod-local claim name.
     """
-    return _claim_name(
-        _claim_owner(owner),
-        _check_kube_name(capability_id),
-        container_name,
+    digest = _resource_claim_digest(
+        owner=_claim_owner(owner),
+        capability_id=_check_kube_name(capability_id),
+        container_name=container_name,
     )
+    return f"dra-{digest[:24]}"
 
 
 def resource_claim_template_name(
@@ -648,11 +673,12 @@ def resource_claim_template_name(
     str
         Namespaced ResourceClaimTemplate name.
     """
-    return _template_name(
-        _claim_owner(owner),
-        _check_kube_name(capability_id),
-        container_name,
+    digest = _resource_claim_digest(
+        owner=_claim_owner(owner),
+        capability_id=_check_kube_name(capability_id),
+        container_name=container_name,
     )
+    return f"dra-template-{digest[:18]}"
 
 
 def pod_resource_claim(
@@ -735,7 +761,7 @@ async def create_resource_claim_templates(
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
     for capability_id in capability_ids:
-        template = await create_resource_claim_template(
+        template = await RESOURCE_CLAIM_TEMPLATE_RESOURCE.create(
             kube,
             namespace=namespace,
             name=resource_claim_template_name(
@@ -796,7 +822,7 @@ async def upsert_resource_claim_templates(
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
     for capability_id in capability_ids:
-        template = await upsert_resource_claim_template(
+        template = await RESOURCE_CLAIM_TEMPLATE_RESOURCE.upsert(
             kube,
             namespace=namespace,
             name=resource_claim_template_name(
@@ -872,15 +898,13 @@ async def run_dra_provider_agent(*, timeout: float = INFINITY) -> None:
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     OSError
         If the node name cannot be resolved.
     """
-    message = "DRA provider agent timeout must be positive"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="DRA provider agent timeout must be positive",
+    )
     node_name = os.environ.get(DRA_NODE_ENV, "").strip()
     if not node_name:
         msg = "DRA provider agent requires NODE_NAME from the Downward API"
@@ -920,16 +944,16 @@ async def _publish_node_slice(
     node_name: str,
     timeout: float,
 ) -> None:
+    node_name = node_name.strip()
+    if not node_name:
+        msg = "ResourceSlice publication requires a node name"
+        raise OSError(msg)
     records = await list_device_inventory(
         kube,
         node_names=(node_name,),
         timeout=timeout,
     )
-    node_name = node_name.strip()
-    if not node_name:
-        msg = "ResourceSlice publication requires a node name"
-        raise OSError(msg)
-    await upsert_resource_slice(
+    await RESOURCE_SLICE_RESOURCE.upsert(
         kube,
         name=_resource_slice_name(node_name),
         spec=_resource_slice_spec(node_name, records),
@@ -1028,24 +1052,35 @@ def _resource_slice_attributes(
     return attributes
 
 
-def _claim_name(owner: str, capability_id: str, container_name: str | None) -> str:
-    return f"dra-{_name_digest(owner, capability_id, container_name)[:24]}"
-
-
-def _template_name(owner: str, capability_id: str, container_name: str | None) -> str:
-    return f"dra-template-{_name_digest(owner, capability_id, container_name)[:18]}"
-
-
 def _resource_slice_name(node_name: str) -> str:
     return f"bertrand-dra-{_label_value(node_name)}-{_hash(node_name)[:12]}"
 
 
-def _device_inventory_name(spec: _BertrandDeviceSpec) -> str:
-    digest = _name_digest(spec.host_id, spec.capability_id, spec.device_name)[:24]
+def _device_inventory_name(
+    *,
+    host_id: str,
+    capability_id: str,
+    device_name: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "host_id": host_id,
+            "capability_id": capability_id,
+            "device_name": device_name,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = _hash(payload)[:24]
     return f"bertrand-device-{digest}"
 
 
-def _name_digest(owner: str, capability_id: str, container_name: str | None) -> str:
+def _resource_claim_digest(
+    *,
+    owner: str,
+    capability_id: str,
+    container_name: str | None,
+) -> str:
     payload = json.dumps(
         {
             "owner": owner,

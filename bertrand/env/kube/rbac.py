@@ -1,8 +1,8 @@
-"""Helpers for converging Kubernetes RBAC resources."""
+"""Helpers for composing Kubernetes RBAC resources."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Literal
 
 from kubernetes import client as kube_client
 
@@ -11,15 +11,13 @@ from .api.resource import BuiltinResource
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-    from .api.client import Kube
     from .api.spec import PolicyRuleManifest
 
 type RoleBindingRoleKind = Literal["Role", "ClusterRole"]
 type _RoleKind = Literal["ClusterRole", "Role"]
 type _BindingKind = Literal["ClusterRoleBinding", "RoleBinding"]
-type RbacResourceKind = _RoleKind | _BindingKind
 
-_CLUSTER_ROLE_RESOURCE = BuiltinResource(
+CLUSTER_ROLE_RESOURCE: BuiltinResource[kube_client.V1ClusterRole] = BuiltinResource(
     scope="cluster",
     api="rbac",
     kind="ClusterRole",
@@ -30,18 +28,20 @@ _CLUSTER_ROLE_RESOURCE = BuiltinResource(
     can_patch=True,
     can_delete=True,
 )
-_CLUSTER_ROLE_BINDING_RESOURCE = BuiltinResource(
-    scope="cluster",
-    api="rbac",
-    kind="ClusterRoleBinding",
-    slug="cluster_role_binding",
-    expected=kube_client.V1ClusterRoleBinding,
-    list_type=kube_client.V1ClusterRoleBindingList,
-    can_create=True,
-    can_patch=True,
-    can_delete=True,
+CLUSTER_ROLE_BINDING_RESOURCE: BuiltinResource[kube_client.V1ClusterRoleBinding] = (
+    BuiltinResource(
+        scope="cluster",
+        api="rbac",
+        kind="ClusterRoleBinding",
+        slug="cluster_role_binding",
+        expected=kube_client.V1ClusterRoleBinding,
+        list_type=kube_client.V1ClusterRoleBindingList,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
+    )
 )
-_ROLE_RESOURCE = BuiltinResource(
+ROLE_RESOURCE: BuiltinResource[kube_client.V1Role] = BuiltinResource(
     scope="namespaced",
     api="rbac",
     kind="Role",
@@ -52,7 +52,7 @@ _ROLE_RESOURCE = BuiltinResource(
     can_patch=True,
     can_delete=True,
 )
-_ROLE_BINDING_RESOURCE = BuiltinResource(
+ROLE_BINDING_RESOURCE: BuiltinResource[kube_client.V1RoleBinding] = BuiltinResource(
     scope="namespaced",
     api="rbac",
     kind="RoleBinding",
@@ -93,15 +93,53 @@ def _metadata(
     return metadata
 
 
-def _role_manifest(
+def rbac_role_manifest(
     *,
     kind: _RoleKind,
     namespace: str | None,
     name: str,
     rules: Collection[PolicyRuleManifest],
-    labels: Mapping[str, str] | None,
-    annotations: Mapping[str, str] | None,
+    labels: Mapping[str, str] | None = None,
+    annotations: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
+    """Return a Kubernetes Role or ClusterRole manifest.
+
+    Parameters
+    ----------
+    kind : {"ClusterRole", "Role"}
+        RBAC role kind to render.
+    namespace : str | None
+        Namespace for Role manifests; ignored for ClusterRole manifests.
+    name : str
+        Role or ClusterRole name.
+    rules : Collection[PolicyRuleManifest]
+        Kubernetes RBAC policy rules.
+    labels : Mapping[str, str] | None, optional
+        Labels to apply to `metadata.labels`.
+    annotations : Mapping[str, str] | None, optional
+        Annotations to apply to `metadata.annotations`.
+
+    Returns
+    -------
+    dict[str, object]
+        Kubernetes RBAC role manifest.
+
+    Raises
+    ------
+    OSError
+        If required identity fields are empty.
+    """
+    name = name.strip()
+    if kind == "ClusterRole":
+        namespace = None
+        if not name:
+            msg = "ClusterRole manifest requires non-empty name"
+            raise OSError(msg)
+    else:
+        namespace = (namespace or "").strip()
+        if not namespace or not name:
+            msg = "Role manifest requires non-empty namespace and name"
+            raise OSError(msg)
     return {
         "apiVersion": "rbac.authorization.k8s.io/v1",
         "kind": kind,
@@ -115,7 +153,7 @@ def _role_manifest(
     }
 
 
-def _binding_manifest(
+def rbac_service_account_binding_manifest(
     *,
     kind: _BindingKind,
     namespace: str | None,
@@ -124,9 +162,63 @@ def _binding_manifest(
     role_name: str,
     service_account_name: str,
     service_account_namespace: str,
-    labels: Mapping[str, str] | None,
-    annotations: Mapping[str, str] | None,
+    labels: Mapping[str, str] | None = None,
+    annotations: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
+    """Return a RoleBinding or ClusterRoleBinding for one ServiceAccount.
+
+    Parameters
+    ----------
+    kind : {"ClusterRoleBinding", "RoleBinding"}
+        RBAC binding kind to render.
+    namespace : str | None
+        Namespace for RoleBinding manifests; ignored for ClusterRoleBinding
+        manifests.
+    name : str
+        Binding name.
+    role_kind : {"Role", "ClusterRole"}
+        Kind of the referenced role.
+    role_name : str
+        Referenced Role or ClusterRole name.
+    service_account_name : str
+        Bound ServiceAccount name.
+    service_account_namespace : str
+        Bound ServiceAccount namespace.
+    labels : Mapping[str, str] | None, optional
+        Labels to apply to `metadata.labels`.
+    annotations : Mapping[str, str] | None, optional
+        Annotations to apply to `metadata.annotations`.
+
+    Returns
+    -------
+    dict[str, object]
+        Kubernetes RBAC binding manifest.
+
+    Raises
+    ------
+    OSError
+        If required identity fields are empty, or `role_kind` is invalid.
+    """
+    name = name.strip()
+    role_name = role_name.strip()
+    service_account_name = service_account_name.strip()
+    service_account_namespace = service_account_namespace.strip()
+    if role_kind not in ("Role", "ClusterRole"):
+        msg = "RBAC binding role kind must be 'Role' or 'ClusterRole'"
+        raise OSError(msg)
+    if kind == "ClusterRoleBinding":
+        namespace = None
+        if not name:
+            msg = "ClusterRoleBinding manifest requires non-empty name"
+            raise OSError(msg)
+    else:
+        namespace = (namespace or "").strip()
+        if not namespace or not name:
+            msg = "RoleBinding manifest requires non-empty namespace and name"
+            raise OSError(msg)
+    if not role_name or not service_account_name or not service_account_namespace:
+        msg = "RBAC binding manifest requires non-empty role and service account names"
+        raise OSError(msg)
     return {
         "apiVersion": "rbac.authorization.k8s.io/v1",
         "kind": kind,
@@ -149,333 +241,3 @@ def _binding_manifest(
             }
         ],
     }
-
-
-@overload
-async def get_rbac_resource(
-    kube: Kube,
-    *,
-    kind: Literal["ClusterRole"],
-    namespace: str | None = None,
-    name: str,
-    timeout: float,
-) -> kube_client.V1ClusterRole | None: ...
-
-
-@overload
-async def get_rbac_resource(
-    kube: Kube,
-    *,
-    kind: Literal["ClusterRoleBinding"],
-    namespace: str | None = None,
-    name: str,
-    timeout: float,
-) -> kube_client.V1ClusterRoleBinding | None: ...
-
-
-@overload
-async def get_rbac_resource(
-    kube: Kube,
-    *,
-    kind: Literal["Role"],
-    namespace: str | None = None,
-    name: str,
-    timeout: float,
-) -> kube_client.V1Role | None: ...
-
-
-@overload
-async def get_rbac_resource(
-    kube: Kube,
-    *,
-    kind: Literal["RoleBinding"],
-    namespace: str | None = None,
-    name: str,
-    timeout: float,
-) -> kube_client.V1RoleBinding | None: ...
-
-
-async def get_rbac_resource(
-    kube: Kube,
-    *,
-    kind: RbacResourceKind,
-    namespace: str | None = None,
-    name: str,
-    timeout: float,
-) -> (
-    kube_client.V1ClusterRole
-    | kube_client.V1ClusterRoleBinding
-    | kube_client.V1Role
-    | kube_client.V1RoleBinding
-    | None
-):
-    """Read one Kubernetes RBAC resource by kind and identity.
-
-    Returns
-    -------
-    kube_client.V1ClusterRole | kube_client.V1ClusterRoleBinding | \
-            kube_client.V1Role | kube_client.V1RoleBinding | None
-        RBAC payload, or `None` when absent.
-    """
-    if kind == "ClusterRole":
-        return await _CLUSTER_ROLE_RESOURCE.get(
-            kube,
-            name=name,
-            timeout=timeout,
-        )
-    if kind == "ClusterRoleBinding":
-        return await _CLUSTER_ROLE_BINDING_RESOURCE.get(
-            kube,
-            name=name,
-            timeout=timeout,
-        )
-    if kind == "Role":
-        return await _ROLE_RESOURCE.get(
-            kube,
-            namespace=namespace or "",
-            name=name,
-            timeout=timeout,
-        )
-    return await _ROLE_BINDING_RESOURCE.get(
-        kube,
-        namespace=namespace or "",
-        name=name,
-        timeout=timeout,
-    )
-
-
-@overload
-async def upsert_rbac_role(
-    kube: Kube,
-    *,
-    kind: Literal["ClusterRole"],
-    namespace: str | None = None,
-    name: str,
-    rules: Collection[PolicyRuleManifest],
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-    annotations: Mapping[str, str] | None = None,
-) -> kube_client.V1ClusterRole: ...
-
-
-@overload
-async def upsert_rbac_role(
-    kube: Kube,
-    *,
-    kind: Literal["Role"],
-    namespace: str | None = None,
-    name: str,
-    rules: Collection[PolicyRuleManifest],
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-    annotations: Mapping[str, str] | None = None,
-) -> kube_client.V1Role: ...
-
-
-async def upsert_rbac_role(
-    kube: Kube,
-    *,
-    kind: _RoleKind,
-    namespace: str | None = None,
-    name: str,
-    rules: Collection[PolicyRuleManifest],
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-    annotations: Mapping[str, str] | None = None,
-) -> kube_client.V1ClusterRole | kube_client.V1Role:
-    """Create or patch one Kubernetes Role or ClusterRole.
-
-    Returns
-    -------
-    kube_client.V1ClusterRole | kube_client.V1Role
-        Created or patched RBAC role payload.
-
-    Raises
-    ------
-    OSError
-        If required identity fields are empty.
-    """
-    name = name.strip()
-    if kind == "ClusterRole":
-        if not name:
-            msg = "ClusterRole upsert requires non-empty name"
-            raise OSError(msg)
-        return await _CLUSTER_ROLE_RESOURCE.upsert(
-            kube,
-            name=name,
-            manifest=_role_manifest(
-                kind=kind,
-                namespace=None,
-                name=name,
-                rules=rules,
-                labels=labels,
-                annotations=annotations,
-            ),
-            timeout=timeout,
-        )
-
-    namespace = (namespace or "").strip()
-    if not namespace or not name:
-        msg = "Role upsert requires non-empty namespace and name"
-        raise OSError(msg)
-    return await _ROLE_RESOURCE.upsert(
-        kube,
-        namespace=namespace,
-        name=name,
-        manifest=_role_manifest(
-            kind=kind,
-            namespace=namespace,
-            name=name,
-            rules=rules,
-            labels=labels,
-            annotations=annotations,
-        ),
-        timeout=timeout,
-    )
-
-
-@overload
-async def upsert_rbac_binding(
-    kube: Kube,
-    *,
-    kind: Literal["ClusterRoleBinding"],
-    namespace: str | None = None,
-    name: str,
-    role_kind: RoleBindingRoleKind,
-    role_name: str,
-    service_account_name: str,
-    service_account_namespace: str,
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-    annotations: Mapping[str, str] | None = None,
-) -> kube_client.V1ClusterRoleBinding: ...
-
-
-@overload
-async def upsert_rbac_binding(
-    kube: Kube,
-    *,
-    kind: Literal["RoleBinding"],
-    namespace: str | None = None,
-    name: str,
-    role_kind: RoleBindingRoleKind,
-    role_name: str,
-    service_account_name: str,
-    service_account_namespace: str,
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-    annotations: Mapping[str, str] | None = None,
-) -> kube_client.V1RoleBinding: ...
-
-
-async def upsert_rbac_binding(
-    kube: Kube,
-    *,
-    kind: _BindingKind,
-    namespace: str | None = None,
-    name: str,
-    role_kind: RoleBindingRoleKind,
-    role_name: str,
-    service_account_name: str,
-    service_account_namespace: str,
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-    annotations: Mapping[str, str] | None = None,
-) -> kube_client.V1ClusterRoleBinding | kube_client.V1RoleBinding:
-    """Create or patch one Kubernetes RoleBinding or ClusterRoleBinding.
-
-    Returns
-    -------
-    kube_client.V1ClusterRoleBinding | kube_client.V1RoleBinding
-        Created or patched RBAC binding payload.
-
-    Raises
-    ------
-    OSError
-        If required identity fields are empty, or `role_kind` is invalid.
-    """
-    name = name.strip()
-    if role_kind not in ("Role", "ClusterRole"):
-        msg = "RoleBinding role kind must be 'Role' or 'ClusterRole'"
-        raise OSError(msg)
-    if kind == "ClusterRoleBinding":
-        if not name:
-            msg = "ClusterRoleBinding upsert requires non-empty name"
-            raise OSError(msg)
-        return await _CLUSTER_ROLE_BINDING_RESOURCE.upsert(
-            kube,
-            name=name,
-            manifest=_binding_manifest(
-                kind=kind,
-                namespace=None,
-                name=name,
-                role_kind=role_kind,
-                role_name=role_name,
-                service_account_name=service_account_name,
-                service_account_namespace=service_account_namespace,
-                labels=labels,
-                annotations=annotations,
-            ),
-            timeout=timeout,
-        )
-
-    namespace = (namespace or "").strip()
-    role_name = role_name.strip()
-    service_account_name = service_account_name.strip()
-    service_account_namespace = service_account_namespace.strip()
-    if not all((namespace, name, role_name, service_account_name)):
-        msg = "RoleBinding upsert requires non-empty names and namespace"
-        raise OSError(msg)
-    if not service_account_namespace:
-        msg = "RoleBinding upsert requires non-empty service account namespace"
-        raise OSError(msg)
-    return await _ROLE_BINDING_RESOURCE.upsert(
-        kube,
-        namespace=namespace,
-        name=name,
-        manifest=_binding_manifest(
-            kind=kind,
-            namespace=namespace,
-            name=name,
-            role_kind=role_kind,
-            role_name=role_name,
-            service_account_name=service_account_name,
-            service_account_namespace=service_account_namespace,
-            labels=labels,
-            annotations=annotations,
-        ),
-        timeout=timeout,
-    )
-
-
-async def delete_rbac_resource(
-    kube: Kube,
-    *,
-    kind: RbacResourceKind,
-    namespace: str | None = None,
-    name: str,
-    timeout: float,
-) -> None:
-    """Delete one Kubernetes RBAC resource by kind and identity."""
-    if kind == "ClusterRole":
-        await _CLUSTER_ROLE_RESOURCE.delete_by_name(kube, name=name, timeout=timeout)
-    elif kind == "ClusterRoleBinding":
-        await _CLUSTER_ROLE_BINDING_RESOURCE.delete_by_name(
-            kube,
-            name=name,
-            timeout=timeout,
-        )
-    elif kind == "Role":
-        await _ROLE_RESOURCE.delete_by_name(
-            kube,
-            namespace=namespace or "",
-            name=name,
-            timeout=timeout,
-        )
-    else:
-        await _ROLE_BINDING_RESOURCE.delete_by_name(
-            kube,
-            namespace=namespace or "",
-            name=name,
-            timeout=timeout,
-        )

@@ -76,14 +76,7 @@ async def ensure_project_workload_controller(
     Deployment | CronJob | None
         Converged stable controller, or ``None`` for Job/no-workload topology.
 
-    Raises
-    ------
-    TimeoutError
-        If convergence cannot start before `timeout` expires.
     """
-    if timeout <= 0:
-        msg = "project workload controller convergence timeout must be positive"
-        raise TimeoutError(msg)
     _require_active_config(config)
     identity = _project_workload_identity(config, repo_id=repo_id)
     bertrand = _project_workload_config(config)
@@ -122,7 +115,7 @@ async def ensure_project_workload_controller(
     return await ensure_workload_controller(
         kube,
         config=bertrand,
-        workload=workload or identity,
+        workload=workload,
         timeout=deadline.remaining(),
         primary_args=primary_args,
         interactive=interactive,
@@ -170,14 +163,9 @@ async def create_project_workload_job_run(
 
     Raises
     ------
-    TimeoutError
-        If creation cannot start before `timeout` expires.
     ValueError
         If project config does not select Job topology.
     """
-    if timeout <= 0:
-        msg = "project workload Job run creation timeout must be positive"
-        raise TimeoutError(msg)
     _require_active_config(config)
     bertrand = _project_workload_config(config)
     if bertrand is None or not bertrand.containers:
@@ -200,9 +188,6 @@ async def create_project_workload_job_run(
         image_ref=image_ref,
         deadline=deadline,
     )
-    if workload is None:
-        msg = "project workload Job runs require a rendered workload pod"
-        raise ValueError(msg)
     return await create_workload_job_run(
         kube,
         config=bertrand,
@@ -244,14 +229,7 @@ async def scale_project_workload(
     WorkloadScaleResult
         Summary of controller and runtime resources affected by the operation.
 
-    Raises
-    ------
-    TimeoutError
-        If scale convergence cannot start before `timeout` expires.
     """
-    if timeout <= 0:
-        msg = "project workload scale timeout must be positive"
-        raise TimeoutError(msg)
     _require_active_config(config)
     return await scale_workload(
         kube,
@@ -291,14 +269,7 @@ async def remove_project_workload(
     WorkloadRemoveResult
         Summary of workload resources removed and image records retired.
 
-    Raises
-    ------
-    TimeoutError
-        If removal cannot start before `timeout` expires.
     """
-    if timeout <= 0:
-        msg = "project workload removal timeout must be positive"
-        raise TimeoutError(msg)
     _require_active_config(config)
     deadline = Deadline.from_timeout(
         timeout,
@@ -342,7 +313,7 @@ async def _materialize_project_workload_pod(
     node: str | None,
     image_ref: str | None,
     deadline: Deadline,
-) -> WorkloadPod | None:
+) -> WorkloadPod:
     image_spec = project_image_spec(config, repo_id=repo_id)
     image = await _project_workload_image_ref(
         kube,
@@ -368,14 +339,14 @@ async def _render_project_workload_pod(
     image: str,
     node: str | None,
     deadline: Deadline,
-) -> WorkloadPod | None:
+) -> WorkloadPod:
     host_id = await _project_workload_host_id(
         kube,
         config=workload_config,
         node=node,
         timeout=deadline.remaining(),
     )
-    return await workload_pod_from_config(
+    workload = await workload_pod_from_config(
         kube,
         config=workload_config,
         repo_id=image_spec.repo_id,
@@ -385,6 +356,10 @@ async def _render_project_workload_pod(
         host_id=host_id,
         timeout=deadline.remaining(),
     )
+    if workload is None:
+        msg = "project workload materialization requires configured containers"
+        raise ValueError(msg)
+    return workload
 
 
 async def _project_workload_host_id(

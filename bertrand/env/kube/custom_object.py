@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
@@ -14,15 +15,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from bertrand.env.git import Deadline
 from bertrand.env.kube.crd import CustomResourceDefinition
 
-from .api._helpers import (
-    _is_conflict,
-    _is_missing_api_resource,
-    _is_not_found,
+from .api.client import KubeApiError, is_missing_api_resource
+from .api.resource import (
+    ResourceScope,
     _label_selector,
     _normalized_namespaces,
     _wait_until_deleted,
 )
-from .api.resource import ResourceScope
 from .api.watch import WatchEvent, WatchExpired
 from .api.watch import watch as kube_watch
 
@@ -286,8 +285,6 @@ class CustomObjectResource[T_co]:
 
         Raises
         ------
-        TimeoutError
-            If the timeout is non-positive or establishment exceeds the budget.
         ValueError
             If this descriptor does not own a CRD.
         """
@@ -295,10 +292,10 @@ class CustomObjectResource[T_co]:
         if self.singular is None or spec_schema is None:
             msg = f"{self.kind} descriptor does not own a CRD"
             raise ValueError(msg)
-        message = f"{self.kind} CRD timeout must be non-negative"
-        if timeout <= 0:
-            raise TimeoutError(message)
-        deadline = Deadline.from_timeout(timeout, message=message)
+        deadline = Deadline.from_timeout(
+            timeout,
+            message=f"{self.kind} CRD timeout must be positive",
+        )
         crd = await CustomResourceDefinition.upsert(
             kube,
             group=self.group,
@@ -349,7 +346,11 @@ class CustomObjectResource[T_co]:
                 missing_ok=False,
             )
         except OSError as err:
-            if _is_not_found(err) and not _is_missing_api_resource(err):
+            if (
+                isinstance(err, KubeApiError)
+                and err.status == 404
+                and not is_missing_api_resource(err)
+            ):
                 return None
             raise
         return self._wrap_payload(payload)
@@ -408,21 +409,14 @@ class CustomObjectResource[T_co]:
         WatchEvent[T_co]
             Typed custom-object watch events.
 
-        Raises
-        ------
-        TimeoutError
-            If the watch timeout is non-positive.
         """
-        if timeout <= 0:
-            msg = f"{self.kind} watch timeout must be non-negative"
-            raise TimeoutError(msg)
         selected = self._namespace_filter(action="watch", namespace=namespace)
         normalized = _normalized_namespaces(selected)
         namespace = None if normalized is None else next(iter(normalized), None)
         labels = self._selector(labels)
         deadline = Deadline.from_timeout(
             timeout,
-            message=f"{self.kind} watch timeout must be non-negative",
+            message=f"{self.kind} watch timeout must be positive",
         )
         current_version = resource_version.strip() if resource_version else ""
         can_emit_initial = emit_initial and not current_version
@@ -577,7 +571,7 @@ class CustomObjectResource[T_co]:
                 missing_ok=False,
             )
         except OSError as err:
-            if not _is_conflict(err):
+            if not isinstance(err, KubeApiError) or err.status != 409:
                 raise
             payload = await self._run_custom(
                 kube,
@@ -712,7 +706,7 @@ class CustomObjectResource[T_co]:
             timeout=timeout,
             context=self._collection_context("watch", namespace),
             resource_version=resource_version,
-            labels=labels,
+            label_selector=_label_selector(labels),
             field_selector=field_selector,
             api_kwargs=api_kwargs,
         ):
@@ -820,19 +814,23 @@ class CustomObjectResource[T_co]:
                     missing_ok=False,
                 )
             ]
-        return [
-            await self._run_custom(
-                kube,
-                "list",
-                namespace=namespace,
-                label_selector=label_selector,
-                field_selector=field_selector,
-                timeout=timeout,
-                context=self._collection_context("list", namespace),
-                missing_ok=False,
+        return list(
+            await asyncio.gather(
+                *(
+                    self._run_custom(
+                        kube,
+                        "list",
+                        namespace=namespace,
+                        label_selector=label_selector,
+                        field_selector=field_selector,
+                        timeout=timeout,
+                        context=self._collection_context("list", namespace),
+                        missing_ok=False,
+                    )
+                    for namespace in normalized
+                )
             )
-            for namespace in normalized
-        ]
+        )
 
     def _object_namespace(self, namespace: str | None, *, action: str) -> str | None:
         namespace = self._default_namespace(namespace)

@@ -2,22 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
 
-from bertrand.env.git import until
+import kubernetes
 
-from ._helpers import (
-    DeletionPropagationPolicy,
-    _delete_options,
-    _is_conflict,
-    _label_selector,
-    _normalized_namespaces,
-    _typed_list_items,
-    _typed_payload,
-    _validate_delete_status,
-    _wait_until_deleted,
-)
+from bertrand.env.git import Deadline
+
+from .client import KubeApiError
 from .watch import WatchEvent
 from .watch import watch as kube_watch
 
@@ -28,7 +21,82 @@ if TYPE_CHECKING:
     from .client import Kube
 
 type ResourceScope = Literal["cluster", "namespaced"]
+type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
+type _BuiltinOperation = Literal["read", "list", "create", "patch", "delete"]
 RESOURCE_WAIT_POLL_INTERVAL_SECONDS = 0.5
+
+
+def _label_selector(labels: Mapping[str, str] | None) -> str | None:
+    if not labels:
+        return None
+    return ",".join(f"{key}={value}" for key, value in labels.items())
+
+
+def _normalized_namespaces(
+    namespaces: Collection[str] | None,
+) -> tuple[str, ...] | None:
+    if namespaces is None:
+        return None
+    normalized = {namespace.strip() for namespace in namespaces}
+    normalized.discard("")
+    return tuple(sorted(normalized))
+
+
+def _delete_options(
+    *,
+    kind: str,
+    propagation_policy: DeletionPropagationPolicy | None = None,
+    grace_period_seconds: int | None = None,
+) -> kubernetes.client.V1DeleteOptions:
+    if propagation_policy is not None and propagation_policy not in (
+        "Background",
+        "Foreground",
+        "Orphan",
+    ):
+        msg = f"invalid {kind} deletion propagation policy: {propagation_policy!r}"
+        raise ValueError(msg)
+    if grace_period_seconds is not None and grace_period_seconds < 0:
+        msg = f"{kind} deletion grace period cannot be negative"
+        raise ValueError(msg)
+    return kubernetes.client.V1DeleteOptions(
+        grace_period_seconds=grace_period_seconds,
+        propagation_policy=propagation_policy,
+    )
+
+
+def _validate_delete_status(payload: object, *, label: str) -> None:
+    if payload is not None and not isinstance(payload, kubernetes.client.V1Status):
+        msg = f"malformed Kubernetes response while deleting {label}"
+        raise OSError(msg)
+
+
+async def _wait_until_deleted(
+    *,
+    label: str,
+    timeout: float,
+    refresh: Callable[[float], Awaitable[object | None]],
+) -> None:
+    deadline = Deadline.from_timeout(
+        timeout,
+        message=f"{label} deletion timeout must be positive",
+    )
+    last_error: TimeoutError | None = None
+
+    while True:
+        remaining = deadline.remaining()
+        if remaining <= 0:
+            msg = f"timed out waiting for {label} deletion"
+            raise TimeoutError(msg) from last_error
+        try:
+            live = await refresh(remaining)
+        except TimeoutError as err:
+            last_error = err
+            await asyncio.sleep(deadline.bounded(RESOURCE_WAIT_POLL_INTERVAL_SECONDS))
+            continue
+        if live is None:
+            return
+        last_error = TimeoutError(f"{label} still exists")
+        await asyncio.sleep(deadline.bounded(RESOURCE_WAIT_POLL_INTERVAL_SECONDS))
 
 
 @dataclass(frozen=True)
@@ -101,21 +169,18 @@ class BuiltinResource[PayloadT]:
         """
         namespace = self._single_namespace(namespace, action="read")
         label = self._object_label(name=name, namespace=namespace)
-        payload = await self._run(
+        payload = await self._run_request(
             kube,
-            lambda request_timeout: self._read(
-                kube,
-                namespace,
-                name,
-                request_timeout,
-            ),
+            operation="read",
+            namespace=namespace,
+            name=name,
             timeout=timeout,
             context=context or f"failed to read {self.kind} {label!r}",
             missing_ok=True,
         )
         if payload is None:
             return None
-        return _typed_payload(payload, self.expected, context=self.kind)
+        return self._typed(payload)
 
     async def list(
         self,
@@ -159,15 +224,7 @@ class BuiltinResource[PayloadT]:
         )
         items: builtins.list[PayloadT] = []
         for payload in payloads:
-            items.extend(
-                _typed_list_items(
-                    payload,
-                    list_type=self.list_type,
-                    item_type=self.expected,
-                    list_context=self.kind,
-                    item_context=self.kind,
-                )
-            )
+            items.extend(self._list_items(payload))
         return items
 
     async def watch(
@@ -194,15 +251,11 @@ class BuiltinResource[PayloadT]:
         watch_fn, api_kwargs, context = self._watch_request(kube, namespace=namespace)
         async for event in kube_watch(
             watch_fn,
-            wrapper=lambda payload: _typed_payload(
-                payload,
-                self.expected,
-                context=f"{self.kind} watch",
-            ),
+            wrapper=lambda payload: self._typed(payload, context=f"{self.kind} watch"),
             timeout=timeout,
             context=context,
             resource_version=resource_version,
-            labels=labels,
+            label_selector=_label_selector(labels),
             field_selector=field_selector,
             api_kwargs=api_kwargs,
         ):
@@ -252,14 +305,11 @@ class BuiltinResource[PayloadT]:
             raise NotImplementedError(msg)
         namespace = self._single_namespace(namespace, action="create")
         label = self._object_label(name=name or self.kind, namespace=namespace)
-        payload = await self._run(
+        payload = await self._run_request(
             kube,
-            lambda request_timeout: self._create(
-                kube,
-                namespace,
-                manifest,
-                request_timeout,
-            ),
+            operation="create",
+            namespace=namespace,
+            body=manifest,
             timeout=timeout,
             context=context or f"failed to create {self.kind} {label}",
             missing_ok=missing_ok,
@@ -306,30 +356,24 @@ class BuiltinResource[PayloadT]:
         namespace = self._single_namespace(namespace, action="upsert")
         label = self._object_label(name=name, namespace=namespace)
         try:
-            payload = await self._run(
+            payload = await self._run_request(
                 kube,
-                lambda request_timeout: self._create(
-                    kube,
-                    namespace,
-                    manifest,
-                    request_timeout,
-                ),
+                operation="create",
+                namespace=namespace,
+                body=manifest,
                 timeout=timeout,
                 context=f"failed to create {self.kind} {label}",
                 missing_ok=False,
             )
         except OSError as err:
-            if not _is_conflict(err):
+            if not isinstance(err, KubeApiError) or err.status != 409:
                 raise
-            payload = await self._run(
+            payload = await self._run_request(
                 kube,
-                lambda request_timeout: self._patch(
-                    kube,
-                    namespace,
-                    name,
-                    manifest,
-                    request_timeout,
-                ),
+                operation="patch",
+                namespace=namespace,
+                name=name,
+                body=manifest,
                 timeout=timeout,
                 context=f"failed to patch {self.kind} {label}",
                 missing_ok=False,
@@ -375,15 +419,12 @@ class BuiltinResource[PayloadT]:
                 propagation_policy=propagation_policy,
                 grace_period_seconds=grace_period_seconds,
             )
-        payload = await self._run(
+        payload = await self._run_request(
             kube,
-            lambda request_timeout: self._delete(
-                kube,
-                namespace,
-                name,
-                delete_options,
-                request_timeout,
-            ),
+            operation="delete",
+            namespace=namespace,
+            name=name,
+            body=delete_options,
             timeout=timeout,
             context=f"failed to delete {self.kind} {label}",
             missing_ok=True,
@@ -410,17 +451,31 @@ class BuiltinResource[PayloadT]:
         """
         await _wait_until_deleted(label=label, timeout=timeout, refresh=refresh)
 
-    async def _run(
+    async def _run_request(
         self,
         kube: Kube,
-        fn: Callable[[float | None], object],
         *,
+        operation: _BuiltinOperation,
+        namespace: str | None,
         timeout: float,
         context: str,
         missing_ok: bool,
+        name: str | None = None,
+        body: Mapping[str, object] | object | None = None,
+        label_selector: str | None = None,
+        field_selector: str | None = None,
     ) -> object | None:
         return await kube.run(
-            fn,
+            lambda request_timeout: self._request(
+                kube,
+                operation=operation,
+                namespace=namespace,
+                name=name,
+                body=body,
+                label_selector=label_selector,
+                field_selector=field_selector,
+                request_timeout=request_timeout,
+            ),
             timeout=timeout,
             context=context,
             missing_ok=missing_ok,
@@ -437,79 +492,49 @@ class BuiltinResource[PayloadT]:
     ) -> builtins.list[object | None]:
         if self.scope == "cluster":
             return [
-                await self._list_all_payload(
+                await self._run_request(
                     kube,
+                    operation="list",
+                    namespace=None,
                     timeout=timeout,
                     label_selector=label_selector,
                     field_selector=field_selector,
                     context=self._list_all_context(all_namespaces=False),
+                    missing_ok=False,
                 )
             ]
         normalized = _normalized_namespaces(namespaces)
         if normalized is None:
             return [
-                await self._list_all_payload(
+                await self._run_request(
                     kube,
+                    operation="list",
+                    namespace=None,
                     timeout=timeout,
                     label_selector=label_selector,
                     field_selector=field_selector,
                     context=self._list_all_context(all_namespaces=True),
+                    missing_ok=False,
                 )
             ]
-        return [
-            await self._list_namespace_payload(
-                kube,
-                namespace=namespace,
-                timeout=timeout,
-                label_selector=label_selector,
-                field_selector=field_selector,
+        return list(
+            await asyncio.gather(
+                *(
+                    self._run_request(
+                        kube,
+                        operation="list",
+                        namespace=namespace,
+                        timeout=timeout,
+                        label_selector=label_selector,
+                        field_selector=field_selector,
+                        context=(
+                            f"failed to list {self.kind}s in namespace {namespace!r}"
+                        ),
+                        missing_ok=False,
+                    )
+                    for namespace in normalized
+                )
             )
-            for namespace in normalized
-        ]
-
-    async def _list_all_payload(
-        self,
-        kube: Kube,
-        *,
-        timeout: float,
-        label_selector: str | None,
-        field_selector: str | None,
-        context: str,
-    ) -> object | None:
-        return await self._run(
-            kube,
-            lambda request_timeout: self._list_all(
-                kube,
-                label_selector,
-                field_selector,
-                request_timeout,
-            ),
-            timeout=timeout,
-            context=context,
-            missing_ok=False,
-        )
-
-    async def _list_namespace_payload(
-        self,
-        kube: Kube,
-        *,
-        namespace: str,
-        timeout: float,
-        label_selector: str | None,
-        field_selector: str | None,
-    ) -> object | None:
-        return await self._run(
-            kube,
-            lambda request_timeout: self._list_namespace(
-                kube,
-                namespace,
-                label_selector,
-                field_selector,
-                request_timeout,
-            ),
-            timeout=timeout,
-            context=f"failed to list {self.kind}s in namespace {namespace!r}",
-            missing_ok=False,
         )
 
     def _single_namespace(self, namespace: str | None, *, action: str) -> str | None:
@@ -550,98 +575,39 @@ class BuiltinResource[PayloadT]:
             raise ValueError(msg)
         return (namespace,) if namespace else namespaces
 
-    def _read(
+    def _request(
         self,
         kube: Kube,
+        *,
+        operation: _BuiltinOperation,
         namespace: str | None,
-        name: str,
-        request_timeout: float | None,
-    ) -> object:
-        kwargs: dict[str, object] = {
-            "name": name,
-            "_request_timeout": request_timeout,
-        }
-        if self.scope == "namespaced":
-            kwargs["namespace"] = self._required_namespace(namespace, action="read")
-        return self._method(kube, self._single_method("read"))(**kwargs)
-
-    def _list_all(
-        self,
-        kube: Kube,
+        name: str | None,
+        body: Mapping[str, object] | object | None,
         label_selector: str | None,
         field_selector: str | None,
         request_timeout: float | None,
     ) -> object:
-        return self._method(kube, self._list_all_method())(
-            label_selector=label_selector,
-            field_selector=field_selector,
-            _request_timeout=request_timeout,
+        kwargs: dict[str, object] = {"_request_timeout": request_timeout}
+        if name is not None:
+            kwargs["name"] = name
+        if body is not None:
+            kwargs["body"] = body
+        if label_selector is not None:
+            kwargs["label_selector"] = label_selector
+        if field_selector is not None:
+            kwargs["field_selector"] = field_selector
+        if self.scope == "namespaced":
+            if operation == "list":
+                if namespace is not None:
+                    kwargs["namespace"] = namespace
+            else:
+                kwargs["namespace"] = self._required_namespace(
+                    namespace,
+                    action=operation,
+                )
+        return self._method(kube, self._method_name(operation, namespace=namespace))(
+            **kwargs
         )
-
-    def _list_namespace(
-        self,
-        kube: Kube,
-        namespace: str,
-        label_selector: str | None,
-        field_selector: str | None,
-        request_timeout: float | None,
-    ) -> object:
-        return self._method(kube, f"list_namespaced_{self.slug}")(
-            namespace=namespace,
-            label_selector=label_selector,
-            field_selector=field_selector,
-            _request_timeout=request_timeout,
-        )
-
-    def _create(
-        self,
-        kube: Kube,
-        namespace: str | None,
-        manifest: Mapping[str, object],
-        request_timeout: float | None,
-    ) -> object:
-        kwargs: dict[str, object] = {
-            "body": manifest,
-            "_request_timeout": request_timeout,
-        }
-        if self.scope == "namespaced":
-            kwargs["namespace"] = self._required_namespace(namespace, action="create")
-        return self._method(kube, self._single_method("create"))(**kwargs)
-
-    def _patch(
-        self,
-        kube: Kube,
-        namespace: str | None,
-        name: str,
-        manifest: Mapping[str, object],
-        request_timeout: float | None,
-    ) -> object:
-        kwargs: dict[str, object] = {
-            "name": name,
-            "body": manifest,
-            "_request_timeout": request_timeout,
-        }
-        if self.scope == "namespaced":
-            kwargs["namespace"] = self._required_namespace(namespace, action="patch")
-        return self._method(kube, self._single_method("patch"))(**kwargs)
-
-    def _delete(
-        self,
-        kube: Kube,
-        namespace: str | None,
-        name: str,
-        delete_options: object | None,
-        request_timeout: float | None,
-    ) -> object:
-        kwargs: dict[str, object] = {
-            "name": name,
-            "_request_timeout": request_timeout,
-        }
-        if delete_options is not None:
-            kwargs["body"] = delete_options
-        if self.scope == "namespaced":
-            kwargs["namespace"] = self._required_namespace(namespace, action="delete")
-        return self._method(kube, self._single_method("delete"))(**kwargs)
 
     def _watch_request(
         self,
@@ -650,38 +616,42 @@ class BuiltinResource[PayloadT]:
         namespace: str | None,
     ) -> tuple[Callable[..., object], Mapping[str, object], str]:
         if self.scope == "cluster":
-            return self._watch_all(kube), {}, f"failed to watch {self.kind}s"
+            return (
+                self._method(kube, self._method_name("list", namespace=None)),
+                {},
+                f"failed to watch {self.kind}s",
+            )
         if namespace is None:
             return (
-                self._watch_all(kube),
+                self._method(kube, self._method_name("list", namespace=None)),
                 {},
                 f"failed to watch {self.kind}s across all namespaces",
             )
         return (
-            self._watch_namespace_method(kube),
+            self._method(kube, self._method_name("list", namespace=namespace)),
             {"namespace": namespace},
             f"failed to watch {self.kind}s in namespace {namespace!r}",
         )
-
-    def _watch_all(self, kube: Kube) -> Callable[..., object]:
-        return self._method(kube, self._list_all_method())
-
-    def _watch_namespace_method(self, kube: Kube) -> Callable[..., object]:
-        return self._method(kube, f"list_namespaced_{self.slug}")
 
     def _method(self, kube: Kube, name: str) -> Callable[..., object]:
         api = getattr(kube, self.api)
         return cast("Callable[..., object]", getattr(api, name))
 
-    def _single_method(self, action: str) -> str:
+    def _method_name(
+        self,
+        operation: _BuiltinOperation,
+        *,
+        namespace: str | None,
+    ) -> str:
+        if operation == "list":
+            if self.scope == "namespaced":
+                if namespace is None:
+                    return f"list_{self.slug}_for_all_namespaces"
+                return f"list_namespaced_{self.slug}"
+            return f"list_{self.slug}"
         if self.scope == "namespaced":
-            return f"{action}_namespaced_{self.slug}"
-        return f"{action}_{self.slug}"
-
-    def _list_all_method(self) -> str:
-        if self.scope == "namespaced":
-            return f"list_{self.slug}_for_all_namespaces"
-        return f"list_{self.slug}"
+            return f"{operation}_namespaced_{self.slug}"
+        return f"{operation}_{self.slug}"
 
     def _list_all_context(self, *, all_namespaces: bool) -> str:
         if all_namespaces:
@@ -696,13 +666,29 @@ class BuiltinResource[PayloadT]:
         payload: object,
         *,
         malformed_message: str | None = None,
+        context: str | None = None,
     ) -> PayloadT:
         if not isinstance(payload, self.expected):
             if malformed_message is not None:
                 raise OSError(malformed_message)
-            msg = f"malformed Kubernetes {self.kind} payload"
+            msg = f"malformed Kubernetes {context or self.kind} payload"
             raise OSError(msg)
         return payload
+
+    def _list_items(self, payload: object | None) -> builtins.list[PayloadT]:
+        if payload is None:
+            return []
+        if not isinstance(payload, self.list_type):
+            msg = f"malformed Kubernetes {self.kind} list payload"
+            raise OSError(msg)
+
+        out: builtins.list[PayloadT] = []
+        for item in getattr(payload, "items", None) or []:
+            if not isinstance(item, self.expected):
+                msg = f"malformed Kubernetes {self.kind} entry in list payload"
+                raise OSError(msg)
+            out.append(item)
+        return out
 
     @staticmethod
     def _field_selector(field_selector: str | None) -> str | None:
@@ -925,28 +911,33 @@ class BuiltinResourceObject[PayloadT]:
         check_current: bool = False,
     ) -> Self:
         current: Self = self
+        deadline = Deadline.from_timeout(
+            timeout,
+            message=f"{action} timeout must be positive",
+        )
+        last_error: TimeoutError | None = None
 
-        async def ready(remaining: float) -> Self:
-            nonlocal current
+        while True:
+            remaining = deadline.remaining()
+            if remaining <= 0:
+                raise TimeoutError(timeout_message) from last_error
             if check_current and predicate(current):
                 return current
-            refreshed = await current.refresh(kube, timeout=remaining)
+            try:
+                refreshed = await current.refresh(kube, timeout=remaining)
+            except TimeoutError as err:
+                last_error = err
+                await asyncio.sleep(
+                    deadline.bounded(RESOURCE_WAIT_POLL_INTERVAL_SECONDS)
+                )
+                continue
             if refreshed is None:
                 raise OSError(missing_message)
             current = refreshed
             if predicate(current):
                 return current
-            raise TimeoutError(pending_message)
-
-        try:
-            return await until(
-                ready,
-                timeout=timeout,
-                interval=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
-                action=action,
-            )
-        except TimeoutError as err:
-            raise TimeoutError(timeout_message) from err
+            last_error = TimeoutError(pending_message)
+            await asyncio.sleep(deadline.bounded(RESOURCE_WAIT_POLL_INTERVAL_SECONDS))
 
 
 def _resource_name(resource: object, action: str) -> str:

@@ -54,7 +54,9 @@ _TTY_STREAM_ERRORS: tuple[type[Exception], ...] = (
     ValueError,
     websocket.WebSocketException,
 )
+_RUN_LOG_ERRORS: tuple[type[Exception], ...] = (OSError, TimeoutError, ValueError)
 type _AttachMode = Literal["logs", "tty"]
+type _AttachPodResolver = Callable[[], Awaitable[Pod | None]]
 type _PodSource = Callable[[float], Awaitable[Sequence[Pod]]]
 
 
@@ -321,11 +323,18 @@ async def _run_job_foreground(
     explicit_tty: bool,
 ) -> None:
     if attach_tty:
-        attached = await _try_attach_job(
+        attached = await _try_attach_foreground(
             kube,
-            job,
+            resolve_pod=lambda: _wait_job_attach_pod(
+                kube,
+                job,
+                primary_container=primary_container,
+            ),
             primary_container=primary_container,
             explicit_tty=explicit_tty,
+            unavailable_message=(
+                f"Job {job.name} finished before its primary container was attachable"
+            ),
         )
         if attached:
             await _wait_foreground_job_complete(kube, job)
@@ -363,44 +372,38 @@ async def _wait_foreground_job_complete(kube: Kube, job: Job) -> None:
         raise
 
 
-async def _try_attach_job(
+async def _try_attach_foreground(
     kube: Kube,
-    job: Job,
     *,
+    resolve_pod: _AttachPodResolver,
     primary_container: str,
     explicit_tty: bool,
+    unavailable_message: str,
 ) -> bool:
-    try:
-        pod = await _wait_job_attach_pod(
-            kube,
-            job,
-            primary_container=primary_container,
-        )
-    except (OSError, TimeoutError) as err:
-        if explicit_tty:
-            raise
+    def warn_fallback(err: OSError | TimeoutError) -> bool:
         print(
             f"bertrand: interactive attach unavailable ({err}); falling back to logs",
             file=sys.stderr,
         )
         return False
+
+    try:
+        pod = await resolve_pod()
+    except (OSError, TimeoutError) as err:
+        if explicit_tty:
+            raise
+        return warn_fallback(err)
     if pod is None:
         if explicit_tty:
-            msg = f"Job {job.name} finished before its primary container was attachable"
-            raise OSError(msg)
+            raise OSError(unavailable_message)
         return False
     try:
         await _attach_pod(kube, pod, primary_container=primary_container)
     except (OSError, TimeoutError) as err:
         if explicit_tty:
             raise
-        print(
-            f"bertrand: interactive attach unavailable ({err}); falling back to logs",
-            file=sys.stderr,
-        )
-        return False
-    else:
-        return True
+        return warn_fallback(err)
+    return True
 
 
 async def _wait_job_attach_pod(
@@ -437,11 +440,19 @@ async def _run_deployment_foreground(
         minimum=replicas,
     )
     if attach_tty:
-        attached = await _try_attach_deployment(
+        attached = await _try_attach_foreground(
             kube,
-            deployment,
+            resolve_pod=lambda: _deployment_attach_pod(
+                kube,
+                deployment,
+                primary_container=primary_container,
+            ),
             primary_container=primary_container,
             explicit_tty=explicit_tty,
+            unavailable_message=(
+                f"Deployment {deployment.name} does not have exactly one "
+                "ready attachable pod"
+            ),
         )
         if attached:
             return
@@ -483,22 +494,32 @@ async def _poll_workload_logs(
     printed: dict[str, str],
 ) -> None:
     try:
-        pods = await source(_RUN_LOG_READ_TIMEOUT_SECONDS)
-        include_headers = len(pods) > 1
-        for pod in pods:
-            log = await pod.logs(
+        pods = tuple(await source(_RUN_LOG_READ_TIMEOUT_SECONDS))
+    except _RUN_LOG_ERRORS:
+        return
+    include_headers = len(pods) > 1
+    results = await asyncio.gather(
+        *(
+            pod.logs(
                 kube,
                 timeout=_RUN_LOG_READ_TIMEOUT_SECONDS,
                 tail_lines=_RUN_LOG_TAIL_LINES,
             )
-            _print_new_workload_log(
-                printed,
-                pod,
-                log,
-                include_header=include_headers,
-            )
-    except (OSError, TimeoutError, ValueError):
-        return
+            for pod in pods
+        ),
+        return_exceptions=True,
+    )
+    for pod, log in zip(pods, results, strict=True):
+        if isinstance(log, _RUN_LOG_ERRORS):
+            continue
+        if isinstance(log, BaseException):
+            raise log
+        _print_new_workload_log(
+            printed,
+            pod,
+            log,
+            include_header=include_headers,
+        )
 
 
 def _print_new_workload_log(
@@ -531,49 +552,6 @@ async def _cancel_task(task: asyncio.Task[None]) -> None:
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
-
-
-async def _try_attach_deployment(
-    kube: Kube,
-    deployment: Deployment,
-    *,
-    primary_container: str,
-    explicit_tty: bool,
-) -> bool:
-    try:
-        pod = await _deployment_attach_pod(
-            kube,
-            deployment,
-            primary_container=primary_container,
-        )
-    except (OSError, TimeoutError) as err:
-        if explicit_tty:
-            raise
-        print(
-            f"bertrand: interactive attach unavailable ({err}); falling back to logs",
-            file=sys.stderr,
-        )
-        return False
-    if pod is None:
-        if explicit_tty:
-            msg = (
-                f"Deployment {deployment.name} does not have exactly one "
-                "ready attachable pod"
-            )
-            raise OSError(msg)
-        return False
-    try:
-        await _attach_pod(kube, pod, primary_container=primary_container)
-    except (OSError, TimeoutError) as err:
-        if explicit_tty:
-            raise
-        print(
-            f"bertrand: interactive attach unavailable ({err}); falling back to logs",
-            file=sys.stderr,
-        )
-        return False
-    else:
-        return True
 
 
 async def _deployment_attach_pod(

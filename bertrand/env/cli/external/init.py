@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import inspect
-import json
 import os
 import platform
 import shutil
@@ -19,15 +17,9 @@ import sys
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
+from typing import Any
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    PositiveInt,
-    StringConstraints,
-    ValidationError,
-)
+from pydantic import ValidationError
 
 from bertrand.env.config.core import RESOURCE_NAMES, Config, Resource
 from bertrand.env.git import (
@@ -52,9 +44,7 @@ from bertrand.env.host import (
     REPO_DIR,
     REPO_MOUNT_EXT,
     RUN_DIR,
-    STATE_DIR,
     ensure_host_state,
-    host_state_backend_trustworthy,
 )
 from bertrand.env.kube.api.bootstrap import (
     assert_microk8s_installed,
@@ -92,15 +82,8 @@ from bertrand.env.kube.namespace import Namespace
 from bertrand.env.kube.network.bootstrap import ensure_network_backend
 from bertrand.env.kube.node_identity import ensure_local_bertrand_node
 
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-    from typing import Protocol
-
-
 INIT_LOCK = Path("/tmp/bertrand-init.lock")
 INIT_LOCK_MODE = 0o666
-INIT_STATE_FILE = STATE_DIR / "init.state.json"
-INIT_STATE_VERSION: int = 2
 INIT_PREREQS = {
     "apt": {
         "getfacl": "acl",
@@ -204,84 +187,10 @@ _INIT_FAILURE_MARK_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
-type _InitStage = Literal[
-    "fresh",
-    "detect_platform",
-    "install_prereqs",
-    "bootstrap_state_dir",
-    "install_kube_runtime",
-    "installed",
-]
-type _InitText = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=1),
-]
-
-
-if TYPE_CHECKING:
-    class _InitStep(Protocol):
-        def __call__(
-            self,
-            state: _InitState,
-            *,
-            assume_yes: bool,
-        ) -> Awaitable[None] | None: ...
-
-    type _RepoStep = Callable[[_RepoState], Awaitable[None]]
-
-
-class _InitState(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    version: PositiveInt
-    stage: _InitStage = "fresh"
-    user: _InitText | None = None
-    uid: int | None = None
-    gid: int | None = None
-    package_manager: _InitText | None = None
-    distro_id: _InitText | None = None
-    distro_version: _InitText | None = None
-    distro_codename: _InitText | None = None
-
-    @staticmethod
-    def backend_trustworthy() -> bool:
-        """Return True when the shared init-state backend can be safely reused.
-
-        Returns
-        -------
-        bool
-            True if the backend is trustworthy and can be reused, False otherwise.
-        """
-        return host_state_backend_trustworthy()
-
-    @classmethod
-    def load(cls) -> Self:
-        if not cls.backend_trustworthy():
-            return cls(version=INIT_STATE_VERSION)
-        if not INIT_STATE_FILE.exists() or not INIT_STATE_FILE.is_file():
-            return cls(version=INIT_STATE_VERSION)
-        try:
-            data = json.loads(INIT_STATE_FILE.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return cls(version=INIT_STATE_VERSION)
-            self = cls.model_validate(data)
-        except (OSError, TypeError, ValueError):
-            return cls(version=INIT_STATE_VERSION)
-        if self.version != INIT_STATE_VERSION:
-            return cls(version=INIT_STATE_VERSION)
-        return self
-
-    def dump(self) -> None:
-        atomic_write_text(
-            INIT_STATE_FILE,
-            json.dumps(self.model_dump(mode="json"), separators=(",", ":")) + "\n",
-            encoding="utf-8",
-        )
-
-
-def _no_op(state: _InitState, *, assume_yes: bool) -> None:
-    del state
-    del assume_yes
-    return
+@dataclass(frozen=True)
+class _HostRuntime:
+    user: str
+    package_manager: str
 
 
 def _read_os_release() -> dict[str, str]:
@@ -298,20 +207,14 @@ def _read_os_release() -> dict[str, str]:
     return data
 
 
-def _detect_platform(state: _InitState, *, assume_yes: bool) -> None:
-    del assume_yes
+def _detect_host_runtime() -> _HostRuntime:
     system = platform.system().lower()
     if system != "linux":
         msg = "Unsupported platform for package manager detection"
         raise OSError(msg)
 
-    # read /etc/os-release for distro info
     os_release = _read_os_release()
     distro_id = (os_release.get("ID") or "").lower() or None
-    version_id = os_release.get("VERSION_ID") or None
-    codename = os_release.get("UBUNTU_CODENAME") or os_release.get("VERSION_CODENAME")
-
-    # detect package manager
     manager: str | None = None
     if distro_id in {"debian", "ubuntu"} and shutil.which("apt-get"):
         manager = "apt"
@@ -328,19 +231,10 @@ def _detect_platform(state: _InitState, *, assume_yes: bool) -> None:
     if manager is None:
         msg = "No supported package manager found"
         raise OSError(msg)
-
-    # populate state
-    user = User()
-    state.user = user.name
-    state.uid = user.uid
-    state.gid = user.gid
-    state.package_manager = manager
-    state.distro_id = distro_id
-    state.distro_version = version_id
-    state.distro_codename = codename
+    return _HostRuntime(user=User().name, package_manager=manager)
 
 
-async def _install_prereqs(state: _InitState, *, assume_yes: bool) -> None:
+async def _install_prereqs(runtime: _HostRuntime, *, assume_yes: bool) -> None:
     # fail fast if no escalation path is available for package installs
     if os.geteuid() != 0 and not can_escalate():
         msg = (
@@ -349,16 +243,13 @@ async def _install_prereqs(state: _InitState, *, assume_yes: bool) -> None:
             "or manually rerun `bertrand init` as root."
         )
         raise PermissionError(msg)
-    if state.package_manager is None:
-        msg = "Package manager is not detected; cannot install prerequisites."
-        raise OSError(msg)
 
     # package mapping for bootstrap-required host tools across package managers
-    packages = INIT_PREREQS.get(state.package_manager)
+    packages = INIT_PREREQS.get(runtime.package_manager)
     if packages is None:
         msg = (
             "Unsupported package manager for prerequisite installation: "
-            f"{state.package_manager!r}"
+            f"{runtime.package_manager!r}"
         )
         raise OSError(msg)
 
@@ -383,7 +274,7 @@ async def _install_prereqs(state: _InitState, *, assume_yes: bool) -> None:
         msg = "Installation declined by user."
         raise PermissionError(msg)
     await install_packages(
-        package_manager=state.package_manager,
+        package_manager=runtime.package_manager,
         packages=sorted(missing),
         assume_yes=assume_yes,
         timeout=INFINITY,
@@ -403,125 +294,51 @@ async def _install_prereqs(state: _InitState, *, assume_yes: bool) -> None:
         raise OSError(msg)
 
 
-async def _bootstrap_state_dir(state: _InitState, *, assume_yes: bool) -> None:
-    if state.user is None:
-        msg = "init state user is missing; rerun `bertrand init`."
-        raise OSError(msg)
+async def _bootstrap_state_dir(runtime: _HostRuntime, *, assume_yes: bool) -> None:
     await ensure_host_state(
-        user=state.user,
+        user=runtime.user,
         assume_yes=assume_yes,
         timeout=INFINITY,
     )
 
 
-async def _install_kube_runtime(state: _InitState, *, assume_yes: bool) -> None:
-    if state.user is None:
-        msg = "init state user is missing; rerun `bertrand init`."
-        raise OSError(msg)
-    if state.package_manager is None:
-        msg = "Package manager is not detected; cannot install Kubernetes runtime."
-        raise OSError(msg)
+async def _install_kube_runtime(runtime: _HostRuntime, *, assume_yes: bool) -> None:
     await install_microk8s(
-        package_manager=state.package_manager,
-        user=state.user,
+        package_manager=runtime.package_manager,
+        user=runtime.user,
         assume_yes=assume_yes,
     )
 
 
-async def _assert_installed(state: _InitState, *, assume_yes: bool) -> None:
-    del assume_yes
-    if state.user is None:
-        msg = "init state user is missing; rerun `bertrand init`."
-        raise OSError(msg)
-
-    bertrand_group = GroupStatus.get(state.user, BERTRAND_GROUP)
-    if not bertrand_group.configured:
-        msg = (
-            f"user {state.user!r} is not in {BERTRAND_GROUP!r}.  Rerun `bertrand init` "
-            "to configure shared Bertrand host-state access."
-        )
-        raise OSError(msg)
-    if not bertrand_group.active:
-        msg = (
-            f"user {state.user!r} is in {BERTRAND_GROUP!r}, but the current session "
-            f"is not active in that group.  Run `newgrp {BERTRAND_GROUP}` or log out "
-            "and back in, then rerun `bertrand init`."
-        )
-        raise OSError(msg)
-
-    await assert_microk8s_installed(user=state.user)
-
-
-async def _run_init_step(
-    step: _InitStep,
-    state: _InitState,
-    *,
-    assume_yes: bool,
-) -> None:
-    result = step(state, assume_yes=assume_yes)
-    if inspect.isawaitable(result):
-        await result
-
-
-INIT_STAGES: tuple[tuple[_InitStage, _InitStep], ...] = (
-    ("fresh", _no_op),
-    ("detect_platform", _detect_platform),
-    ("install_prereqs", _install_prereqs),
-    ("bootstrap_state_dir", _bootstrap_state_dir),
-    ("install_kube_runtime", _install_kube_runtime),
-    ("installed", _assert_installed),
-)
-
-
-def _init_stage_index(state: _InitState) -> int:
-    return next(
-        (i for i, (stage, _) in enumerate(INIT_STAGES) if stage == state.stage),
-        0,
-    )
-
-
-async def _converge_init_state(*, assume_yes: bool) -> _InitState:
-    state = _InitState.load()
-    index = _init_stage_index(state)
-    if index == len(INIT_STAGES) - 1:
-        try:
-            await _assert_installed(state, assume_yes=assume_yes)
-        except OSError:
-            index = 0
-            state = _InitState(version=INIT_STATE_VERSION)
-            if _InitState.backend_trustworthy():
-                state.dump()
-
-    for stage, step in INIT_STAGES[index:]:
-        await _run_init_step(step, state, assume_yes=assume_yes)
-        state.stage = stage
-        if _InitState.backend_trustworthy():
-            state.dump()
-    return state
-
-
-def _validate_shared_runtime_groups(state: _InitState) -> None:
-    if state.user is None:
-        msg = "init state user is missing; rerun `bertrand init`."
-        raise OSError(msg)
+def _validate_shared_runtime_groups(runtime: _HostRuntime) -> None:
     for group, purpose in (
         (BERTRAND_GROUP, "shared Bertrand host-state access"),
         ("microk8s", "MicroK8s runtime access"),
     ):
-        status = GroupStatus.get(state.user, group)
+        status = GroupStatus.get(runtime.user, group)
         if not status.configured:
             msg = (
-                f"user {state.user!r} is not in {group!r}.  Rerun `bertrand init` "
+                f"user {runtime.user!r} is not in {group!r}.  Rerun `bertrand init` "
                 f"to configure {purpose}."
             )
             raise OSError(msg)
         if not status.active:
             msg = (
-                f"user {state.user!r} is in {group!r}, but the current session is "
+                f"user {runtime.user!r} is in {group!r}, but the current session is "
                 f"not active in that group.  Run `newgrp {group}` or log out and "
                 "back in, then rerun `bertrand init`."
             )
             raise OSError(msg)
+
+
+async def _converge_host_runtime(*, assume_yes: bool) -> _HostRuntime:
+    runtime = _detect_host_runtime()
+    await _install_prereqs(runtime, assume_yes=assume_yes)
+    await _bootstrap_state_dir(runtime, assume_yes=assume_yes)
+    await _install_kube_runtime(runtime, assume_yes=assume_yes)
+    _validate_shared_runtime_groups(runtime)
+    await assert_microk8s_installed(user=runtime.user)
+    return runtime
 
 
 async def _ensure_shared_runtime(
@@ -530,18 +347,14 @@ async def _ensure_shared_runtime(
     yes: bool,
     converge_cluster: bool,
 ) -> Deadline:
-    msg = "timed out before checking host bootstrap"
-    if timeout <= 0:
-        raise TimeoutError(msg)
+    msg = "host bootstrap timeout must be positive"
     deadline = Deadline.from_timeout(timeout, message=msg)
     async with HostLock(
         INIT_LOCK,
         timeout=deadline.remaining(),
         privileges=INIT_LOCK_MODE,
     ):
-        state = await _converge_init_state(assume_yes=yes)
-        _validate_shared_runtime_groups(state)
-
+        await _converge_host_runtime(assume_yes=yes)
         if not converge_cluster:
             return deadline
 
@@ -612,9 +425,7 @@ def _parse_repo_resource_plan(
     enabled.update(_parse_resource_specs(enable, for_disable=False))
     disabled = _parse_resource_specs(disable, for_disable=True)
     protected = {
-        name
-        for name in PROTECTED_DISABLE_RESOURCES
-        if RESOURCE_NAMES[name] in disabled
+        name for name in PROTECTED_DISABLE_RESOURCES if RESOURCE_NAMES[name] in disabled
     }
     if protected:
         names = ", ".join(sorted(protected))
@@ -972,10 +783,13 @@ async def _initial_commit_worktree(state: _RepoState) -> Path | None:
         return state.repo.root / branch_targets[head]
     if not branch_targets:
         return None
-    return state.repo.root / sorted(
-        branch_targets.values(),
-        key=lambda value: value.as_posix(),
-    )[0]
+    return (
+        state.repo.root
+        / sorted(
+            branch_targets.values(),
+            key=lambda value: value.as_posix(),
+        )[0]
+    )
 
 
 async def _commit_initial_changes(state: _RepoState, worktree_path: Path) -> None:
@@ -1065,20 +879,8 @@ async def _finalize(
     )
 
 
-REPO_STAGES: tuple[_RepoStep, ...] = (
-    _ensure_repo_storage,
-    _ensure_bare_worktrees,
-    _ensure_repo_hooks,
-    _render_config_artifacts,
-    _make_initial_commit,
-    _finalize,
-)
-
-
 async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
-    msg = "build runtime timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(msg)
+    msg = "build runtime timeout must be positive"
     deadline = Deadline.from_timeout(timeout, message=msg)
     await Namespace.upsert(
         kube,
@@ -1109,9 +911,7 @@ async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
 
 
 async def _converge_cluster_runtime(kube: Kube, *, timeout: float) -> None:
-    msg = "cluster runtime timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(msg)
+    msg = "cluster runtime timeout must be positive"
     deadline = Deadline.from_timeout(timeout, message=msg)
     await ensure_local_bertrand_node(kube, timeout=deadline.remaining())
     await ensure_rook_ceph_base(kube, timeout=deadline.remaining())
@@ -1237,7 +1037,21 @@ async def _converge_repository(
             assume_yes=yes,
             deadline=deadline,
         )
-        await _run_repo_stages(state)
+        try:
+            await _ensure_repo_storage(state)
+            await _ensure_bare_worktrees(state)
+            await _ensure_repo_hooks(state)
+            await _render_config_artifacts(state)
+            await _make_initial_commit(state)
+            await _finalize(state)
+        except _INIT_REPO_STAGE_ERRORS as err:
+            await _mark_repo_failure(
+                state.kube,
+                repo_id=state.repo_id,
+                err=err,
+                deadline=state.deadline,
+            )
+            raise
 
 
 async def _assert_repo_clean(repo: GitRepository) -> None:
@@ -1247,20 +1061,6 @@ async def _assert_repo_clean(repo: GitRepository) -> None:
             "commit or stash them before calling `bertrand init`."
         )
         raise OSError(msg)
-
-
-async def _run_repo_stages(state: _RepoState) -> None:
-    try:
-        for stage in REPO_STAGES:
-            await stage(state)
-    except _INIT_REPO_STAGE_ERRORS as err:
-        await _mark_repo_failure(
-            state.kube,
-            repo_id=state.repo_id,
-            err=err,
-            deadline=state.deadline,
-        )
-        raise
 
 
 async def bertrand_init(
@@ -1302,8 +1102,6 @@ async def bertrand_init(
     ------
     OSError
         If Git is not found, or the project root repository is invalid.
-    TimeoutError
-        If bootstrap or convergence cannot start before the deadline expires.
     ValueError
         If any resource names in `enable`/`disable` are invalid, or if required
         core resources are disabled.
@@ -1314,10 +1112,6 @@ async def bertrand_init(
             "specify at least a repository path to configure resources within it."
         )
         raise OSError(msg)
-    if timeout <= 0:
-        msg = "timed out before checking host bootstrap"
-        raise TimeoutError(msg)
-
     deadline = await _ensure_shared_runtime(
         timeout=timeout,
         yes=yes,

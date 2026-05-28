@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING
 from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from bertrand.env.kube.api.client import Kube
 
 DRA_GROUP = "resource.k8s.io"
@@ -48,123 +46,6 @@ RESOURCE_CLAIM_TEMPLATE_RESOURCE = CustomObjectResource[CustomObject](
     kind=RESOURCE_CLAIM_TEMPLATE_KIND,
     plural=RESOURCE_CLAIM_TEMPLATE_PLURAL,
 )
-
-
-async def upsert_device_class(
-    kube: Kube,
-    *,
-    name: str,
-    spec: Mapping[str, object],
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-) -> CustomObject:
-    """Create or patch a DRA `DeviceClass`.
-
-    Returns
-    -------
-    CustomObject
-        Created or patched DeviceClass.
-    """
-    return await DEVICE_CLASS_RESOURCE.upsert(
-        kube,
-        name=name,
-        spec=spec,
-        labels=labels,
-        timeout=timeout,
-    )
-
-
-async def upsert_resource_slice(
-    kube: Kube,
-    *,
-    name: str,
-    spec: Mapping[str, object],
-    timeout: float,
-    labels: Mapping[str, str] | None = None,
-) -> CustomObject:
-    """Create or patch a DRA `ResourceSlice`.
-
-    Returns
-    -------
-    CustomObject
-        Created or patched ResourceSlice.
-    """
-    return await RESOURCE_SLICE_RESOURCE.upsert(
-        kube,
-        name=name,
-        spec=spec,
-        labels=labels,
-        timeout=timeout,
-    )
-
-
-async def create_resource_claim_template(
-    kube: Kube,
-    *,
-    namespace: str,
-    name: str,
-    spec: Mapping[str, object],
-    labels: Mapping[str, str],
-    timeout: float,
-) -> CustomObject:
-    """Create one DRA `ResourceClaimTemplate`.
-
-    Returns
-    -------
-    CustomObject
-        Created ResourceClaimTemplate.
-    """
-    return await RESOURCE_CLAIM_TEMPLATE_RESOURCE.create(
-        kube,
-        namespace=namespace,
-        name=name,
-        spec=spec,
-        labels=labels,
-        timeout=timeout,
-    )
-
-
-async def upsert_resource_claim_template(
-    kube: Kube,
-    *,
-    namespace: str,
-    name: str,
-    spec: Mapping[str, object],
-    labels: Mapping[str, str],
-    timeout: float,
-) -> CustomObject:
-    """Create or patch one DRA `ResourceClaimTemplate`.
-
-    Returns
-    -------
-    CustomObject
-        Created or patched ResourceClaimTemplate.
-    """
-    return await RESOURCE_CLAIM_TEMPLATE_RESOURCE.upsert(
-        kube,
-        namespace=namespace,
-        name=name,
-        spec=spec,
-        labels=labels,
-        timeout=timeout,
-    )
-
-
-async def delete_resource_claim_template(
-    kube: Kube,
-    template: CustomObject,
-    *,
-    timeout: float,
-) -> None:
-    """Delete one DRA `ResourceClaimTemplate` when metadata is complete."""
-    if not template.namespace or not template.name:
-        return
-    await RESOURCE_CLAIM_TEMPLATE_RESOURCE.delete_by_name(
-        kube,
-        namespace=template.namespace,
-        name=template.name,
-        timeout=timeout,
-    )
 
 
 async def ensure_dra_api(kube: Kube, *, timeout: float) -> None:

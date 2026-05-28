@@ -149,15 +149,11 @@ async def bertrand_cluster_invite(
     timeout : float
         Maximum token generation budget in seconds.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    msg = "cluster invite timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message=msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="cluster invite timeout must be positive",
+    )
     microk8s = await microk8s_join_token(
         worker=worker,
         timeout=deadline.remaining(),
@@ -198,17 +194,12 @@ async def bertrand_cluster_join(
     timeout : float
         Maximum join and convergence budget in seconds.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    msg = "cluster join timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(msg)
-
     bundle = _decode_bundle(token)
-    deadline = Deadline.from_timeout(timeout, message=msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="cluster join timeout must be positive",
+    )
     await ensure_shared_runtime_installed(timeout=deadline.remaining(), yes=False)
     await join_microk8s_cluster(
         str(bundle["microk8s"]),
@@ -358,16 +349,13 @@ async def bertrand_cluster_network_lb_install(*, timeout: float) -> None:
     timeout : float
         Maximum convergence budget in seconds.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive.
     """
-    if timeout <= 0:
-        msg = "MetalLB install timeout must be non-negative"
-        raise TimeoutError(msg)
-    with await Kube.host(timeout=timeout) as kube:
-        await ensure_metallb(kube, timeout=timeout)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="MetalLB install timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
+        await ensure_metallb(kube, timeout=deadline.remaining())
     print("MetalLB installed and ready.")
 
 
@@ -461,23 +449,31 @@ async def bertrand_cluster_network_lb_bgp_advertise_upsert(
 
 async def _network_report() -> dict[str, object]:
     with await Kube.host(timeout=INFINITY) as kube:
-        profile = await NetworkProfile.get(kube, timeout=INFINITY)
-        config_hash = await current_buildkit_config_hash(
-            kube,
-            timeout=INFINITY,
+        (
+            profile,
+            config_hash,
+            registry,
+            gateway,
+            cni,
+            load_balancer,
+        ) = await asyncio.gather(
+            NetworkProfile.get(kube, timeout=INFINITY),
+            current_buildkit_config_hash(kube, timeout=INFINITY),
+            image_repository_status(kube, timeout=INFINITY),
+            _network_gateway_status(kube),
+            inspect_cni(kube, timeout=INFINITY),
+            metallb_status(kube, timeout=INFINITY),
         )
-        registry = await image_repository_status(kube, timeout=INFINITY)
-        buildkit = await buildkit_pool_status(
-            kube,
-            timeout=INFINITY,
-            config_hash=config_hash,
-        )
-        gateway = await _network_gateway_status(kube)
-        cni = await inspect_cni(kube, timeout=INFINITY)
-        load_balancer = await metallb_status(kube, timeout=INFINITY)
-        routes = await _route_dns_status(
-            kube,
-            gateway_addresses=_object_tuple(gateway.get("addresses", ())),
+        buildkit, routes = await asyncio.gather(
+            buildkit_pool_status(
+                kube,
+                timeout=INFINITY,
+                config_hash=config_hash,
+            ),
+            _route_dns_status(
+                kube,
+                gateway_addresses=_object_tuple(gateway.get("addresses", ())),
+            ),
         )
     return {
         "profile": {
@@ -545,16 +541,18 @@ def _print_network_report(report: Mapping[str, object]) -> None:
 
 async def _network_gateway_status(kube: Kube) -> dict[str, object]:
     try:
-        gateway_class = await GATEWAY_CLASS_RESOURCE.get(
-            kube,
-            name=BERTRAND_GATEWAY_CLASS,
-            timeout=INFINITY,
-        )
-        gateway = await GATEWAY_RESOURCE.get(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=BERTRAND_GATEWAY,
-            timeout=INFINITY,
+        gateway_class, gateway = await asyncio.gather(
+            GATEWAY_CLASS_RESOURCE.get(
+                kube,
+                name=BERTRAND_GATEWAY_CLASS,
+                timeout=INFINITY,
+            ),
+            GATEWAY_RESOURCE.get(
+                kube,
+                namespace=BERTRAND_NAMESPACE,
+                name=BERTRAND_GATEWAY,
+                timeout=INFINITY,
+            ),
         )
     except OSError as err:
         return {
@@ -564,9 +562,7 @@ async def _network_gateway_status(kube: Kube) -> dict[str, object]:
             "message": str(err),
         }
     addresses = gateway_addresses(gateway) if gateway is not None else ()
-    class_accepted = (
-        gateway_class is not None and gateway_class_accepted(gateway_class)
-    )
+    class_accepted = gateway_class is not None and gateway_class_accepted(gateway_class)
     ready = bool(class_accepted and addresses)
     message = ""
     if gateway_class is None:
@@ -616,25 +612,30 @@ async def _route_dns_status(
     unresolved: list[str] = []
     mismatched: list[str] = []
     gateway_set = {address.lower() for address in gateway_addresses}
-    for route in routes:
-        for host in http_route_hostnames(route):
-            resolved = await _resolve_host(host)
-            if not resolved:
-                unresolved.append(host)
-            elif gateway_set and not (
-                gateway_set & {item.lower() for item in resolved}
-            ):
-                mismatched.append(host)
-            items.append(
-                {
-                    "route": route.name,
-                    "host": host,
-                    "resolved": list(resolved),
-                    "matches_gateway": bool(
-                        gateway_set & {item.lower() for item in resolved}
-                    ),
-                }
-            )
+    route_hosts = tuple(
+        (route.name, host) for route in routes for host in http_route_hostnames(route)
+    )
+    resolved_hosts = await asyncio.gather(
+        *(_resolve_host(host) for _route, host in route_hosts)
+    )
+    for (route_name, host), resolved in zip(
+        route_hosts,
+        resolved_hosts,
+        strict=True,
+    ):
+        resolved_set = {item.lower() for item in resolved}
+        if not resolved:
+            unresolved.append(host)
+        elif gateway_set and not (gateway_set & resolved_set):
+            mismatched.append(host)
+        items.append(
+            {
+                "route": route_name,
+                "host": host,
+                "resolved": list(resolved),
+                "matches_gateway": bool(gateway_set & resolved_set),
+            }
+        )
     messages = []
     if unresolved:
         messages.append(f"unresolved route hosts: {unresolved}")
@@ -745,10 +746,10 @@ async def bertrand_cluster_network_dns_clear(*, timeout: float) -> None:
 
 
 async def _apply_network_profile(profile: NetworkProfile, *, timeout: float) -> None:
-    msg = "network convergence timeout must be non-negative"
-    if timeout <= 0:
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message=msg)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="network convergence timeout must be positive",
+    )
     with await Kube.host(timeout=deadline.remaining()) as kube:
         await Namespace.upsert(
             kube,

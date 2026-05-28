@@ -60,6 +60,7 @@ dependencies = [
     "packaging>=24.2",
     "email-validator",
     "grpcio>=1.71.0",
+    "protobuf>=5.26",
     # "pandas >= 2.0.0",
     "psutil",
     # "pyarrow",
@@ -90,6 +91,7 @@ dev = [
     "ruff",
     "pytest",
     "pytest-cpp",
+    "grpcio-tools>=1.71.0",
     "sphinx",
     "sphinx_rtd_theme",
     "sphinx-tabs",
@@ -116,6 +118,8 @@ include = ["bertrand*"]
 [tool.setuptools.package-data]
 bertrand = [
     "py.typed",
+    "env/kube/ceph/_csi.proto",
+    "env/kube/ceph/_csi_pb2.pyi",
 ]
 
 [tool.setuptools.data-files]

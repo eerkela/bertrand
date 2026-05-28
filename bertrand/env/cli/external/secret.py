@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -11,7 +12,7 @@ from bertrand.env.cli.external._helper import (
     prune_repository_mounts_quietly,
     resolve_project_scope,
 )
-from bertrand.env.git import BERTRAND_NAMESPACE, ensure_worktree_id
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline, ensure_worktree_id
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.capability.base import (
     CapabilityKind,
@@ -36,16 +37,25 @@ async def bertrand_secret_add(
     timeout: float,
 ) -> None:
     """Create or update a path-scoped secret capability."""
-    with await Kube.host(timeout=timeout) as kube:
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="path secret capability add timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
         ref = await _path_capability_ref(
             kube,
             path,
             kind=kind,
             capability_id=capability_id,
-            timeout=timeout,
+            timeout=deadline.remaining(),
         )
-        await prune_repository_mounts_quietly(kube, timeout=timeout)
-        await _add_capability(kube, ref, source=source, timeout=timeout)
+        await prune_repository_mounts_quietly(kube, timeout=deadline.remaining())
+        await _add_capability(
+            kube,
+            ref,
+            source=source,
+            timeout=deadline.remaining(),
+        )
 
 
 async def bertrand_secret_rm(
@@ -56,16 +66,20 @@ async def bertrand_secret_rm(
     timeout: float,
 ) -> None:
     """Remove a path-scoped secret capability."""
-    with await Kube.host(timeout=timeout) as kube:
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="path secret capability removal timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
         ref = await _path_capability_ref(
             kube,
             path,
             kind=kind,
             capability_id=capability_id,
-            timeout=timeout,
+            timeout=deadline.remaining(),
         )
-        await prune_repository_mounts_quietly(kube, timeout=timeout)
-        await _remove_capability(kube, ref, timeout=timeout)
+        await prune_repository_mounts_quietly(kube, timeout=deadline.remaining())
+        await _remove_capability(kube, ref, timeout=deadline.remaining())
 
 
 async def bertrand_secret_list(
@@ -75,21 +89,43 @@ async def bertrand_secret_list(
     json_output: bool,
     timeout: float,
 ) -> None:
-    """List path-relevant secret capabilities."""
-    with await Kube.host(timeout=timeout) as kube:
-        targets = await _path_scope_targets(
+    """List path-relevant secret capabilities.
+
+    Raises
+    ------
+    OSError
+        If the target path is not inside an initialized Git repository.
+    """
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="path secret capability list timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
+        repo, worktree = await resolve_project_scope(
             kube,
-            path,
-            include_local_node=True,
-            timeout=timeout,
+            Path(path),
+            timeout=deadline.remaining(),
         )
-        await prune_repository_mounts_quietly(kube, timeout=timeout)
+        local_node = await ensure_local_bertrand_node(
+            kube,
+            timeout=deadline.remaining(),
+        )
+        if not repo:
+            msg = f"no initialized Git repository found for target: {path}"
+            raise OSError(msg)
+        targets: list[tuple[CapabilityScope, str | None]] = []
+        if worktree != Path():
+            targets.append(("worktree", ensure_worktree_id(repo.root / worktree)))
+        targets.append(("repository", repo.repo_id))
+        targets.append(("node", local_node.host_id))
+        targets.append(("shared", None))
+        await prune_repository_mounts_quietly(kube, timeout=deadline.remaining())
         await _list_capabilities(
             kube,
-            targets,
+            tuple(targets),
             kind=kind,
             json_output=json_output,
-            timeout=timeout,
+            timeout=deadline.remaining(),
         )
 
 
@@ -101,9 +137,18 @@ async def bertrand_shared_secret_add(
     timeout: float,
 ) -> None:
     """Create or update a shared cluster secret capability."""
-    with await Kube.host(timeout=timeout) as kube:
-        ref = _shared_capability_ref(kind=kind, capability_id=capability_id)
-        await _add_capability(kube, ref, source=source, timeout=timeout)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="shared secret capability add timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
+        ref = CapabilityRef(kind=kind, capability_id=capability_id, scope="shared")
+        await _add_capability(
+            kube,
+            ref,
+            source=source,
+            timeout=deadline.remaining(),
+        )
 
 
 async def bertrand_shared_secret_rm(
@@ -113,9 +158,13 @@ async def bertrand_shared_secret_rm(
     timeout: float,
 ) -> None:
     """Remove a shared cluster secret capability."""
-    with await Kube.host(timeout=timeout) as kube:
-        ref = _shared_capability_ref(kind=kind, capability_id=capability_id)
-        await _remove_capability(kube, ref, timeout=timeout)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="shared secret capability removal timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
+        ref = CapabilityRef(kind=kind, capability_id=capability_id, scope="shared")
+        await _remove_capability(kube, ref, timeout=deadline.remaining())
 
 
 async def bertrand_shared_secret_list(
@@ -125,13 +174,17 @@ async def bertrand_shared_secret_list(
     timeout: float,
 ) -> None:
     """List shared cluster secret capabilities."""
-    with await Kube.host(timeout=timeout) as kube:
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="shared secret capability list timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
         await _list_capabilities(
             kube,
-            _shared_scope_targets(),
+            (("shared", None),),
             kind=kind,
             json_output=json_output,
-            timeout=timeout,
+            timeout=deadline.remaining(),
         )
 
 
@@ -143,14 +196,27 @@ async def bertrand_node_secret_add(
     timeout: float,
 ) -> None:
     """Create or update a local-node secret capability."""
-    with await Kube.host(timeout=timeout) as kube:
-        ref = await _local_node_capability_ref(
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="node secret capability add timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
+        node = await ensure_local_bertrand_node(
             kube,
+            timeout=deadline.remaining(),
+        )
+        ref = CapabilityRef(
             kind=kind,
             capability_id=capability_id,
-            timeout=timeout,
+            scope="node",
+            value=node.host_id,
         )
-        await _add_capability(kube, ref, source=source, timeout=timeout)
+        await _add_capability(
+            kube,
+            ref,
+            source=source,
+            timeout=deadline.remaining(),
+        )
 
 
 async def bertrand_node_secret_rm(
@@ -160,14 +226,22 @@ async def bertrand_node_secret_rm(
     timeout: float,
 ) -> None:
     """Remove a local-node secret capability."""
-    with await Kube.host(timeout=timeout) as kube:
-        ref = await _local_node_capability_ref(
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="node secret capability removal timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
+        node = await ensure_local_bertrand_node(
             kube,
+            timeout=deadline.remaining(),
+        )
+        ref = CapabilityRef(
             kind=kind,
             capability_id=capability_id,
-            timeout=timeout,
+            scope="node",
+            value=node.host_id,
         )
-        await _remove_capability(kube, ref, timeout=timeout)
+        await _remove_capability(kube, ref, timeout=deadline.remaining())
 
 
 async def bertrand_node_secret_list(
@@ -177,13 +251,21 @@ async def bertrand_node_secret_list(
     timeout: float,
 ) -> None:
     """List local-node secret capabilities and shared fallbacks."""
-    with await Kube.host(timeout=timeout) as kube:
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="node secret capability list timeout must be positive",
+    )
+    with await Kube.host(timeout=deadline.remaining()) as kube:
+        node = await ensure_local_bertrand_node(
+            kube,
+            timeout=deadline.remaining(),
+        )
         await _list_capabilities(
             kube,
-            await _local_node_scope_targets(kube, timeout=timeout),
+            (("node", node.host_id), ("shared", None)),
             kind=kind,
             json_output=json_output,
-            timeout=timeout,
+            timeout=deadline.remaining(),
         )
 
 
@@ -231,17 +313,23 @@ async def _list_capabilities(
     json_output: bool,
     timeout: float,
 ) -> None:
-    capabilities: list[tuple[CapabilityRef, Secret]] = []
-    for target in targets:
-        capabilities.extend(
-            await list_capability_secrets(
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="capability Secret list timeout must be positive",
+    )
+    groups = await asyncio.gather(
+        *(
+            list_capability_secrets(
                 kube,
                 kind=kind,
                 scope=target[0],
                 scope_value=target[1],
-                timeout=timeout,
+                timeout=deadline.remaining(),
             )
+            for target in targets
         )
+    )
+    capabilities = [capability for group in groups for capability in group]
     scope_order = {target[0]: index for index, target in enumerate(targets)}
     capabilities.sort(
         key=lambda item: (
@@ -284,79 +372,19 @@ async def _path_capability_ref(
         msg = f"no initialized Git repository found for target: {path}"
         raise OSError(msg)
     if worktree == Path():
-        return CapabilityRef.repository(kind, capability_id, repo.repo_id)
-    worktree_id = ensure_worktree_id(repo.root / worktree)
-    return CapabilityRef.worktree(kind, capability_id, worktree_id)
-
-
-async def _path_scope_targets(
-    kube: Kube,
-    path: str,
-    *,
-    include_local_node: bool,
-    timeout: float,
-) -> tuple[tuple[CapabilityScope, str | None], ...]:
-    repo, worktree = await resolve_project_scope(
-        kube,
-        Path(path),
-        timeout=timeout,
-    )
-    local_node = (
-        await ensure_local_bertrand_node(kube, timeout=timeout)
-        if include_local_node
-        else None
-    )
-    if not repo:
-        msg = f"no initialized Git repository found for target: {path}"
-        raise OSError(msg)
-    targets: list[tuple[CapabilityScope, str | None]] = []
-    if worktree != Path():
-        targets.append(
-            (
-                "worktree",
-                ensure_worktree_id(repo.root / worktree),
-            )
+        return CapabilityRef(
+            kind=kind,
+            capability_id=capability_id,
+            scope="repository",
+            value=repo.repo_id,
         )
-    targets.append(("repository", repo.repo_id))
-    if local_node is not None:
-        targets.append(("node", local_node.host_id))
-    targets.append(("shared", None))
-    return tuple(targets)
-
-
-def _shared_scope_targets() -> tuple[tuple[CapabilityScope, str | None], ...]:
-    return (("shared", None),)
-
-
-async def _local_node_scope_targets(
-    kube: Kube,
-    *,
-    timeout: float,
-) -> tuple[tuple[CapabilityScope, str | None], ...]:
-    node = await ensure_local_bertrand_node(kube, timeout=timeout)
-    return (
-        ("node", node.host_id),
-        ("shared", None),
+    worktree_id = ensure_worktree_id(repo.root / worktree)
+    return CapabilityRef(
+        kind=kind,
+        capability_id=capability_id,
+        scope="worktree",
+        value=worktree_id,
     )
-
-
-async def _local_node_capability_ref(
-    kube: Kube,
-    *,
-    kind: CapabilityKind,
-    capability_id: KubeName,
-    timeout: float,
-) -> CapabilityRef:
-    node = await ensure_local_bertrand_node(kube, timeout=timeout)
-    return CapabilityRef.node(kind, capability_id, node.host_id)
-
-
-def _shared_capability_ref(
-    *,
-    kind: CapabilityKind,
-    capability_id: KubeName,
-) -> CapabilityRef:
-    return CapabilityRef.shared(kind, capability_id)
 
 
 def _read_payload(source: str | None) -> bytes:

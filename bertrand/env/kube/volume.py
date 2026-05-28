@@ -12,12 +12,9 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 import kubernetes
 
-from bertrand.env.git import Deadline, until
+from bertrand.env.git import Deadline
 
-from .api._helpers import (
-    _is_conflict,
-    _is_not_found,
-)
+from .api.client import KubeApiError
 from .api.metadata import KubeMetadata, NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -46,15 +43,6 @@ STORAGE_FACTORS: dict[str, Decimal] = {
     "Pi": Decimal(2) ** 50,
     "Ei": Decimal(2) ** 60,
 }
-
-
-def _deadline_from_budget(seconds: float) -> Deadline:
-    if seconds <= 0:
-        return Deadline(
-            expires_at=asyncio.get_running_loop().time(),
-            timeout=seconds,
-        )
-    return Deadline.from_timeout(seconds, message="")
 
 
 @dataclass(frozen=True)
@@ -340,7 +328,10 @@ class PersistentVolumeClaim(
             storage_class=storage_class,
             storage_request=storage_request,
         )
-        deadline = _deadline_from_budget(timeout)
+        deadline = Deadline.from_timeout(
+            timeout,
+            message="PVC upsert timeout must be positive",
+        )
         manifest = cls._manifest(
             namespace=namespace,
             name=name,
@@ -367,7 +358,7 @@ class PersistentVolumeClaim(
                 )
             )
         except OSError as err:
-            if not _is_conflict(err):
+            if not isinstance(err, KubeApiError) or err.status != 409:
                 raise
 
         live = await cls.get(
@@ -581,7 +572,10 @@ class PersistentVolumeClaim(
         new_size = parse_pvc_size(requested)
         namespace, name = self._require_namespace_name("resize PVC")
         patch = {"spec": {"resources": {"requests": {"storage": requested}}}}
-        deadline = _deadline_from_budget(timeout)
+        deadline = Deadline.from_timeout(
+            timeout,
+            message=f"PVC {namespace}/{name} resize timeout must be positive",
+        )
 
         for attempt in range(PVC_GROW_RETRIES):
             live = await type(self)._resize_target(
@@ -608,10 +602,14 @@ class PersistentVolumeClaim(
                     missing_ok=False,
                 )
             except OSError as err:
-                if _is_not_found(err):
+                if isinstance(err, KubeApiError) and err.status == 404:
                     msg = f"PVC {name!r} disappeared during resize lifecycle"
                     raise OSError(msg) from err
-                if _is_conflict(err) and attempt + 1 < PVC_GROW_RETRIES:
+                if (
+                    isinstance(err, KubeApiError)
+                    and err.status == 409
+                    and attempt + 1 < PVC_GROW_RETRIES
+                ):
                     continue
                 raise
 
@@ -813,24 +811,26 @@ class PersistentVolume(
         TimeoutError
             If the volume is still absent when `timeout` expires.
         """
-
-        async def present(remaining: float) -> Self:
-            live = await cls.get(kube, timeout=remaining, name=name)
+        deadline = Deadline.from_timeout(
+            timeout,
+            message=f"PersistentVolume {name!r} presence timeout must be positive",
+        )
+        last_error: TimeoutError | None = None
+        while True:
+            remaining = deadline.remaining()
+            if remaining <= 0:
+                msg = f"timed out waiting for PersistentVolume {name!r}"
+                raise TimeoutError(msg) from last_error
+            try:
+                live = await cls.get(kube, timeout=remaining, name=name)
+            except TimeoutError as err:
+                last_error = err
+                await asyncio.sleep(deadline.bounded(VOLUME_WAIT_POLL_INTERVAL_SECONDS))
+                continue
             if live is not None:
                 return live
-            msg = f"PersistentVolume {name!r} is not present yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                present,
-                timeout=timeout,
-                interval=VOLUME_WAIT_POLL_INTERVAL_SECONDS,
-                action=f"waiting for PersistentVolume {name!r}",
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for PersistentVolume {name!r}"
-            raise TimeoutError(msg) from err
+            last_error = TimeoutError(f"PersistentVolume {name!r} is not present yet")
+            await asyncio.sleep(deadline.bounded(VOLUME_WAIT_POLL_INTERVAL_SECONDS))
 
     @property
     def phase(self) -> str:

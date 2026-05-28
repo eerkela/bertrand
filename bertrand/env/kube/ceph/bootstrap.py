@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
@@ -66,14 +67,7 @@ async def ensure_rook_ceph_base(kube: Kube, *, timeout: float) -> None:
     timeout : float
         Maximum convergence budget in seconds.
 
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or convergence exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "Rook Ceph base convergence timeout must be positive"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
         timeout,
         message="Rook Ceph base convergence timeout must be positive",
@@ -85,15 +79,17 @@ async def ensure_rook_ceph_base(kube: Kube, *, timeout: float) -> None:
         ROOK_OPERATOR_URL,
         timeout=deadline.remaining(),
     )
-    await _wait_crd_established(
-        kube,
-        "cephclusters.ceph.rook.io",
-        timeout=deadline.remaining(),
-    )
-    await _wait_crd_established(
-        kube,
-        "cephfilesystems.ceph.rook.io",
-        timeout=deadline.remaining(),
+    await asyncio.gather(
+        _wait_crd_established(
+            kube,
+            "cephclusters.ceph.rook.io",
+            timeout=deadline.remaining(),
+        ),
+        _wait_crd_established(
+            kube,
+            "cephfilesystems.ceph.rook.io",
+            timeout=deadline.remaining(),
+        ),
     )
     await _wait_deployment(
         kube,
@@ -101,34 +97,29 @@ async def ensure_rook_ceph_base(kube: Kube, *, timeout: float) -> None:
         name=ROOK_OPERATOR_DEPLOYMENT,
         timeout=deadline.remaining(),
     )
-    await _ensure_rook_storage_classes(timeout=deadline.remaining())
-    await _ensure_rook_cluster(timeout=deadline.remaining())
+    await asyncio.gather(
+        _ensure_rook_storage_classes(timeout=deadline.remaining()),
+        _ensure_rook_cluster(timeout=deadline.remaining()),
+    )
     await _apply_urls(ROOK_TOOLBOX_URL, timeout=deadline.remaining())
 
 
 async def wait_rook_ceph_ready(kube: Kube, *, timeout: float) -> None:
-    """Wait until the Rook-managed Ceph cluster and storage classes are ready.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or readiness exceeds the budget.
-    """
-    if timeout <= 0:
-        msg = "Rook Ceph readiness timeout must be positive"
-        raise TimeoutError(msg)
+    """Wait until the Rook-managed Ceph cluster and storage classes are ready."""
     deadline = Deadline.from_timeout(
         timeout,
         message="Rook Ceph readiness timeout must be positive",
     )
-    await _wait_ceph_cluster_ready(kube, timeout=deadline.remaining())
-    await _wait_deployment(
-        kube,
-        namespace=ROOK_NAMESPACE,
-        name=ROOK_TOOLBOX_DEPLOYMENT,
-        timeout=deadline.remaining(),
+    await asyncio.gather(
+        _wait_ceph_cluster_ready(kube, timeout=deadline.remaining()),
+        _wait_deployment(
+            kube,
+            namespace=ROOK_NAMESPACE,
+            name=ROOK_TOOLBOX_DEPLOYMENT,
+            timeout=deadline.remaining(),
+        ),
+        _wait_storage_classes(kube, timeout=deadline.remaining()),
     )
-    await _wait_storage_classes(kube, timeout=deadline.remaining())
 
 
 async def rook_ceph_ready(kube: Kube, *, timeout: float) -> bool:
@@ -140,14 +131,16 @@ async def rook_ceph_ready(kube: Kube, *, timeout: float) -> bool:
         True when Rook and Bertrand storage classes can be observed.
     """
     try:
-        await _wait_deployment(
-            kube,
-            namespace=ROOK_NAMESPACE,
-            name=ROOK_OPERATOR_DEPLOYMENT,
-            timeout=timeout,
+        await asyncio.gather(
+            _wait_deployment(
+                kube,
+                namespace=ROOK_NAMESPACE,
+                name=ROOK_OPERATOR_DEPLOYMENT,
+                timeout=timeout,
+            ),
+            _wait_ceph_cluster_ready(kube, timeout=timeout),
+            _wait_storage_classes(kube, timeout=timeout),
         )
-        await _wait_ceph_cluster_ready(kube, timeout=timeout)
-        await _wait_storage_classes(kube, timeout=timeout)
     except (OSError, TimeoutError, ValueError):
         return False
     return True
@@ -397,22 +390,24 @@ async def _wait_ceph_cluster_ready(kube: Kube, *, timeout: float) -> None:
 
 async def _wait_storage_classes(kube: Kube, *, timeout: float) -> None:
     async def ready(remaining: float) -> None:
-        cephfs = await StorageClass.get(
-            kube,
-            name=ROOK_CEPHFS_STORAGE_CLASS,
-            timeout=remaining,
-        )
-        if cephfs is None:
-            cephfs = await StorageClass.get(
+        cephfs, fallback, osd_csi = await asyncio.gather(
+            StorageClass.get(
+                kube,
+                name=ROOK_CEPHFS_STORAGE_CLASS,
+                timeout=remaining,
+            ),
+            StorageClass.get(
                 kube,
                 name=ROOK_CEPHFS_FALLBACK_STORAGE_CLASS,
                 timeout=remaining,
-            )
-        osd_csi = await StorageClass.get(
-            kube,
-            name=ROOK_OSD_STORAGE_CLASS,
-            timeout=remaining,
+            ),
+            StorageClass.get(
+                kube,
+                name=ROOK_OSD_STORAGE_CLASS,
+                timeout=remaining,
+            ),
         )
+        cephfs = cephfs or fallback
         if cephfs is None:
             msg = "Rook CephFS StorageClass is not available yet"
             raise TimeoutError(msg)

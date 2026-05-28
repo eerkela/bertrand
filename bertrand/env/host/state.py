@@ -204,7 +204,7 @@ async def _configure_run_tmpfs_mount(
         raise OSError(msg)
     deadline = Deadline.from_timeout(
         timeout,
-        message="Bertrand runtime tmpfs mount timeout must be non-negative",
+        message="Bertrand runtime tmpfs mount timeout must be positive",
     )
 
     fd: int | None = None
@@ -311,7 +311,7 @@ async def ensure_host_group(
     """
     deadline = Deadline.from_timeout(
         timeout,
-        message="Bertrand shared group bootstrap timeout must be non-negative",
+        message="Bertrand shared group bootstrap timeout must be positive",
     )
 
     try:
@@ -390,7 +390,7 @@ async def ensure_host_state(
         raise OSError(msg)
     deadline = Deadline.from_timeout(
         timeout,
-        message="Bertrand host state bootstrap timeout must be non-negative",
+        message="Bertrand host state bootstrap timeout must be positive",
     )
 
     group_info = await ensure_host_group(
@@ -492,7 +492,7 @@ async def disable_run_tmpfs_mount(*, timeout: float) -> None:
     """
     deadline = Deadline.from_timeout(
         timeout,
-        message="Bertrand runtime tmpfs disable timeout must be non-negative",
+        message="Bertrand runtime tmpfs disable timeout must be positive",
     )
     if shutil.which("systemctl"):
         await run(

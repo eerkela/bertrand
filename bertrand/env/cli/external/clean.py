@@ -9,13 +9,12 @@ credentials, snapshots, or Ceph data.
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import os
 import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from bertrand.env.git import (
@@ -35,18 +34,12 @@ from bertrand.env.host import (
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.ceph.mount import MountInfo
 from bertrand.env.kube.ceph.volume import (
-    REPOSITORY_MOUNT_HOST_HASH_LABEL,
-    REPOSITORY_MOUNT_PHASE_LABEL,
     REPOSITORY_STATE_RESOURCE,
-    repository_mount_host_hash,
     retire_repository_mount_record,
 )
 from bertrand.env.kube.dashboard import delete_dashboard_backend
 from bertrand.env.kube.dev import delete_dev_backend_state
 from bertrand.env.kube.node_identity import retire_bertrand_node
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
 
 
 @dataclass
@@ -92,6 +85,19 @@ def _warn(message: str) -> None:
 _CLEAN_ERROR_TYPES = (OSError, RuntimeError, ValueError)
 
 
+def _handle_clean_error(
+    state: CleanState,
+    stage: str,
+    err: Exception,
+    *,
+    final: bool = False,
+) -> None:
+    if final or not state.force:
+        msg = f"bertrand clean stage {stage!r} failed: {err}"
+        raise OSError(msg) from err
+    _warn(f"clean stage {stage!r} failed; continuing due to --force: {err}")
+
+
 async def _clean_repo_mounts_aliases(state: CleanState) -> None:
     if state.kube is not None and state.host_id is not None:
         # This is the only durable cluster mutation in `bertrand clean`: retire
@@ -110,13 +116,9 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
             record
             for repository in states
             for record in repository.status.mounts.values()
-            if record.labels.get(REPOSITORY_MOUNT_HOST_HASH_LABEL)
-            == repository_mount_host_hash(state.host_id)
-            and record.labels.get(REPOSITORY_MOUNT_PHASE_LABEL) == "active"
+            if record.host_id == state.host_id and record.phase == "Active"
         ]
         for record in records:
-            if record.host_id != state.host_id or record.phase != "Active":
-                continue
             alias = Path(record.alias_path)
             hidden_mount = REPO_DIR / record.repo_id / REPO_MOUNT_EXT
             state.captured_aliases.add(alias)
@@ -252,34 +254,6 @@ async def _finalize_cleanup(state: CleanState) -> None:
         raise OSError(msg)
 
 
-CLEAN_STAGES: tuple[tuple[str, Callable[[CleanState], Awaitable[None]]], ...] = (
-    ("clean_dev_backend", _clean_dev_backend),
-    ("clean_dashboard_backend", _clean_dashboard_backend),
-    ("clean_repo_mounts_aliases", _clean_repo_mounts_aliases),
-    ("retire_local_node_record", _retire_local_node_record),
-    ("disable_unmount_run_tmpfs", _disable_unmount_run_tmpfs),
-    ("finalize_cleanup", _finalize_cleanup),
-)
-
-
-async def _run_clean_stages(state: CleanState) -> None:
-    for i, (name, stage) in enumerate(CLEAN_STAGES):
-        state.deadline.check(
-            f"bertrand clean stage '{name}' timed out before execution"
-        )
-        try:
-            await stage(state)
-        except asyncio.CancelledError:
-            raise
-        except _CLEAN_ERROR_TYPES as err:
-            if not state.force or i == len(CLEAN_STAGES) - 1:
-                msg = f"bertrand clean stage {name!r} failed: {err}"
-                raise OSError(msg) from err
-            _warn(
-                f"clean stage {name!r} failed; continuing due to --force: {err}"
-            )
-
-
 async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> None:
     """Clean Bertrand-managed runtime objects and local state on the host.
 
@@ -296,17 +270,15 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
 
     Raises
     ------
-    TimeoutError
-        If cleanup does not complete before `timeout`.
     PermissionError
         If the user lacks root privileges or they decline cleanup.
     OSError
         If cleanup fails to converge.
     """
-    message = "timed out before cleanup started"
-    if timeout <= 0:
-        raise TimeoutError(message)
-    deadline = Deadline.from_timeout(timeout, message=message)
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="cleanup timeout must be positive",
+    )
 
     # require root privileges for global cleanup
     if os.geteuid() != 0:
@@ -353,7 +325,6 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         )
         raise OSError(msg)
 
-    # execute clean convergence stages in sequence
     state = CleanState(
         assume_yes=assume_yes,
         force=force,
@@ -361,8 +332,56 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
         kube=kube,
         host_id=host_id,
     )
-    if kube is None:
-        await _run_clean_stages(state)
-    else:
-        with kube:
-            await _run_clean_stages(state)
+    manager = kube if kube is not None else contextlib.nullcontext()
+    with manager:
+        try:
+            state.deadline.check(
+                "bertrand clean stage 'clean_dev_backend' timed out before execution"
+            )
+            await _clean_dev_backend(state)
+        except _CLEAN_ERROR_TYPES as err:
+            _handle_clean_error(state, "clean_dev_backend", err)
+
+        try:
+            state.deadline.check(
+                "bertrand clean stage 'clean_dashboard_backend' timed out before "
+                "execution"
+            )
+            await _clean_dashboard_backend(state)
+        except _CLEAN_ERROR_TYPES as err:
+            _handle_clean_error(state, "clean_dashboard_backend", err)
+
+        try:
+            state.deadline.check(
+                "bertrand clean stage 'clean_repo_mounts_aliases' timed out before "
+                "execution"
+            )
+            await _clean_repo_mounts_aliases(state)
+        except _CLEAN_ERROR_TYPES as err:
+            _handle_clean_error(state, "clean_repo_mounts_aliases", err)
+
+        try:
+            state.deadline.check(
+                "bertrand clean stage 'retire_local_node_record' timed out before "
+                "execution"
+            )
+            await _retire_local_node_record(state)
+        except _CLEAN_ERROR_TYPES as err:
+            _handle_clean_error(state, "retire_local_node_record", err)
+
+        try:
+            state.deadline.check(
+                "bertrand clean stage 'disable_unmount_run_tmpfs' timed out before "
+                "execution"
+            )
+            await _disable_unmount_run_tmpfs(state)
+        except _CLEAN_ERROR_TYPES as err:
+            _handle_clean_error(state, "disable_unmount_run_tmpfs", err)
+
+        try:
+            state.deadline.check(
+                "bertrand clean stage 'finalize_cleanup' timed out before execution"
+            )
+            await _finalize_cleanup(state)
+        except _CLEAN_ERROR_TYPES as err:
+            _handle_clean_error(state, "finalize_cleanup", err, final=True)

@@ -23,8 +23,12 @@ from bertrand.env.kube.dev.mailbox import (
 )
 from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.rbac import (
-    upsert_rbac_binding,
-    upsert_rbac_role,
+    CLUSTER_ROLE_BINDING_RESOURCE,
+    CLUSTER_ROLE_RESOURCE,
+    ROLE_BINDING_RESOURCE,
+    ROLE_RESOURCE,
+    rbac_role_manifest,
+    rbac_service_account_binding_manifest,
 )
 from bertrand.env.kube.service_account import ServiceAccount
 from bertrand.env.kube.workload.controller import ensure_workload_claim_templates
@@ -74,65 +78,78 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
     timeout : float
         Maximum convergence budget in seconds.
 
-    Raises
-    ------
-    TimeoutError
-        If backend convergence exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "dev-session backend convergence timeout must be non-negative"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
         timeout,
-        message="dev-session backend convergence timeout must be non-negative",
+        message="dev-session backend convergence timeout must be positive",
     )
-    await CODE_OPEN_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
-    await ServiceAccount.upsert(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=DEV_SERVICE_ACCOUNT,
-        labels=_DEV_LABELS,
-        timeout=deadline.remaining(),
+    await asyncio.gather(
+        CODE_OPEN_RESOURCE.ensure_crd(kube, timeout=deadline.remaining()),
+        ServiceAccount.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DEV_SERVICE_ACCOUNT,
+            labels=_DEV_LABELS,
+            timeout=deadline.remaining(),
+        ),
+        ROLE_RESOURCE.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DEV_SERVICE_ACCOUNT,
+            manifest=rbac_role_manifest(
+                kind="Role",
+                namespace=BERTRAND_NAMESPACE,
+                name=DEV_SERVICE_ACCOUNT,
+                labels=_DEV_LABELS,
+                rules=_dev_namespace_rules(),
+            ),
+            timeout=deadline.remaining(),
+        ),
+        CLUSTER_ROLE_RESOURCE.upsert(
+            kube,
+            name=DEV_SERVICE_ACCOUNT,
+            manifest=rbac_role_manifest(
+                kind="ClusterRole",
+                namespace=None,
+                name=DEV_SERVICE_ACCOUNT,
+                labels=_DEV_LABELS,
+                rules=_dev_cluster_rules(),
+            ),
+            timeout=deadline.remaining(),
+        ),
     )
-    await upsert_rbac_role(
-        kube,
-        kind="Role",
-        namespace=BERTRAND_NAMESPACE,
-        name=DEV_SERVICE_ACCOUNT,
-        labels=_DEV_LABELS,
-        rules=_dev_namespace_rules(),
-        timeout=deadline.remaining(),
-    )
-    await upsert_rbac_binding(
-        kube,
-        kind="RoleBinding",
-        namespace=BERTRAND_NAMESPACE,
-        name=DEV_SERVICE_ACCOUNT,
-        role_kind="Role",
-        role_name=DEV_SERVICE_ACCOUNT,
-        service_account_name=DEV_SERVICE_ACCOUNT,
-        service_account_namespace=BERTRAND_NAMESPACE,
-        labels=_DEV_LABELS,
-        timeout=deadline.remaining(),
-    )
-    await upsert_rbac_role(
-        kube,
-        kind="ClusterRole",
-        name=DEV_SERVICE_ACCOUNT,
-        labels=_DEV_LABELS,
-        rules=_dev_cluster_rules(),
-        timeout=deadline.remaining(),
-    )
-    await upsert_rbac_binding(
-        kube,
-        kind="ClusterRoleBinding",
-        name=DEV_SERVICE_ACCOUNT,
-        role_kind="ClusterRole",
-        role_name=DEV_SERVICE_ACCOUNT,
-        service_account_name=DEV_SERVICE_ACCOUNT,
-        service_account_namespace=BERTRAND_NAMESPACE,
-        labels=_DEV_LABELS,
-        timeout=deadline.remaining(),
+    await asyncio.gather(
+        ROLE_BINDING_RESOURCE.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DEV_SERVICE_ACCOUNT,
+            manifest=rbac_service_account_binding_manifest(
+                kind="RoleBinding",
+                namespace=BERTRAND_NAMESPACE,
+                name=DEV_SERVICE_ACCOUNT,
+                role_kind="Role",
+                role_name=DEV_SERVICE_ACCOUNT,
+                service_account_name=DEV_SERVICE_ACCOUNT,
+                service_account_namespace=BERTRAND_NAMESPACE,
+                labels=_DEV_LABELS,
+            ),
+            timeout=deadline.remaining(),
+        ),
+        CLUSTER_ROLE_BINDING_RESOURCE.upsert(
+            kube,
+            name=DEV_SERVICE_ACCOUNT,
+            manifest=rbac_service_account_binding_manifest(
+                kind="ClusterRoleBinding",
+                namespace=None,
+                name=DEV_SERVICE_ACCOUNT,
+                role_kind="ClusterRole",
+                role_name=DEV_SERVICE_ACCOUNT,
+                service_account_name=DEV_SERVICE_ACCOUNT,
+                service_account_namespace=BERTRAND_NAMESPACE,
+                labels=_DEV_LABELS,
+            ),
+            timeout=deadline.remaining(),
+        ),
     )
 
 
@@ -183,14 +200,9 @@ async def create_project_dev_session(
     ------
     RuntimeError
         If the configuration context is inactive.
-    TimeoutError
-        If the session cannot be created before the timeout.
     ValueError
         If no runnable container configuration exists or the image ref is invalid.
     """
-    if timeout <= 0:
-        msg = "dev session creation timeout must be positive"
-        raise TimeoutError(msg)
     if not config:
         msg = "dev session creation requires an active config context"
         raise RuntimeError(msg)
@@ -276,9 +288,6 @@ async def wait_dev_session_running(
     OSError
         If the Pod reaches a terminal phase before it is attachable.
     """
-    if timeout <= 0:
-        msg = f"timed out waiting for dev session Pod {pod.name!r}"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
         timeout,
         message=f"timed out waiting for dev session Pod {pod.name!r}",
@@ -323,19 +332,12 @@ async def delete_dev_backend_state(
     timeout : float
         Maximum cleanup budget in seconds.
 
-    Raises
-    ------
-    TimeoutError
-        If cleanup cannot start before the timeout.
     """
-    if timeout <= 0:
-        msg = "dev-session backend cleanup timeout must be non-negative"
-        raise TimeoutError(msg)
     if host_id is None:
         return
     deadline = Deadline.from_timeout(
         timeout,
-        message="dev-session backend cleanup timeout must be non-negative",
+        message="dev-session backend cleanup timeout must be positive",
     )
     pod_labels = {
         DEV_SESSION_LABEL: DEV_SESSION_LABEL_VALUE,

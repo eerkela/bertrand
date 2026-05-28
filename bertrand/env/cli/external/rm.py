@@ -36,8 +36,6 @@ async def bertrand_rm(
     ------
     ValueError
         If `grace_period_seconds` is negative.
-    TimeoutError
-        If the operation cannot start before `timeout` expires.
 
     Notes
     -----
@@ -47,9 +45,6 @@ async def bertrand_rm(
     if grace_period_seconds < 0:
         msg = "rm grace period cannot be negative"
         raise ValueError(msg)
-    if timeout <= 0:
-        msg = "rm timeout must be positive"
-        raise TimeoutError(msg)
 
     async with _project_command_context(target, timeout=timeout) as (
         kube,

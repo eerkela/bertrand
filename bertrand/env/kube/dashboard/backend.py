@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.rbac import (
-    delete_rbac_resource,
-    get_rbac_resource,
-    upsert_rbac_binding,
-    upsert_rbac_role,
+    CLUSTER_ROLE_BINDING_RESOURCE,
+    CLUSTER_ROLE_RESOURCE,
+    ROLE_BINDING_RESOURCE,
+    ROLE_RESOURCE,
+    rbac_role_manifest,
+    rbac_service_account_binding_manifest,
 )
 from bertrand.env.kube.service import Service, ServicePortView
 from bertrand.env.kube.service_account import ServiceAccount
@@ -61,92 +64,107 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
     -------
     Deployment
         Available Headlamp Deployment.
-
-    Raises
-    ------
-    TimeoutError
-        If convergence cannot start before `timeout` expires.
     """
     msg = "dashboard convergence timeout must be positive"
-    if timeout <= 0:
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(timeout, message=msg)
 
     await _assert_existing_resources(kube, timeout=deadline.remaining())
 
-    await ServiceAccount.upsert(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        labels=DASHBOARD_LABELS,
-        timeout=deadline.remaining(),
+    await asyncio.gather(
+        ServiceAccount.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            labels=DASHBOARD_LABELS,
+            timeout=deadline.remaining(),
+        ),
+        ROLE_RESOURCE.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            manifest=rbac_role_manifest(
+                kind="Role",
+                namespace=BERTRAND_NAMESPACE,
+                name=DASHBOARD_NAME,
+                rules=_namespace_rules(),
+                labels=DASHBOARD_LABELS,
+            ),
+            timeout=deadline.remaining(),
+        ),
+        CLUSTER_ROLE_RESOURCE.upsert(
+            kube,
+            name=DASHBOARD_NAME,
+            manifest=rbac_role_manifest(
+                kind="ClusterRole",
+                namespace=None,
+                name=DASHBOARD_NAME,
+                rules=_cluster_read_rules(),
+                labels=DASHBOARD_LABELS,
+            ),
+            timeout=deadline.remaining(),
+        ),
     )
-    await upsert_rbac_role(
-        kube,
-        kind="Role",
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        rules=_namespace_rules(),
-        labels=DASHBOARD_LABELS,
-        timeout=deadline.remaining(),
-    )
-    await upsert_rbac_binding(
-        kube,
-        kind="RoleBinding",
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        role_kind="Role",
-        role_name=DASHBOARD_NAME,
-        service_account_name=DASHBOARD_NAME,
-        service_account_namespace=BERTRAND_NAMESPACE,
-        labels=DASHBOARD_LABELS,
-        timeout=deadline.remaining(),
-    )
-    await upsert_rbac_role(
-        kube,
-        kind="ClusterRole",
-        name=DASHBOARD_NAME,
-        rules=_cluster_read_rules(),
-        labels=DASHBOARD_LABELS,
-        timeout=deadline.remaining(),
-    )
-    await upsert_rbac_binding(
-        kube,
-        kind="ClusterRoleBinding",
-        name=DASHBOARD_NAME,
-        role_kind="ClusterRole",
-        role_name=DASHBOARD_NAME,
-        service_account_name=DASHBOARD_NAME,
-        service_account_namespace=BERTRAND_NAMESPACE,
-        labels=DASHBOARD_LABELS,
-        timeout=deadline.remaining(),
+    await asyncio.gather(
+        ROLE_BINDING_RESOURCE.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            manifest=rbac_service_account_binding_manifest(
+                kind="RoleBinding",
+                namespace=BERTRAND_NAMESPACE,
+                name=DASHBOARD_NAME,
+                role_kind="Role",
+                role_name=DASHBOARD_NAME,
+                service_account_name=DASHBOARD_NAME,
+                service_account_namespace=BERTRAND_NAMESPACE,
+                labels=DASHBOARD_LABELS,
+            ),
+            timeout=deadline.remaining(),
+        ),
+        CLUSTER_ROLE_BINDING_RESOURCE.upsert(
+            kube,
+            name=DASHBOARD_NAME,
+            manifest=rbac_service_account_binding_manifest(
+                kind="ClusterRoleBinding",
+                namespace=None,
+                name=DASHBOARD_NAME,
+                role_kind="ClusterRole",
+                role_name=DASHBOARD_NAME,
+                service_account_name=DASHBOARD_NAME,
+                service_account_namespace=BERTRAND_NAMESPACE,
+                labels=DASHBOARD_LABELS,
+            ),
+            timeout=deadline.remaining(),
+        ),
     )
 
-    deployment = await Deployment.upsert(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        labels=DASHBOARD_LABELS,
-        selector=DASHBOARD_SELECTOR,
-        pod_template=_pod_template(),
-        replicas=1,
-        timeout=deadline.remaining(),
-    )
-    await Service.upsert(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        selector=DASHBOARD_SELECTOR,
-        ports=(
-            ServicePortView(
-                name=_DASHBOARD_PORT_NAME,
-                port=HEADLAMP_SERVICE_PORT,
-                target_port=_DASHBOARD_PORT_NAME,
-                protocol="TCP",
-            ),
+    deployment, _service = await asyncio.gather(
+        Deployment.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            labels=DASHBOARD_LABELS,
+            selector=DASHBOARD_SELECTOR,
+            pod_template=_pod_template(),
+            replicas=1,
+            timeout=deadline.remaining(),
         ),
-        labels=DASHBOARD_LABELS,
-        timeout=deadline.remaining(),
+        Service.upsert(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            selector=DASHBOARD_SELECTOR,
+            ports=(
+                ServicePortView(
+                    name=_DASHBOARD_PORT_NAME,
+                    port=HEADLAMP_SERVICE_PORT,
+                    target_port=_DASHBOARD_PORT_NAME,
+                    protocol="TCP",
+                ),
+            ),
+            labels=DASHBOARD_LABELS,
+            timeout=deadline.remaining(),
+        ),
     )
     return await deployment.wait_available(
         kube,
@@ -164,181 +182,161 @@ async def delete_dashboard_backend(kube: Kube, *, timeout: float) -> None:
         Active Kubernetes API context.
     timeout : float
         Maximum cleanup budget in seconds. If infinite, wait indefinitely.
-
-    Raises
-    ------
-    TimeoutError
-        If cleanup cannot start before `timeout` expires.
     """
     msg = "dashboard cleanup timeout must be positive"
-    if timeout <= 0:
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(timeout, message=msg)
 
-    deployment = await Deployment.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        timeout=deadline.remaining(),
+    resources = await asyncio.gather(
+        Deployment.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        ),
+        Service.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        ),
+        ROLE_BINDING_RESOURCE.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        ),
+        ROLE_RESOURCE.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        ),
+        ServiceAccount.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        ),
+        CLUSTER_ROLE_BINDING_RESOURCE.get(
+            kube,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        ),
+        CLUSTER_ROLE_RESOURCE.get(
+            kube,
+            name=DASHBOARD_NAME,
+            timeout=deadline.remaining(),
+        ),
     )
+    deployment = cast("Deployment | None", resources[0])
+    service = cast("Service | None", resources[1])
+    role_binding = resources[2]
+    role = resources[3]
+    service_account = cast("ServiceAccount | None", resources[4])
+    cluster_role_binding = resources[5]
+    cluster_role = resources[6]
+    for kind, resource in (
+        ("Deployment", deployment),
+        ("Service", service),
+        ("RoleBinding", role_binding),
+        ("Role", role),
+        ("ServiceAccount", service_account),
+        ("ClusterRoleBinding", cluster_role_binding),
+        ("ClusterRole", cluster_role),
+    ):
+        if resource is not None:
+            _assert_managed(resource, kind=kind)
+
     if deployment is not None:
-        _assert_managed(deployment, kind="Deployment")
         await deployment.delete(kube, timeout=deadline.remaining())
-
-    service = await Service.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        timeout=deadline.remaining(),
-    )
     if service is not None:
-        _assert_managed(service, kind="Service")
         await service.delete(kube, timeout=deadline.remaining())
-
-    role_binding = await get_rbac_resource(
-        kube,
-        kind="RoleBinding",
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        timeout=deadline.remaining(),
-    )
     if role_binding is not None:
-        _assert_managed(role_binding, kind="RoleBinding")
-        await delete_rbac_resource(
+        await ROLE_BINDING_RESOURCE.delete_by_name(
             kube,
-            kind="RoleBinding",
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
             timeout=deadline.remaining(),
         )
-
-    role = await get_rbac_resource(
-        kube,
-        kind="Role",
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        timeout=deadline.remaining(),
-    )
     if role is not None:
-        _assert_managed(role, kind="Role")
-        await delete_rbac_resource(
+        await ROLE_RESOURCE.delete_by_name(
             kube,
-            kind="Role",
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
             timeout=deadline.remaining(),
         )
-
-    service_account = await ServiceAccount.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=DASHBOARD_NAME,
-        timeout=deadline.remaining(),
-    )
     if service_account is not None:
-        _assert_managed(service_account, kind="ServiceAccount")
         await service_account.delete(kube, timeout=deadline.remaining())
-
-    cluster_role_binding = await get_rbac_resource(
-        kube,
-        kind="ClusterRoleBinding",
-        name=DASHBOARD_NAME,
-        timeout=deadline.remaining(),
-    )
     if cluster_role_binding is not None:
-        _assert_managed(cluster_role_binding, kind="ClusterRoleBinding")
-        await delete_rbac_resource(
+        await CLUSTER_ROLE_BINDING_RESOURCE.delete_by_name(
             kube,
-            kind="ClusterRoleBinding",
             name=DASHBOARD_NAME,
             timeout=deadline.remaining(),
         )
-
-    cluster_role = await get_rbac_resource(
-        kube,
-        kind="ClusterRole",
-        name=DASHBOARD_NAME,
-        timeout=deadline.remaining(),
-    )
     if cluster_role is not None:
-        _assert_managed(cluster_role, kind="ClusterRole")
-        await delete_rbac_resource(
+        await CLUSTER_ROLE_RESOURCE.delete_by_name(
             kube,
-            kind="ClusterRole",
             name=DASHBOARD_NAME,
             timeout=deadline.remaining(),
         )
 
 
 async def _assert_existing_resources(kube: Kube, *, timeout: float) -> None:
-    checks: tuple[tuple[str, object | None], ...] = (
-        (
-            "ServiceAccount",
-            await ServiceAccount.get(
-                kube,
-                namespace=BERTRAND_NAMESPACE,
-                name=DASHBOARD_NAME,
-                timeout=timeout,
-            ),
+    resources = await asyncio.gather(
+        ServiceAccount.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=timeout,
         ),
-        (
-            "Role",
-            await get_rbac_resource(
-                kube,
-                kind="Role",
-                namespace=BERTRAND_NAMESPACE,
-                name=DASHBOARD_NAME,
-                timeout=timeout,
-            ),
+        ROLE_RESOURCE.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=timeout,
         ),
-        (
-            "RoleBinding",
-            await get_rbac_resource(
-                kube,
-                kind="RoleBinding",
-                namespace=BERTRAND_NAMESPACE,
-                name=DASHBOARD_NAME,
-                timeout=timeout,
-            ),
+        ROLE_BINDING_RESOURCE.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=timeout,
         ),
-        (
-            "ClusterRole",
-            await get_rbac_resource(
-                kube,
-                kind="ClusterRole",
-                name=DASHBOARD_NAME,
-                timeout=timeout,
-            ),
+        CLUSTER_ROLE_RESOURCE.get(
+            kube,
+            name=DASHBOARD_NAME,
+            timeout=timeout,
         ),
-        (
-            "ClusterRoleBinding",
-            await get_rbac_resource(
-                kube,
-                kind="ClusterRoleBinding",
-                name=DASHBOARD_NAME,
-                timeout=timeout,
-            ),
+        CLUSTER_ROLE_BINDING_RESOURCE.get(
+            kube,
+            name=DASHBOARD_NAME,
+            timeout=timeout,
         ),
-        (
-            "Deployment",
-            await Deployment.get(
-                kube,
-                namespace=BERTRAND_NAMESPACE,
-                name=DASHBOARD_NAME,
-                timeout=timeout,
-            ),
+        Deployment.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=timeout,
         ),
-        (
-            "Service",
-            await Service.get(
-                kube,
-                namespace=BERTRAND_NAMESPACE,
-                name=DASHBOARD_NAME,
-                timeout=timeout,
-            ),
+        Service.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=DASHBOARD_NAME,
+            timeout=timeout,
         ),
     )
-    for kind, resource in checks:
+    for kind, resource in zip(
+        (
+            "ServiceAccount",
+            "Role",
+            "RoleBinding",
+            "ClusterRole",
+            "ClusterRoleBinding",
+            "Deployment",
+            "Service",
+        ),
+        resources,
+        strict=True,
+    ):
         if resource is not None:
             _assert_managed(resource, kind=kind)
 

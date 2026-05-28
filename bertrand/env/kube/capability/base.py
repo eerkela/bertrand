@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Self, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
-from bertrand.env.git import BERTRAND_NAMESPACE
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.secret import Secret
 
 if TYPE_CHECKING:
@@ -88,114 +88,6 @@ class CapabilityRef:
             else _check_kube_name(self.value)
         )
         object.__setattr__(self, "value", value)
-
-    @classmethod
-    def worktree(
-        cls,
-        kind: CapabilityKind,
-        capability_id: KubeName,
-        worktree_id: str,
-    ) -> Self:
-        """Create a worktree-scoped capability reference.
-
-        Parameters
-        ----------
-        kind : CapabilityKind
-            Capability category.
-        capability_id : KubeName
-            Host-agnostic capability ID.
-        worktree_id : str
-            Persistent worktree UUID used as the scope value.
-
-        Returns
-        -------
-        CapabilityRef
-            Validated worktree-scoped reference.
-        """
-        return cls(
-            kind=kind,
-            capability_id=capability_id,
-            scope="worktree",
-            value=worktree_id,
-        )
-
-    @classmethod
-    def repository(
-        cls,
-        kind: CapabilityKind,
-        capability_id: KubeName,
-        repo_id: str,
-    ) -> Self:
-        """Create a repository-scoped capability reference.
-
-        Parameters
-        ----------
-        kind : CapabilityKind
-            Capability category.
-        capability_id : KubeName
-            Host-agnostic capability ID.
-        repo_id : str
-            Stable repository UUID used as the scope value.
-
-        Returns
-        -------
-        CapabilityRef
-            Validated repository-scoped reference.
-        """
-        return cls(
-            kind=kind,
-            capability_id=capability_id,
-            scope="repository",
-            value=repo_id,
-        )
-
-    @classmethod
-    def node(
-        cls,
-        kind: CapabilityKind,
-        capability_id: KubeName,
-        host_id: str,
-    ) -> Self:
-        """Create a node-scoped capability reference.
-
-        Parameters
-        ----------
-        kind : CapabilityKind
-            Capability category.
-        capability_id : KubeName
-            Host-agnostic capability ID.
-        host_id : str
-            Durable Bertrand host UUID that owns the host-local capability value.
-
-        Returns
-        -------
-        CapabilityRef
-            Validated node-scoped reference.
-        """
-        return cls(
-            kind=kind,
-            capability_id=capability_id,
-            scope="node",
-            value=host_id,
-        )
-
-    @classmethod
-    def shared(cls, kind: CapabilityKind, capability_id: KubeName) -> Self:
-        """Create a shared cluster capability reference.
-
-        Parameters
-        ----------
-        kind : CapabilityKind
-            Capability category.
-        capability_id : KubeName
-            Host-agnostic capability ID.
-
-        Returns
-        -------
-        CapabilityRef
-            Validated shared reference.
-        """
-        return cls(kind=kind, capability_id=capability_id, scope="shared")
 
     @property
     def name(self) -> KubeName:
@@ -361,6 +253,10 @@ async def list_capability_secrets(
     ValueError
         If a scope-value filter is supplied without a compatible scope.
     """
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="capability Secret list timeout must be positive",
+    )
     labels = {CAPABILITY_MANAGED_V1: "true"}
     if kind is not None:
         labels[CAPABILITY_KIND_V1] = _check_kind(kind)
@@ -386,7 +282,7 @@ async def list_capability_secrets(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=labels,
-        timeout=timeout,
+        timeout=deadline.remaining(),
     )
     out: list[tuple[CapabilityRef, Secret]] = []
     for secret in secrets:
@@ -441,36 +337,49 @@ async def resolve_capability_secret(
     OSError
         If a required capability is missing.
     """
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="capability Secret resolution timeout must be positive",
+    )
     refs: list[CapabilityRef] = []
     if worktree_id is not None:
         refs.append(
-            CapabilityRef.worktree(
+            CapabilityRef(
                 kind=kind,
                 capability_id=capability_id,
-                worktree_id=worktree_id,
+                scope="worktree",
+                value=worktree_id,
             )
         )
     if repo_id is not None:
         refs.append(
-            CapabilityRef.repository(
+            CapabilityRef(
                 kind=kind,
                 capability_id=capability_id,
-                repo_id=repo_id,
+                scope="repository",
+                value=repo_id,
             )
         )
     if host_id is not None:
         refs.append(
-            CapabilityRef.node(
+            CapabilityRef(
                 kind=kind,
                 capability_id=capability_id,
-                host_id=host_id,
+                scope="node",
+                value=host_id,
             )
         )
-    refs.append(CapabilityRef.shared(kind=kind, capability_id=capability_id))
+    refs.append(CapabilityRef(kind=kind, capability_id=capability_id, scope="shared"))
 
     for ref in refs:
-        secret = await _get_capability_secret(kube, ref=ref, timeout=timeout)
+        secret = await Secret.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=ref.name,
+            timeout=deadline.remaining(),
+        )
         if secret is not None:
+            capability_ref_from_secret(secret, expected=ref)
             return secret
 
     if required:
@@ -506,6 +415,10 @@ async def delete_capabilities_for_scope(
     ValueError
         If the scope/scope-value combination is invalid.
     """
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="capability Secret cleanup timeout must be positive",
+    )
     if scope == "shared":
         if scope_value is not None:
             msg = "shared capability cleanup cannot include a scope value"
@@ -517,28 +430,11 @@ async def delete_capabilities_for_scope(
         kube,
         scope=scope,
         scope_value=scope_value,
-        timeout=timeout,
+        timeout=deadline.remaining(),
     )
-    for _, secret in capabilities:
-        await secret.delete(kube, timeout=timeout)
-
-
-async def _get_capability_secret(
-    kube: Kube,
-    *,
-    ref: CapabilityRef,
-    timeout: float,
-) -> Secret | None:
-    secret = await Secret.get(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=ref.name,
-        timeout=timeout,
-    )
-    if secret is None:
-        return None
-    capability_ref_from_secret(secret, expected=ref)
-    return secret
+    for ref, secret in capabilities:
+        capability_ref_from_secret(secret, expected=ref)
+        await secret.delete(kube, timeout=deadline.remaining())
 
 
 def _check_kind(kind: str) -> CapabilityKind:

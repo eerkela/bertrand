@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import _check_uuid
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV, Deadline
-from bertrand.env.kube.api._helpers import _is_conflict
+from bertrand.env.kube.api.client import KubeApiError
 from bertrand.env.kube.snapshot import (
     VOLUME_SNAPSHOT_CLASS_RESOURCE,
     VOLUME_SNAPSHOT_RESOURCE,
@@ -85,13 +85,11 @@ async def ensure_repository_snapshot_support(
     ------
     OSError
         If CephFS storage or snapshot support is unavailable.
-    TimeoutError
-        If `timeout` is non-positive or convergence exceeds the budget.
     """
-    if timeout <= 0:
-        msg = "repository snapshot support timeout must be non-negative"
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository snapshot support timeout must be positive",
+    )
     storage = await StorageClass.select(
         kube,
         timeout=deadline.remaining(),
@@ -134,13 +132,14 @@ async def create_repository_snapshot(
         Ready retained snapshot.
     """
     repo_id = _check_uuid(repo_id)
-    return await _create_snapshot(
+    snapshot, _volume = await _create_snapshot(
         kube,
         repo_id=repo_id,
         purpose=REPOSITORY_SNAPSHOT_PURPOSE_RETAINED,
         build_name=None,
         timeout=timeout,
     )
+    return snapshot
 
 
 async def maintain_repository_snapshots(
@@ -171,24 +170,23 @@ async def maintain_repository_snapshots(
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     ValueError
         If cadence or limit inputs are invalid.
     """
-    if timeout <= 0:
-        msg = "repository snapshot maintenance timeout must be non-negative"
-        raise TimeoutError(msg)
     if interval_seconds <= 0 or retention_seconds <= 0:
         msg = "repository snapshot interval and retention must be positive"
         raise ValueError(msg)
     if create_limit < 0 or delete_limit < 0:
         msg = "repository snapshot maintenance limits must be non-negative"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository snapshot maintenance timeout must be positive",
+    )
     await ensure_repository_snapshot_support(kube, timeout=deadline.remaining())
 
     now = datetime.now(UTC)
+    retention = timedelta(seconds=retention_seconds)
     retained = await VOLUME_SNAPSHOT_RESOURCE.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
@@ -204,40 +202,23 @@ async def maintain_repository_snapshots(
         )
         if record.spec.phase == "Ready"
     ]
+    deleted_names: set[str] = set()
+    for snapshot in sorted(retained, key=lambda item: item.name):
+        if len(deleted_names) >= delete_limit:
+            break
+        created_at = volume_snapshot_created_at(snapshot)
+        if created_at is None or now - created_at < retention:
+            continue
+        await delete_volume_snapshot(kube, snapshot, timeout=deadline.remaining())
+        deleted_names.add(snapshot.name)
+
     snapshots_by_repo: dict[str, list[CustomObject]] = {}
     for snapshot in retained:
+        if snapshot.name in deleted_names:
+            continue
         repo_id = snapshot.labels.get(REPO_ID_ENV, "")
         if repo_id:
             snapshots_by_repo.setdefault(repo_id, []).append(snapshot)
-    deleted = await _delete_expired_retained_snapshots(
-        kube,
-        snapshots=retained,
-        now=now,
-        retention=timedelta(seconds=retention_seconds),
-        limit=delete_limit,
-        timeout=deadline.remaining(),
-    )
-    if deleted:
-        retained = await VOLUME_SNAPSHOT_RESOURCE.list(
-            kube,
-            namespace=BERTRAND_NAMESPACE,
-            labels=_snapshot_labels(purpose=REPOSITORY_SNAPSHOT_PURPOSE_RETAINED),
-            timeout=deadline.remaining(),
-        )
-        active_records = [
-            record
-            for record in await REPOSITORY_STATE_RESOURCE.list(
-                kube,
-                namespace=BERTRAND_NAMESPACE,
-                timeout=deadline.remaining(),
-            )
-            if record.spec.phase == "Ready"
-        ]
-        snapshots_by_repo = {}
-        for snapshot in retained:
-            repo_id = snapshot.labels.get(REPO_ID_ENV, "")
-            if repo_id:
-                snapshots_by_repo.setdefault(repo_id, []).append(snapshot)
 
     created = 0
     fresh_boundary = now - timedelta(seconds=interval_seconds)
@@ -293,18 +274,16 @@ async def next_repository_snapshot_time(
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     ValueError
         If cadence inputs are invalid.
     """
-    if timeout <= 0:
-        msg = "repository snapshot scheduling timeout must be non-negative"
-        raise TimeoutError(msg)
     if interval_seconds <= 0 or retention_seconds <= 0:
         msg = "repository snapshot interval and retention must be positive"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository snapshot scheduling timeout must be positive",
+    )
     now = datetime.now(UTC)
     retained = await VOLUME_SNAPSHOT_RESOURCE.list(
         kube,
@@ -376,33 +355,26 @@ async def prepared_repository_build_source(
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     ValueError
         If `build_name` is empty.
     """
-    if timeout <= 0:
-        msg = "repository build snapshot preparation timeout must be non-negative"
-        raise TimeoutError(msg)
     repo_id = _check_uuid(repo_id)
     build_name = build_name.strip()
     if not build_name:
         msg = "repository build snapshot requires a non-empty build name"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository build snapshot preparation timeout must be positive",
+    )
     snapshot: CustomObject | None = None
     pvc: PersistentVolumeClaim | None = None
     try:
-        snapshot = await _create_snapshot(
+        snapshot, volume = await _create_snapshot(
             kube,
             repo_id=repo_id,
             purpose=REPOSITORY_SNAPSHOT_PURPOSE_BUILD,
             build_name=build_name,
-            timeout=deadline.remaining(),
-        )
-        volume = await _repository_volume_claim(
-            kube,
-            repo_id=repo_id,
             timeout=deadline.remaining(),
         )
         pvc = await PersistentVolumeClaim.create_from_snapshot(
@@ -455,14 +427,9 @@ async def cleanup_orphaned_build_sources(
 
     Raises
     ------
-    TimeoutError
-        If `timeout` is non-positive.
     ValueError
         If cleanup age or limit inputs are invalid.
     """
-    if timeout <= 0:
-        msg = "repository build-source cleanup timeout must be non-negative"
-        raise TimeoutError(msg)
     if max_age_seconds < 0 or limit < 0:
         msg = "repository build-source cleanup age and limit must be non-negative"
         raise ValueError(msg)
@@ -472,7 +439,10 @@ async def cleanup_orphaned_build_sources(
     active = {name.strip() for name in active_build_names if name and name.strip()}
     now = datetime.now(UTC)
     max_age = timedelta(seconds=max_age_seconds)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository build-source cleanup timeout must be positive",
+    )
     deleted = 0
 
     pvcs = await PersistentVolumeClaim.list(
@@ -527,10 +497,10 @@ async def _ensure_snapshot_class(
     storage: StorageClass,
     timeout: float,
 ) -> CustomObject:
-    if timeout <= 0:
-        msg = "repository snapshot class timeout must be non-negative"
-        raise TimeoutError(msg)
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository snapshot class timeout must be positive",
+    )
     classes = await VOLUME_SNAPSHOT_CLASS_RESOURCE.list(
         kube, timeout=deadline.remaining()
     )
@@ -566,7 +536,7 @@ async def _ensure_snapshot_class(
             timeout=deadline.remaining(),
         )
     except OSError as err:
-        if not _is_conflict(err):
+        if not isinstance(err, KubeApiError) or err.status != 409:
             raise
     existing = await VOLUME_SNAPSHOT_CLASS_RESOURCE.get(
         kube,
@@ -587,8 +557,11 @@ async def _create_snapshot(
     purpose: str,
     build_name: str | None,
     timeout: float,
-) -> CustomObject:
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
+) -> tuple[CustomObject, PersistentVolumeClaim]:
+    deadline = Deadline.from_timeout(
+        timeout,
+        message="repository snapshot creation timeout must be positive",
+    )
     volume = await _repository_volume_claim(
         kube,
         repo_id=repo_id,
@@ -615,9 +588,10 @@ async def _create_snapshot(
         },
         timeout=deadline.remaining(),
     )
-    return await wait_volume_snapshot_ready(
+    ready = await wait_volume_snapshot_ready(
         kube, snapshot, timeout=deadline.remaining()
     )
+    return ready, volume
 
 
 async def _repository_volume_claim(
@@ -636,28 +610,6 @@ async def _repository_volume_claim(
     return volumes[0]
 
 
-async def _delete_expired_retained_snapshots(
-    kube: Kube,
-    *,
-    snapshots: Collection[CustomObject],
-    now: datetime,
-    retention: timedelta,
-    limit: int,
-    timeout: float,
-) -> int:
-    deadline = Deadline.from_timeout(timeout, message="timeout must be non-negative")
-    deleted = 0
-    for snapshot in sorted(snapshots, key=lambda item: item.name):
-        if deleted >= limit:
-            break
-        created_at = volume_snapshot_created_at(snapshot)
-        if created_at is None or now - created_at < retention:
-            continue
-        await delete_volume_snapshot(kube, snapshot, timeout=deadline.remaining())
-        deleted += 1
-    return deleted
-
-
 async def _cleanup_build_source(
     kube: Kube,
     *,
@@ -666,7 +618,7 @@ async def _cleanup_build_source(
 ) -> None:
     deadline = Deadline.from_timeout(
         REPOSITORY_BUILD_SOURCE_CLEANUP_TIMEOUT_SECONDS,
-        message="repository build-source cleanup timeout must be non-negative",
+        message="repository build-source cleanup timeout must be positive",
     )
     if pvc is not None:
         with suppress(OSError, TimeoutError, ValueError):

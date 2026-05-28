@@ -9,7 +9,8 @@ import os
 from concurrent import futures
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, NoReturn, override
 
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.client import (
@@ -18,6 +19,7 @@ from bertrand.env.kube.api.client import (
     Kube,
 )
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
+from bertrand.env.kube.ceph import _csi_pb2, _csi_pb2_grpc
 from bertrand.env.kube.ceph.api import (
     bind_block_device,
     host_id_from_host_state,
@@ -38,7 +40,7 @@ from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.volume import PersistentVolumeClaim
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Awaitable, Callable, Iterable
 
 CSI_DRIVER_NAME = "osd.csi.bertrand.dev"
 CSI_CONTROLLER_NAME = "bertrand-ceph-osd-csi-controller"
@@ -57,10 +59,35 @@ CSI_REQUEST_TIMEOUT_SECONDS = 300.0
 CSI_PVC_NAME_PARAMETER = "csi.storage.k8s.io/pvc/name"
 CSI_PVC_NAMESPACE_PARAMETER = "csi.storage.k8s.io/pvc/namespace"
 CSI_PV_NAME_PARAMETER = "csi.storage.k8s.io/pv/name"
+CSI_CONTROLLER_LABELS = MappingProxyType(
+    {
+        "app.kubernetes.io/name": CSI_CONTROLLER_NAME,
+        "app.kubernetes.io/part-of": "bertrand",
+        **STORAGE_CONTROLLER_LABELS,
+    }
+)
+CSI_NODE_LABELS = MappingProxyType(
+    {
+        "app.kubernetes.io/name": CSI_NODE_NAME,
+        "app.kubernetes.io/part-of": "bertrand",
+        **STORAGE_CONTROLLER_LABELS,
+    }
+)
+CSI_CONTROLLER_SELECTOR = MappingProxyType(
+    {"app.kubernetes.io/name": CSI_CONTROLLER_NAME}
+)
+CSI_NODE_SELECTOR = MappingProxyType({"app.kubernetes.io/name": CSI_NODE_NAME})
 
 
-async def _upsert_csi_driver_object(kube: Kube, *, timeout: float) -> None:
-    manifest = {
+async def ensure_ceph_osd_csi_driver(
+    kube: Kube,
+    *,
+    image: str,
+    service_account: str,
+    deadline: Deadline,
+) -> None:
+    """Converge the Bertrand OSD CSI driver and sidecar workloads."""
+    driver_manifest = {
         "apiVersion": "storage.k8s.io/v1",
         "kind": "CSIDriver",
         "metadata": {
@@ -81,46 +108,29 @@ async def _upsert_csi_driver_object(kube: Kube, *, timeout: float) -> None:
             name=CSI_DRIVER_NAME,
             _request_timeout=request_timeout,
         ),
-        timeout=timeout,
+        timeout=deadline.remaining(),
         context=f"failed to read CSIDriver {CSI_DRIVER_NAME!r}",
     )
     if existing is None:
         await kube.run(
             lambda request_timeout: kube.storage.create_csi_driver(
-                body=manifest,
+                body=driver_manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            timeout=deadline.remaining(),
             context=f"failed to create CSIDriver {CSI_DRIVER_NAME!r}",
         )
-        return
-    await kube.run(
-        lambda request_timeout: kube.storage.patch_csi_driver(
-            name=CSI_DRIVER_NAME,
-            body=manifest,
-            _request_timeout=request_timeout,
-        ),
-        timeout=timeout,
-        context=f"failed to patch CSIDriver {CSI_DRIVER_NAME!r}",
-    )
+    else:
+        await kube.run(
+            lambda request_timeout: kube.storage.patch_csi_driver(
+                name=CSI_DRIVER_NAME,
+                body=driver_manifest,
+                _request_timeout=request_timeout,
+            ),
+            timeout=deadline.remaining(),
+            context=f"failed to patch CSIDriver {CSI_DRIVER_NAME!r}",
+        )
 
-
-def _csi_common_labels(name: str) -> dict[str, str]:
-    return {
-        "app.kubernetes.io/name": name,
-        "app.kubernetes.io/part-of": "bertrand",
-        **STORAGE_CONTROLLER_LABELS,
-    }
-
-
-async def _ensure_csi_controller(
-    kube: Kube,
-    *,
-    image: str,
-    service_account: str,
-    deadline: Deadline,
-) -> None:
-    labels = _csi_common_labels(CSI_CONTROLLER_NAME)
     socket_mount = {
         "name": "csi-socket",
         "mountPath": Path(CSI_CONTROLLER_SOCKET).parent.as_posix(),
@@ -129,8 +139,8 @@ async def _ensure_csi_controller(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=CSI_CONTROLLER_NAME,
-        labels=labels,
-        selector={"app.kubernetes.io/name": CSI_CONTROLLER_NAME},
+        labels=CSI_CONTROLLER_LABELS,
+        selector=CSI_CONTROLLER_SELECTOR,
         replicas=1,
         pod_template=PodTemplateSpec(
             containers=[
@@ -176,24 +186,14 @@ async def _ensure_csi_controller(
         ),
         timeout=deadline.remaining(),
     )
-    await deployment.wait_rollout(kube, timeout=deadline.remaining())
 
-
-async def _ensure_csi_node(
-    kube: Kube,
-    *,
-    image: str,
-    service_account: str,
-    deadline: Deadline,
-) -> None:
-    labels = _csi_common_labels(CSI_NODE_NAME)
     plugin_dir = f"{CSI_KUBELET_DIR}/plugins/{CSI_DRIVER_NAME}"
     daemonset = await DaemonSet.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=CSI_NODE_NAME,
-        labels=labels,
-        selector={"app.kubernetes.io/name": CSI_NODE_NAME},
+        labels=CSI_NODE_LABELS,
+        selector=CSI_NODE_SELECTOR,
         pod_template=PodTemplateSpec(
             containers=[
                 ContainerSpec(
@@ -288,210 +288,76 @@ async def _ensure_csi_node(
         ),
         timeout=deadline.remaining(),
     )
-    await daemonset.wait_rollout(kube, timeout=deadline.remaining())
+    await asyncio.gather(
+        deployment.wait_rollout(kube, timeout=deadline.remaining()),
+        daemonset.wait_rollout(kube, timeout=deadline.remaining()),
+    )
 
 
-async def ensure_ceph_osd_csi_driver(
-    kube: Kube,
-    *,
-    image: str,
-    service_account: str,
-    deadline: Deadline,
+def _capacity_request(capacity_range: _csi_pb2.CapacityRange) -> int:
+    return max(int(capacity_range.required_bytes), int(capacity_range.limit_bytes))
+
+
+def _require_raw_block_capabilities(
+    capabilities: Iterable[_csi_pb2.VolumeCapability],
 ) -> None:
-    """Converge the Bertrand OSD CSI driver and sidecar workloads."""
-    await _upsert_csi_driver_object(kube, timeout=deadline.remaining())
-    await _ensure_csi_controller(
-        kube,
-        image=image,
-        service_account=service_account,
-        deadline=deadline,
+    capabilities = tuple(
+        capability
+        for capability in capabilities
+        if capability.WhichOneof("access_type") is not None
     )
-    await _ensure_csi_node(
-        kube,
-        image=image,
-        service_account=service_account,
-        deadline=deadline,
-    )
-
-
-def _varint(value: int) -> bytes:
-    chunks: list[int] = []
-    value = int(value)
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        chunks.append(byte | 0x80 if value else byte)
-        if not value:
-            return bytes(chunks)
-
-
-def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
-    shift = 0
-    value = 0
-    while offset < len(data):
-        byte = data[offset]
-        offset += 1
-        value |= (byte & 0x7F) << shift
-        if not byte & 0x80:
-            return value, offset
-        shift += 7
-    msg = "truncated protobuf varint"
-    raise ValueError(msg)
-
-
-def _field_varint(number: int, value: int) -> bytes:
-    return _varint((number << 3) | 0) + _varint(value)
-
-
-def _field_bytes(number: int, value: bytes) -> bytes:
-    return _varint((number << 3) | 2) + _varint(len(value)) + value
-
-
-def _field_string(number: int, value: str) -> bytes:
-    return _field_bytes(number, value.encode("utf-8"))
-
-
-def _message(*parts: bytes) -> bytes:
-    return b"".join(part for part in parts if part)
-
-
-def _map_entry(key: str, value: str) -> bytes:
-    return _message(_field_string(1, key), _field_string(2, value))
-
-
-def _field_map(number: int, values: Mapping[str, str]) -> bytes:
-    return b"".join(
-        _field_bytes(number, _map_entry(key, value))
-        for key, value in sorted(values.items())
-    )
-
-
-def _parse_fields(data: bytes) -> dict[int, list[tuple[int, int | bytes]]]:
-    fields: dict[int, list[tuple[int, int | bytes]]] = {}
-    offset = 0
-    while offset < len(data):
-        key, offset = _read_varint(data, offset)
-        number = key >> 3
-        wire_type = key & 0x07
-        if wire_type == 0:
-            value, offset = _read_varint(data, offset)
-        elif wire_type == 2:
-            length, offset = _read_varint(data, offset)
-            value = data[offset : offset + length]
-            offset += length
-        else:
-            msg = f"unsupported protobuf wire type {wire_type}"
-            raise ValueError(msg)
-        fields.setdefault(number, []).append((wire_type, value))
-    return fields
-
-
-def _first_bytes(data: bytes, number: int) -> bytes:
-    for wire_type, value in _parse_fields(data).get(number, ()):
-        if wire_type == 2 and isinstance(value, bytes):
-            return value
-    return b""
-
-
-def _first_string(data: bytes, number: int) -> str:
-    return _first_bytes(data, number).decode("utf-8")
-
-
-def _first_int(data: bytes, number: int) -> int:
-    for wire_type, value in _parse_fields(data).get(number, ()):
-        if wire_type == 0 and isinstance(value, int):
-            return value
-    return 0
-
-
-def _field_messages(data: bytes, number: int) -> list[bytes]:
-    return [
-        value
-        for wire_type, value in _parse_fields(data).get(number, ())
-        if wire_type == 2 and isinstance(value, bytes)
-    ]
-
-
-def _map_values(data: bytes, number: int) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for entry in _field_messages(data, number):
-        key = _first_string(entry, 1)
-        value = _first_string(entry, 2)
-        if key:
-            values[key] = value
-    return values
-
-
-def _capacity_request(data: bytes) -> int:
-    capacity_range = _first_bytes(data, 2)
-    return max(_first_int(capacity_range, 1), _first_int(capacity_range, 2))
-
-
-def _volume_capabilities(data: bytes, number: int) -> list[bytes]:
-    return _field_messages(data, number)
-
-
-def _require_raw_block_capabilities(data: bytes, number: int) -> None:
-    capabilities = _volume_capabilities(data, number)
     if not capabilities:
         msg = "Bertrand OSD CSI volumes require a raw block volume capability"
         raise ValueError(msg)
     for capability in capabilities:
-        mount = _first_bytes(capability, 3)
-        block = _first_bytes(capability, 4)
-        if mount or not block:
+        if capability.WhichOneof("access_type") != "block":
             msg = "Bertrand OSD CSI supports raw block PVCs only"
             raise ValueError(msg)
 
 
-def _topology(node_name: str) -> bytes:
-    segments = {"kubernetes.io/hostname": node_name}
-    return _field_map(1, segments)
+def _topology(node_name: str) -> _csi_pb2.Topology:
+    topology = _csi_pb2.Topology()
+    topology.segments["kubernetes.io/hostname"] = node_name
+    return topology
 
 
-def _volume(record: CephStorageOSD, *, volume_id: str) -> bytes:
+def _volume(record: CephStorageOSD, *, volume_id: str) -> _csi_pb2.Volume:
     context = {
         "block_path": record.block_path,
         "osd_name": record.name,
         "origin": record.origin,
     }
-    return _message(
-        _field_string(1, volume_id),
-        _field_varint(2, record.target_bytes),
-        _field_map(3, context),
-        _field_bytes(5, _topology(record.node_name)),
+    volume = _csi_pb2.Volume(
+        volume_id=volume_id,
+        capacity_bytes=record.target_bytes,
     )
+    volume.volume_context.update(context)
+    volume.accessible_topology.append(_topology(record.node_name))
+    return volume
 
 
-def _service_capability(kind: int) -> bytes:
-    return _field_bytes(1, _field_bytes(1, _field_varint(1, kind)))
-
-
-def _plugin_expansion_capability(kind: int) -> bytes:
-    return _field_bytes(1, _field_bytes(2, _field_varint(1, kind)))
-
-
-def _controller_capability(kind: int) -> bytes:
-    return _field_bytes(1, _field_bytes(1, _field_varint(1, kind)))
-
-
-def _node_capability(kind: int) -> bytes:
-    return _field_bytes(1, _field_bytes(1, _field_varint(1, kind)))
-
-
-def _abort(context: Any, code_name: str, message: str) -> None:
+def _abort(context: Any, code_name: str, message: str) -> NoReturn:
     grpc = importlib.import_module("grpc")
     context.abort(getattr(grpc.StatusCode, code_name), message)
+    msg = "CSI abort returned unexpectedly"
+    raise RuntimeError(msg)
 
 
-class BertrandOSDCSIDriver:
+class BertrandOSDCSIDriver(
+    _csi_pb2_grpc.IdentityServicer,
+    _csi_pb2_grpc.ControllerServicer,
+    _csi_pb2_grpc.NodeServicer,
+):
     """Minimal CSI endpoint for Bertrand-managed Rook OSD PVCs."""
 
     def __init__(self, *, role: str, node_name: str = "") -> None:
-        self.role = role
+        self.role = role.strip()
         self.node_name = node_name.strip() or os.environ.get("NODE_NAME", "").strip()
         self.host_id = ""
-        if role == "node":
+        if self.role == "node":
+            if not self.node_name:
+                msg = "Bertrand OSD CSI node role requires NODE_NAME"
+                raise ValueError(msg)
             self.host_id = host_id_from_host_state()
 
     def _rpc[ResultT](
@@ -527,6 +393,7 @@ class BertrandOSDCSIDriver:
         kube: Kube,
         volume_id: str,
     ) -> CephStorageOSD:
+        volume_id = volume_id.strip()
         storage = await read_storage_state(kube, timeout=CSI_REQUEST_TIMEOUT_SECONDS)
         for record in storage.status.osds.values():
             if volume_id in {record.name, record.csi_volume_id}:
@@ -534,53 +401,90 @@ class BertrandOSDCSIDriver:
         msg = f"unknown Bertrand OSD CSI volume {volume_id!r}"
         raise KeyError(msg)
 
-    def _get_plugin_info(self, _request: bytes, _context: Any) -> bytes:
-        return _message(
-            _field_string(1, CSI_DRIVER_NAME),
-            _field_string(2, "v1alpha1"),
+    @override
+    def GetPluginInfo(
+        self,
+        request: _csi_pb2.GetPluginInfoRequest,
+        context: Any,
+    ) -> _csi_pb2.GetPluginInfoResponse:
+        return _csi_pb2.GetPluginInfoResponse(
+            name=CSI_DRIVER_NAME,
+            vendor_version="v1alpha1",
         )
 
-    def _get_plugin_capabilities(self, _request: bytes, _context: Any) -> bytes:
-        return _message(
-            _service_capability(1),
-            _service_capability(2),
-            _plugin_expansion_capability(1),
+    @override
+    def GetPluginCapabilities(
+        self,
+        request: _csi_pb2.GetPluginCapabilitiesRequest,
+        context: Any,
+    ) -> _csi_pb2.GetPluginCapabilitiesResponse:
+        return _csi_pb2.GetPluginCapabilitiesResponse(
+            capabilities=[
+                _csi_pb2.PluginCapability(
+                    service=_csi_pb2.PluginCapability.Service(type="CONTROLLER_SERVICE")
+                ),
+                _csi_pb2.PluginCapability(
+                    service=_csi_pb2.PluginCapability.Service(
+                        type="VOLUME_ACCESSIBILITY_CONSTRAINTS"
+                    )
+                ),
+                _csi_pb2.PluginCapability(
+                    volume_expansion=_csi_pb2.PluginCapability.VolumeExpansion(
+                        type="ONLINE"
+                    )
+                ),
+            ]
         )
 
-    def _probe(self, _request: bytes, _context: Any) -> bytes:
-        return b""
+    @override
+    def Probe(
+        self,
+        request: _csi_pb2.ProbeRequest,
+        context: Any,
+    ) -> _csi_pb2.ProbeResponse:
+        return _csi_pb2.ProbeResponse()
 
-    def _controller_get_capabilities(self, _request: bytes, context: Any) -> bytes:
+    @override
+    def ControllerGetCapabilities(
+        self,
+        request: _csi_pb2.ControllerGetCapabilitiesRequest,
+        context: Any,
+    ) -> _csi_pb2.ControllerGetCapabilitiesResponse:
         self._require_role(context, "controller", "ControllerGetCapabilities")
-        return _message(_controller_capability(1), _controller_capability(9))
-
-    def _node_get_capabilities(self, _request: bytes, context: Any) -> bytes:
-        self._require_role(context, "node", "NodeGetCapabilities")
-        return _message(_node_capability(3))
-
-    def _node_get_info(self, _request: bytes, context: Any) -> bytes:
-        self._require_role(context, "node", "NodeGetInfo")
-        return _message(
-            _field_string(1, self.node_name),
-            _field_bytes(3, _topology(self.node_name)),
+        return _csi_pb2.ControllerGetCapabilitiesResponse(
+            capabilities=[
+                _csi_pb2.ControllerServiceCapability(
+                    rpc=_csi_pb2.ControllerServiceCapability.RPC(
+                        type="CREATE_DELETE_VOLUME"
+                    )
+                ),
+                _csi_pb2.ControllerServiceCapability(
+                    rpc=_csi_pb2.ControllerServiceCapability.RPC(type="EXPAND_VOLUME")
+                ),
+            ]
         )
 
-    def _create_volume(self, request: bytes, context: Any) -> bytes:
+    @override
+    def CreateVolume(
+        self,
+        request: _csi_pb2.CreateVolumeRequest,
+        context: Any,
+    ) -> _csi_pb2.CreateVolumeResponse:
         self._require_role(context, "controller", "CreateVolume")
-        parameters = _map_values(request, 4)
+        parameters = request.parameters
         pvc_name = parameters.get(CSI_PVC_NAME_PARAMETER, "").strip()
         pvc_namespace = parameters.get(CSI_PVC_NAMESPACE_PARAMETER, "").strip()
         pv_name = parameters.get(CSI_PV_NAME_PARAMETER, "").strip()
         if not pvc_name or not pvc_namespace:
             _abort(context, "INVALID_ARGUMENT", "CreateVolume missing PVC metadata")
         try:
-            _require_raw_block_capabilities(request, 3)
+            _require_raw_block_capabilities(request.volume_capabilities)
         except ValueError as err:
             _abort(context, "INVALID_ARGUMENT", str(err))
-        volume_id = _first_string(request, 1) or pv_name or pvc_name
-        requested = _capacity_request(request)
+        volume_id = (request.name or pv_name or pvc_name).strip()
+        requested = _capacity_request(request.capacity_range)
 
-        async def invoke(kube: Kube) -> bytes:
+        async def invoke(kube: Kube) -> _csi_pb2.CreateVolumeResponse:
             claim = await PersistentVolumeClaim.get(
                 kube,
                 namespace=pvc_namespace,
@@ -601,11 +505,7 @@ class BertrandOSDCSIDriver:
                 kube,
                 timeout=CSI_REQUEST_TIMEOUT_SECONDS,
             )
-            record: CephStorageOSD | None = None
-            for item in storage.status.osds.values():
-                if item.name == osd_name:
-                    record = item
-                    break
+            record = storage.status.osds.get(osd_name)
             if record is None:
                 msg = (
                     f"PVC {pvc_namespace}/{pvc_name} references missing "
@@ -637,17 +537,24 @@ class BertrandOSDCSIDriver:
                 phase=phase,
                 timeout=CSI_REQUEST_TIMEOUT_SECONDS,
             )
-            return _field_bytes(1, _volume(fresh, volume_id=volume_id))
+            return _csi_pb2.CreateVolumeResponse(
+                volume=_volume(fresh, volume_id=volume_id)
+            )
 
         return self._rpc(context, invoke)
 
-    def _delete_volume(self, request: bytes, context: Any) -> bytes:
+    @override
+    def DeleteVolume(
+        self,
+        request: _csi_pb2.DeleteVolumeRequest,
+        context: Any,
+    ) -> _csi_pb2.DeleteVolumeResponse:
         self._require_role(context, "controller", "DeleteVolume")
-        volume_id = _first_string(request, 1)
+        volume_id = request.volume_id.strip()
         if not volume_id:
             _abort(context, "INVALID_ARGUMENT", "DeleteVolume missing volume_id")
 
-        async def invoke(kube: Kube) -> bytes:
+        async def invoke(kube: Kube) -> _csi_pb2.DeleteVolumeResponse:
             with suppress(KeyError):
                 record = await self._record_for_volume(kube, volume_id)
                 if record.phase not in {"Shrinking", "Retiring", "Retired"}:
@@ -663,21 +570,26 @@ class BertrandOSDCSIDriver:
                         },
                         timeout=CSI_REQUEST_TIMEOUT_SECONDS,
                     )
-                    return b""
+                    return _csi_pb2.DeleteVolumeResponse()
                 await patch_storage_osd_status(
                     kube,
                     osd=record,
                     status={"last_error": ""},
                     timeout=CSI_REQUEST_TIMEOUT_SECONDS,
                 )
-            return b""
+            return _csi_pb2.DeleteVolumeResponse()
 
         return self._rpc(context, invoke)
 
-    def _controller_expand_volume(self, request: bytes, context: Any) -> bytes:
+    @override
+    def ControllerExpandVolume(
+        self,
+        request: _csi_pb2.ControllerExpandVolumeRequest,
+        context: Any,
+    ) -> _csi_pb2.ControllerExpandVolumeResponse:
         self._require_role(context, "controller", "ControllerExpandVolume")
-        volume_id = _first_string(request, 1)
-        requested = _capacity_request(request)
+        volume_id = request.volume_id.strip()
+        requested = _capacity_request(request.capacity_range)
         if not volume_id:
             _abort(
                 context,
@@ -685,7 +597,7 @@ class BertrandOSDCSIDriver:
                 "ControllerExpandVolume missing volume_id",
             )
 
-        async def invoke(kube: Kube) -> bytes:
+        async def invoke(kube: Kube) -> _csi_pb2.ControllerExpandVolumeResponse:
             record = await self._record_for_volume(kube, volume_id)
             if requested > record.target_bytes:
                 msg = (
@@ -693,41 +605,90 @@ class BertrandOSDCSIDriver:
                     f"{record.name} target is {record.target_bytes} bytes"
                 )
                 raise ValueError(msg)
-            return _message(
-                _field_varint(1, record.target_bytes),
-                _field_varint(2, 1),
+            return _csi_pb2.ControllerExpandVolumeResponse(
+                capacity_bytes=record.target_bytes,
+                node_expansion_required=True,
             )
 
         return self._rpc(context, invoke)
 
-    def _validate_volume_capabilities(self, request: bytes, context: Any) -> bytes:
+    @override
+    def ValidateVolumeCapabilities(
+        self,
+        request: _csi_pb2.ValidateVolumeCapabilitiesRequest,
+        context: Any,
+    ) -> _csi_pb2.ValidateVolumeCapabilitiesResponse:
         self._require_role(context, "controller", "ValidateVolumeCapabilities")
         try:
-            _require_raw_block_capabilities(request, 2)
+            _require_raw_block_capabilities(request.volume_capabilities)
         except ValueError as err:
             _abort(context, "INVALID_ARGUMENT", str(err))
-        return _field_bytes(1, b"")
+        return _csi_pb2.ValidateVolumeCapabilitiesResponse(
+            confirmed=_csi_pb2.ValidateVolumeCapabilitiesResponse.Confirmed()
+        )
 
-    def _node_stage_volume(self, _request: bytes, context: Any) -> bytes:
+    @override
+    def NodeGetCapabilities(
+        self,
+        request: _csi_pb2.NodeGetCapabilitiesRequest,
+        context: Any,
+    ) -> _csi_pb2.NodeGetCapabilitiesResponse:
+        self._require_role(context, "node", "NodeGetCapabilities")
+        return _csi_pb2.NodeGetCapabilitiesResponse(
+            capabilities=[
+                _csi_pb2.NodeServiceCapability(
+                    rpc=_csi_pb2.NodeServiceCapability.RPC(type="EXPAND_VOLUME")
+                )
+            ]
+        )
+
+    @override
+    def NodeGetInfo(
+        self,
+        request: _csi_pb2.NodeGetInfoRequest,
+        context: Any,
+    ) -> _csi_pb2.NodeGetInfoResponse:
+        self._require_role(context, "node", "NodeGetInfo")
+        return _csi_pb2.NodeGetInfoResponse(
+            node_id=self.node_name,
+            accessible_topology=_topology(self.node_name),
+        )
+
+    @override
+    def NodeStageVolume(
+        self,
+        request: _csi_pb2.NodeStageVolumeRequest,
+        context: Any,
+    ) -> _csi_pb2.NodeStageVolumeResponse:
         self._require_role(context, "node", "NodeStageVolume")
-        return b""
+        return _csi_pb2.NodeStageVolumeResponse()
 
-    def _node_unstage_volume(self, _request: bytes, context: Any) -> bytes:
+    @override
+    def NodeUnstageVolume(
+        self,
+        request: _csi_pb2.NodeUnstageVolumeRequest,
+        context: Any,
+    ) -> _csi_pb2.NodeUnstageVolumeResponse:
         self._require_role(context, "node", "NodeUnstageVolume")
-        return b""
+        return _csi_pb2.NodeUnstageVolumeResponse()
 
-    def _node_publish_volume(self, request: bytes, context: Any) -> bytes:
+    @override
+    def NodePublishVolume(
+        self,
+        request: _csi_pb2.NodePublishVolumeRequest,
+        context: Any,
+    ) -> _csi_pb2.NodePublishVolumeResponse:
         self._require_role(context, "node", "NodePublishVolume")
-        volume_id = _first_string(request, 1)
-        target_path = _first_string(request, 4)
+        volume_id = request.volume_id.strip()
+        target_path = request.target_path.strip()
         if not volume_id or not target_path:
             _abort(context, "INVALID_ARGUMENT", "NodePublishVolume missing arguments")
         try:
-            _require_raw_block_capabilities(request, 5)
+            _require_raw_block_capabilities((request.volume_capability,))
         except ValueError as err:
             _abort(context, "INVALID_ARGUMENT", str(err))
 
-        async def invoke(kube: Kube) -> bytes:
+        async def invoke(kube: Kube) -> _csi_pb2.NodePublishVolumeResponse:
             record = await self._record_for_volume(kube, volume_id)
             if record.host_id != self.host_id:
                 msg = (
@@ -764,13 +725,18 @@ class BertrandOSDCSIDriver:
                 },
                 timeout=CSI_REQUEST_TIMEOUT_SECONDS,
             )
-            return b""
+            return _csi_pb2.NodePublishVolumeResponse()
 
         return self._rpc(context, invoke)
 
-    def _node_unpublish_volume(self, request: bytes, context: Any) -> bytes:
+    @override
+    def NodeUnpublishVolume(
+        self,
+        request: _csi_pb2.NodeUnpublishVolumeRequest,
+        context: Any,
+    ) -> _csi_pb2.NodeUnpublishVolumeResponse:
         self._require_role(context, "node", "NodeUnpublishVolume")
-        target_path = _first_string(request, 2)
+        target_path = request.target_path.strip()
         if not target_path:
             _abort(
                 context,
@@ -786,65 +752,24 @@ class BertrandOSDCSIDriver:
             )
         except (OSError, TimeoutError, ValueError) as err:
             _abort(context, "FAILED_PRECONDITION", str(err))
-        return b""
+        return _csi_pb2.NodeUnpublishVolumeResponse()
 
-    def _node_expand_volume(self, request: bytes, context: Any) -> bytes:
+    @override
+    def NodeExpandVolume(
+        self,
+        request: _csi_pb2.NodeExpandVolumeRequest,
+        context: Any,
+    ) -> _csi_pb2.NodeExpandVolumeResponse:
         self._require_role(context, "node", "NodeExpandVolume")
-        volume_id = _first_string(request, 1)
+        volume_id = request.volume_id.strip()
         if not volume_id:
             _abort(context, "INVALID_ARGUMENT", "NodeExpandVolume missing volume_id")
 
-        async def invoke(kube: Kube) -> bytes:
+        async def invoke(kube: Kube) -> _csi_pb2.NodeExpandVolumeResponse:
             record = await self._record_for_volume(kube, volume_id)
-            return _field_varint(1, record.target_bytes)
+            return _csi_pb2.NodeExpandVolumeResponse(capacity_bytes=record.target_bytes)
 
         return self._rpc(context, invoke)
-
-
-def _generic_rpc_handlers(grpc: Any, driver: BertrandOSDCSIDriver) -> tuple[Any, ...]:
-    def raw_handler(method: Callable[[bytes, Any], bytes]) -> Any:
-        return grpc.unary_unary_rpc_method_handler(
-            method,
-            request_deserializer=lambda payload: payload,
-            response_serializer=lambda payload: payload,
-        )
-
-    return (
-        grpc.method_handlers_generic_handler(
-            "csi.v1.Identity",
-            {
-                "GetPluginInfo": raw_handler(driver._get_plugin_info),
-                "GetPluginCapabilities": raw_handler(driver._get_plugin_capabilities),
-                "Probe": raw_handler(driver._probe),
-            },
-        ),
-        grpc.method_handlers_generic_handler(
-            "csi.v1.Controller",
-            {
-                "ControllerGetCapabilities": raw_handler(
-                    driver._controller_get_capabilities
-                ),
-                "CreateVolume": raw_handler(driver._create_volume),
-                "DeleteVolume": raw_handler(driver._delete_volume),
-                "ControllerExpandVolume": raw_handler(driver._controller_expand_volume),
-                "ValidateVolumeCapabilities": raw_handler(
-                    driver._validate_volume_capabilities
-                ),
-            },
-        ),
-        grpc.method_handlers_generic_handler(
-            "csi.v1.Node",
-            {
-                "NodeGetCapabilities": raw_handler(driver._node_get_capabilities),
-                "NodeGetInfo": raw_handler(driver._node_get_info),
-                "NodeStageVolume": raw_handler(driver._node_stage_volume),
-                "NodeUnstageVolume": raw_handler(driver._node_unstage_volume),
-                "NodePublishVolume": raw_handler(driver._node_publish_volume),
-                "NodeUnpublishVolume": raw_handler(driver._node_unpublish_volume),
-                "NodeExpandVolume": raw_handler(driver._node_expand_volume),
-            },
-        ),
-    )
 
 
 def serve_csi(*, role: str, endpoint: str, node_name: str = "") -> None:
@@ -856,6 +781,7 @@ def serve_csi(*, role: str, endpoint: str, node_name: str = "") -> None:
         If `endpoint` does not use a Unix-domain socket URL.
     """
     grpc = importlib.import_module("grpc")
+    endpoint = endpoint.strip()
     if not endpoint.startswith("unix://"):
         msg = "Bertrand OSD CSI endpoint must use unix://"
         raise ValueError(msg)
@@ -866,7 +792,9 @@ def serve_csi(*, role: str, endpoint: str, node_name: str = "") -> None:
     driver = BertrandOSDCSIDriver(role=role, node_name=node_name)
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
-    server.add_generic_rpc_handlers(_generic_rpc_handlers(grpc, driver))
+    _csi_pb2_grpc.add_IdentityServicer_to_server(driver, server)
+    _csi_pb2_grpc.add_ControllerServicer_to_server(driver, server)
+    _csi_pb2_grpc.add_NodeServicer_to_server(driver, server)
     server.add_insecure_port(endpoint)
     server.start()
     try:

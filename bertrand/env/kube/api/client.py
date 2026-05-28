@@ -74,6 +74,25 @@ class KubeApiError(OSError):
         )
 
 
+def is_missing_api_resource(err: OSError) -> bool:
+    """Return whether a Kubernetes 404 means the REST resource is unavailable.
+
+    Parameters
+    ----------
+    err : OSError
+        Error raised by :meth:`Kube.run`.
+
+    Returns
+    -------
+    bool
+        Whether the API server could not resolve the requested resource endpoint,
+        rather than simply reporting a missing object instance.
+    """
+    if not isinstance(err, KubeApiError) or err.status != 404:
+        return False
+    return "the server could not find the requested resource" in err.detail.lower()
+
+
 @dataclass
 class Kube:
     """Context-managed Kubernetes client wrapper for Bertrand runtime operations.
@@ -204,18 +223,13 @@ class Kube:
 
         Raises
         ------
-        TimeoutError
-            If convergence/proof exceed the timeout budget.
         OSError
             If managed kubeconfig convergence fails, identity proof fails, or API
             client initialization fails.
         """
-        if timeout <= 0:
-            msg = "kubernetes host-client timeout must be non-negative"
-            raise TimeoutError(msg)
         deadline = Deadline.from_timeout(
             timeout,
-            message="kubernetes host-client timeout must be non-negative",
+            message="kubernetes host-client timeout must be positive",
         )
 
         # NOTE: we always converge from `microk8s config` first so the managed

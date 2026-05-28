@@ -19,13 +19,11 @@ from bertrand.env.kube.ceph.api import (
     discover_loop_fallback_osd,
     discover_lvm_osds,
     drain_ceph_osd,
-    drain_loop_osd,
     host_capacity_snapshot,
     host_id_from_host_state,
     prepare_loop_fallback_osd,
     prepare_lvm_osd,
     purge_ceph_osd,
-    purge_loop_osd,
 )
 from bertrand.env.kube.ceph.capacity import (
     STORAGE_ACTION_RESOURCE,
@@ -38,7 +36,6 @@ from bertrand.env.kube.ceph.capacity import (
     pending_storage_actions,
     read_storage_state,
     storage_loop_osd_name,
-    storage_lvm_osd_name,
     upsert_storage_node_report,
     upsert_storage_osd,
 )
@@ -277,16 +274,12 @@ class CephStorageAgent:
             raise ValueError(msg)
         return pv_name
 
-    def _storage_osd_name(self, action: CephStorageActionRecord) -> str:
+    @staticmethod
+    def _storage_osd_name(action: CephStorageActionRecord) -> str:
         name = (action.spec.storage_osd_name or "").strip()
         if name:
             return name
-        if action.spec.operation == "expand-loop":
-            return storage_loop_osd_name(action.spec.host_id or self.host_id)
-        if action.spec.operation == "expand-lvm":
-            pv_name = self._lvm_pv_name(action)
-            return storage_lvm_osd_name(action.spec.host_id or self.host_id, pv_name)
-        msg = f"{action.spec.operation} action does not target an OSD record"
+        msg = f"{action.spec.operation} action is missing storage_osd_name"
         raise ValueError(msg)
 
     async def _claim_action(
@@ -357,10 +350,7 @@ class CephStorageAgent:
         deadline: Deadline,
     ) -> CephStorageOSD | None:
         storage = await read_storage_state(kube, timeout=deadline.remaining())
-        return next(
-            (item for item in storage.status.osds.values() if item.name == name),
-            None,
-        )
+        return storage.status.osds.get(name)
 
     async def _lvm_osd_by_name(
         self,
@@ -370,16 +360,10 @@ class CephStorageAgent:
         deadline: Deadline,
     ) -> CephStorageOSD | None:
         storage = await read_storage_state(kube, timeout=deadline.remaining())
-        return next(
-            (
-                item
-                for item in storage.status.osds.values()
-                if item.name == name
-                and item.origin == "lvm-pv"
-                and item.host_id == self.host_id
-            ),
-            None,
-        )
+        osd = storage.status.osds.get(name)
+        if osd is not None and osd.origin == "lvm-pv" and osd.host_id == self.host_id:
+            return osd
+        return None
 
     async def _loop_osd_by_id(
         self,
@@ -695,14 +679,14 @@ class CephStorageAgent:
             },
             timeout=deadline.remaining(),
         )
-        await drain_loop_osd(osd_id, timeout=deadline.remaining())
+        await drain_ceph_osd(osd_id, timeout=deadline.remaining())
         await self._patch_rook_current_osds(kube, deadline=deadline)
         await wait_osd_workloads_gone(
             kube,
             record=record,
             timeout=deadline.remaining(),
         )
-        await purge_loop_osd(osd_id, timeout=deadline.remaining())
+        await purge_ceph_osd(osd_id, timeout=deadline.remaining())
         await delete_osd_claims(
             kube,
             record=record,
@@ -811,14 +795,7 @@ class CephStorageAgent:
         timeout : float, default=INFINITY
             Maximum agent runtime in seconds.
 
-        Raises
-        ------
-        TimeoutError
-            If `timeout` is non-positive or the loop exceeds the budget.
         """
-        if timeout <= 0:
-            msg = "agent timeout must be positive"
-            raise TimeoutError(msg)
         deadline = Deadline.from_timeout(
             timeout,
             message="agent timeout must be positive",

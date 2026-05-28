@@ -6,7 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
-from bertrand.env.kube.api._helpers import _is_missing_api_resource
+from bertrand.env.kube.api.client import is_missing_api_resource
 from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
 
 if TYPE_CHECKING:
@@ -57,15 +57,6 @@ HTTP_ROUTE_RESOURCE = CustomObjectResource[CustomObject](
     kind="HTTPRoute",
     plural="httproutes",
 )
-
-
-def _deadline_or_expired(timeout: float) -> Deadline:
-    if timeout <= 0:
-        return Deadline(
-            expires_at=asyncio.get_running_loop().time(),
-            timeout=timeout,
-        )
-    return Deadline.from_timeout(timeout, message="")
 
 
 async def upsert_gateway_class(
@@ -281,15 +272,10 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> CustomObject
 
     Raises
     ------
-    TimeoutError
-        If Gateway convergence exceeds `timeout`.
     OSError
         If Gateway API CRDs, Envoy Gateway acceptance, or external address
         assignment are unavailable.
     """
-    if timeout <= 0:
-        msg = "Bertrand Gateway convergence timeout must be positive"
-        raise TimeoutError(msg)
     deadline = Deadline.from_timeout(
         timeout,
         message="Bertrand Gateway convergence timeout must be positive",
@@ -315,7 +301,7 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> CustomObject
         raise
     await _wait_gateway_class_accepted(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     try:
         current_gateway = await GATEWAY_RESOURCE.get(
@@ -339,7 +325,7 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> CustomObject
         if message is not None:
             raise OSError(message) from err
         raise
-    return await _wait_gateway_address(kube, timeout=deadline.remaining())
+    return await _wait_gateway_address(kube, deadline=deadline)
 
 
 def gateway_api_crd_missing(err: OSError) -> bool:
@@ -356,7 +342,7 @@ def gateway_api_crd_missing(err: OSError) -> bool:
         ``True`` when the error suggests the Gateway API resource type is not
         installed in the cluster.
     """
-    return _is_missing_api_resource(err)
+    return is_missing_api_resource(err)
 
 
 def bertrand_gateway_parent_refs() -> tuple[dict[str, object], ...]:
@@ -388,8 +374,11 @@ def _bertrand_gateway_listeners() -> tuple[dict[str, object], ...]:
     )
 
 
-async def _wait_gateway_class_accepted(kube: Kube, *, timeout: float) -> CustomObject:
-    deadline = _deadline_or_expired(timeout)
+async def _wait_gateway_class_accepted(
+    kube: Kube,
+    *,
+    deadline: Deadline,
+) -> CustomObject:
     last: CustomObject | None = None
     while True:
         remaining = deadline.remaining()
@@ -417,8 +406,7 @@ async def _wait_gateway_class_accepted(kube: Kube, *, timeout: float) -> CustomO
         await asyncio.sleep(deadline.bounded(0.5))
 
 
-async def _wait_gateway_address(kube: Kube, *, timeout: float) -> CustomObject:
-    deadline = _deadline_or_expired(timeout)
+async def _wait_gateway_address(kube: Kube, *, deadline: Deadline) -> CustomObject:
     while True:
         remaining = deadline.remaining()
         if remaining <= 0:
