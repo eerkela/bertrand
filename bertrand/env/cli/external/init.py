@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import math
 import os
 import platform
 import shutil
@@ -17,14 +18,13 @@ import sys
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
 from bertrand.env.config.core import RESOURCE_NAMES, Config, Resource
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
-    INFINITY,
     CommandError,
     Deadline,
     GitRepository,
@@ -52,7 +52,6 @@ from bertrand.env.kube.api.bootstrap import (
     install_microk8s,
     start_microk8s,
 )
-from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
 from bertrand.env.kube.build.daemon import ensure_buildkit_pool
 from bertrand.env.kube.build.repository import (
@@ -81,6 +80,9 @@ from bertrand.env.kube.dev import ensure_dev_backend
 from bertrand.env.kube.namespace import Namespace
 from bertrand.env.kube.network.bootstrap import ensure_network_backend
 from bertrand.env.kube.node_identity import ensure_local_bertrand_node
+
+if TYPE_CHECKING:
+    from bertrand.env.kube.api.client import Kube
 
 INIT_LOCK = Path("/tmp/bertrand-init.lock")
 INIT_LOCK_MODE = 0o666
@@ -187,10 +189,8 @@ _INIT_FAILURE_MARK_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
-@dataclass(frozen=True)
-class _HostRuntime:
-    user: str
-    package_manager: str
+# TODO: these persistent install steps should be more rigorous about how they enforce
+# deadlines during the bootstrap convergence.
 
 
 def _read_os_release() -> dict[str, str]:
@@ -207,7 +207,7 @@ def _read_os_release() -> dict[str, str]:
     return data
 
 
-def _detect_host_runtime() -> _HostRuntime:
+def _detect_host_runtime() -> tuple[str, str]:
     system = platform.system().lower()
     if system != "linux":
         msg = "Unsupported platform for package manager detection"
@@ -231,10 +231,10 @@ def _detect_host_runtime() -> _HostRuntime:
     if manager is None:
         msg = "No supported package manager found"
         raise OSError(msg)
-    return _HostRuntime(user=User().name, package_manager=manager)
+    return User().name, manager
 
 
-async def _install_prereqs(runtime: _HostRuntime, *, assume_yes: bool) -> None:
+async def _install_prereqs(*, package_manager: str, yes: bool) -> None:
     # fail fast if no escalation path is available for package installs
     if os.geteuid() != 0 and not can_escalate():
         msg = (
@@ -245,11 +245,11 @@ async def _install_prereqs(runtime: _HostRuntime, *, assume_yes: bool) -> None:
         raise PermissionError(msg)
 
     # package mapping for bootstrap-required host tools across package managers
-    packages = INIT_PREREQS.get(runtime.package_manager)
+    packages = INIT_PREREQS.get(package_manager)
     if packages is None:
         msg = (
             "Unsupported package manager for prerequisite installation: "
-            f"{runtime.package_manager!r}"
+            f"{package_manager!r}"
         )
         raise OSError(msg)
 
@@ -269,15 +269,15 @@ async def _install_prereqs(runtime: _HostRuntime, *, assume_yes: bool) -> None:
         "Bertrand requires host bootstrap tools to configure runtime "
         f"dependencies and shared state (missing: {', '.join(missing)}).  Would "
         "you like Bertrand to install missing packages now (requires sudo)?\n[y/N] ",
-        assume_yes=assume_yes,
+        assume_yes=yes,
     ):
         msg = "Installation declined by user."
         raise PermissionError(msg)
     await install_packages(
-        package_manager=runtime.package_manager,
+        package_manager=package_manager,
         packages=sorted(missing),
-        assume_yes=assume_yes,
-        timeout=INFINITY,
+        assume_yes=yes,
+        timeout=math.inf,
     )
 
     # verify all required tools after installation
@@ -294,90 +294,25 @@ async def _install_prereqs(runtime: _HostRuntime, *, assume_yes: bool) -> None:
         raise OSError(msg)
 
 
-async def _bootstrap_state_dir(runtime: _HostRuntime, *, assume_yes: bool) -> None:
-    await ensure_host_state(
-        user=runtime.user,
-        assume_yes=assume_yes,
-        timeout=INFINITY,
-    )
-
-
-async def _install_kube_runtime(runtime: _HostRuntime, *, assume_yes: bool) -> None:
-    await install_microk8s(
-        package_manager=runtime.package_manager,
-        user=runtime.user,
-        assume_yes=assume_yes,
-    )
-
-
-def _validate_shared_runtime_groups(runtime: _HostRuntime) -> None:
+def _validate_shared_runtime_groups(*, user: str) -> None:
     for group, purpose in (
         (BERTRAND_GROUP, "shared Bertrand host-state access"),
         ("microk8s", "MicroK8s runtime access"),
     ):
-        status = GroupStatus.get(runtime.user, group)
+        status = GroupStatus.get(user, group)
         if not status.configured:
             msg = (
-                f"user {runtime.user!r} is not in {group!r}.  Rerun `bertrand init` "
-                f"to configure {purpose}."
+                f"user {user!r} is not in {group!r}.  Rerun `bertrand init` to "
+                f"configure {purpose}."
             )
             raise OSError(msg)
         if not status.active:
             msg = (
-                f"user {runtime.user!r} is in {group!r}, but the current session is "
-                f"not active in that group.  Run `newgrp {group}` or log out and "
-                "back in, then rerun `bertrand init`."
+                f"user {user!r} is in {group!r}, but the current session is not active "
+                f"in that group.  Run `newgrp {group}` or log out and back in, then "
+                "rerun `bertrand init`."
             )
             raise OSError(msg)
-
-
-async def _converge_host_runtime(*, assume_yes: bool) -> _HostRuntime:
-    runtime = _detect_host_runtime()
-    await _install_prereqs(runtime, assume_yes=assume_yes)
-    await _bootstrap_state_dir(runtime, assume_yes=assume_yes)
-    await _install_kube_runtime(runtime, assume_yes=assume_yes)
-    _validate_shared_runtime_groups(runtime)
-    await assert_microk8s_installed(user=runtime.user)
-    return runtime
-
-
-async def _ensure_shared_runtime(
-    *,
-    timeout: float,
-    yes: bool,
-    converge_cluster: bool,
-) -> Deadline:
-    msg = "host bootstrap timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=msg)
-    async with HostLock(
-        INIT_LOCK,
-        timeout=deadline.remaining(),
-        privileges=INIT_LOCK_MODE,
-    ):
-        await _converge_host_runtime(assume_yes=yes)
-        if not converge_cluster:
-            return deadline
-
-        await _converge_host_cluster_runtime(deadline, start=True)
-        return deadline
-
-
-async def ensure_shared_runtime_installed(*, timeout: float, yes: bool) -> None:
-    """Install shared host prerequisites without bootstrapping local clusters.
-
-    Parameters
-    ----------
-    timeout : float
-        Maximum host bootstrap budget in seconds.
-    yes : bool
-        Whether to auto-accept installation prompts.
-
-    """
-    await _ensure_shared_runtime(
-        timeout=timeout,
-        yes=yes,
-        converge_cluster=False,
-    )
 
 
 MANAGED_GIT_HOOKS: tuple[tuple[Path, Path, bool], ...] = (
@@ -386,6 +321,9 @@ MANAGED_GIT_HOOKS: tuple[tuple[Path, Path, bool], ...] = (
 )
 REPO_LOCK_DIR = RUN_DIR / "init"
 PROTECTED_DISABLE_RESOURCES: frozenset[str] = frozenset({"bertrand", "python"})
+
+
+# TODO: all of this junk should be wayyy simpler
 
 
 def _parse_resource_specs(
@@ -879,65 +817,6 @@ async def _finalize(
     )
 
 
-async def _converge_build_runtime(kube: Kube, *, timeout: float) -> None:
-    msg = "build runtime timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=msg)
-    await Namespace.upsert(
-        kube,
-        name=BERTRAND_NAMESPACE,
-        timeout=deadline.remaining(),
-    )
-    await ensure_image_repository(kube, timeout=deadline.remaining())
-    await ensure_image_repository_node_trust(kube, timeout=deadline.remaining())
-    await assert_image_repository_node_trust(kube, timeout=deadline.remaining())
-    await ensure_buildkit_pool(
-        kube,
-        timeout=deadline.remaining(),
-        config_hash=await current_buildkit_config_hash(
-            kube,
-            timeout=deadline.remaining(),
-        ),
-    )
-    await ensure_dra_backend(
-        kube,
-        image=control_plane_image(),
-        timeout=deadline.remaining(),
-    )
-    await ensure_buildkit_build_controller(
-        kube,
-        image=control_plane_image(),
-        timeout=deadline.remaining(),
-    )
-
-
-async def _converge_cluster_runtime(kube: Kube, *, timeout: float) -> None:
-    msg = "cluster runtime timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=msg)
-    await ensure_local_bertrand_node(kube, timeout=deadline.remaining())
-    await ensure_rook_ceph_base(kube, timeout=deadline.remaining())
-    await _converge_build_runtime(kube, timeout=deadline.remaining())
-    await ensure_dev_backend(kube, timeout=deadline.remaining())
-    await ensure_network_backend(kube, timeout=deadline.remaining())
-    await ensure_ceph_storage_controller(
-        kube,
-        image=control_plane_image(),
-        timeout=deadline.remaining(),
-    )
-    await wait_rook_ceph_ready(kube, timeout=deadline.remaining())
-
-
-async def _converge_host_cluster_runtime(
-    deadline: Deadline,
-    *,
-    start: bool,
-) -> None:
-    if start:
-        await start_microk8s(timeout=deadline.remaining())
-    await ensure_microk8s_kubeconfig(timeout=deadline.remaining())
-    with await Kube.host(timeout=deadline.remaining()) as kube:
-        await _converge_cluster_runtime(kube, timeout=deadline.remaining())
-
-
 async def _mark_repo_failure(
     kube: Kube,
     *,
@@ -1063,17 +942,11 @@ async def _assert_repo_clean(repo: GitRepository) -> None:
         raise OSError(msg)
 
 
-async def bertrand_init(
-    path: Path | None,
-    *,
-    timeout: float,
-    enable: list[str],
-    disable: list[str],
-    yes: bool,
-) -> None:
-    """Initialize host prerequisites and optionally bootstrap an environment root.
+@dataclass(frozen=True)
+class ExternalInit:
+    """A command closure that bootstraps host prerequisites and project repositories.
 
-    Parameters
+    Attributes
     ----------
     path : Path | None
         Optional project/environment root path.  If None, only host bootstrap stages
@@ -1082,11 +955,6 @@ async def bertrand_init(
         Git repository.  If no repository is found, then a new bare repository will be
         initialized at the indicated path, and an isolated worktree will be created to
         hold its default branch.
-    timeout : float
-        Time (in seconds) to wait for the repository to become available with the
-        expected configuration.  If infinite, then wait indefinitely.  Note that this
-        does not apply to any host bootstrapping stages, which may require user
-        confirmation, and are only run once per host (not per repository).
     enable : list[str]
         List of resources to enable at the resolved worktree.  Each component is a
         comma-separated list of resource names or aliases, which are resolved to their
@@ -1097,42 +965,120 @@ async def bertrand_init(
         corresponding, unique `Resource` implementations.
     yes : bool
         Whether to auto-accept prompts during host bootstrap stages.
-
-    Raises
-    ------
-    OSError
-        If Git is not found, or the project root repository is invalid.
-    ValueError
-        If any resource names in `enable`/`disable` are invalid, or if required
-        core resources are disabled.
     """
-    if path is None and (enable or disable):
-        msg = (
-            "Cannot globally enable or disable resources without a worktree.  Please "
-            "specify at least a repository path to configure resources within it."
-        )
-        raise OSError(msg)
-    deadline = await _ensure_shared_runtime(
-        timeout=timeout,
-        yes=yes,
-        converge_cluster=True,
-    )
 
-    # if no project root is provided, then we're done
-    if path is None:
-        return
+    path: Path | None
+    enable: list[str]
+    disable: list[str]
+    yes: bool
 
-    # fail fast if required tools are missing, and validate resource convergence input
-    try:
-        enabled, disabled = _parse_repo_resource_plan(enable=enable, disable=disable)
-    except ValueError as err:
-        raise ValueError(*err.args) from None
-    _ensure_git_available()
+    async def run(self, kube: Kube, deadline: Deadline) -> None:
+        """Run the command.
 
-    with await Kube.host(timeout=deadline.remaining()) as kube:
+        Parameters
+        ----------
+        kube : Kube
+            Kubernetes client instance for this command.
+        deadline : Deadline
+            Deadline for the entire init operation, including host bootstrapping and
+            repository convergence.
+
+        Raises
+        ------
+        OSError
+            If Git is not found, or the project root repository is invalid.
+        ValueError
+            If any resource names in `enable`/`disable` are invalid, or if required
+            core resources are disabled.
+        """
+        if self.path is None and (self.enable or self.disable):
+            msg = (
+                "Cannot globally enable or disable resources without a worktree.  "
+                "Please specify at least a repository path to configure resources "
+                "within it."
+            )
+            raise OSError(msg)
+
+        # idempotently bootstrap host cluster
+        async with HostLock(
+            INIT_LOCK,
+            timeout=deadline.remaining,
+            privileges=INIT_LOCK_MODE,
+        ):
+            user, package_manager = _detect_host_runtime()
+            await _install_prereqs(package_manager=package_manager, yes=self.yes)
+            await ensure_host_state(
+                user=user,
+                assume_yes=self.yes,
+                timeout=deadline.remaining
+            )
+            await install_microk8s(
+                user=user,
+                package_manager=package_manager,
+                assume_yes=self.yes,
+            )
+            _validate_shared_runtime_groups(user=user)
+            await assert_microk8s_installed(user=user)
+            await start_microk8s(timeout=deadline.remaining)
+            await ensure_microk8s_kubeconfig(timeout=deadline.remaining)
+            await ensure_local_bertrand_node(kube, timeout=deadline.remaining)
+            await ensure_rook_ceph_base(kube, timeout=deadline.remaining)
+            await Namespace.upsert(
+                kube,
+                name=BERTRAND_NAMESPACE,
+                timeout=deadline.remaining,
+            )
+            await ensure_image_repository(kube, timeout=deadline.remaining)
+            await ensure_image_repository_node_trust(kube=kube, deadline=deadline)
+            # TODO: the assertion should be built into
+            # `ensure_image_repository_node_trust` rather than repeated here  It may
+            # also be beneficial to centralize it in a single `ensure_image_repository`
+            # and then `ensure_buildkit`, etc.
+            await assert_image_repository_node_trust(kube, timeout=deadline.remaining)
+            await ensure_buildkit_pool(
+                kube,
+                timeout=deadline.remaining,
+                config_hash=await current_buildkit_config_hash(
+                    kube,
+                    timeout=deadline.remaining,
+                ),
+            )
+            await ensure_buildkit_build_controller(
+                kube,
+                image=control_plane_image(),
+                timeout=deadline.remaining,
+            )
+            await ensure_dra_backend(
+                kube,
+                image=control_plane_image(),
+                timeout=deadline.remaining,
+            )
+            await ensure_dev_backend(kube, timeout=deadline.remaining)
+            await ensure_network_backend(kube, timeout=deadline.remaining)
+            await ensure_ceph_storage_controller(
+                kube,
+                image=control_plane_image(),
+                timeout=deadline.remaining,
+            )
+            await wait_rook_ceph_ready(kube, timeout=deadline.remaining)
+
+        # if no project root is provided, then we're done
+        if self.path is None:
+            return
+
+        # fail fast if required tools are missing, and validate convergence input
+        try:
+            enabled, disabled = _parse_repo_resource_plan(
+                enable=self.enable,
+                disable=self.disable,
+            )
+        except ValueError as err:
+            raise ValueError(*err.args) from None
+        _ensure_git_available()
+
         repo, worktree, target, recovered_repo_id = await _resolve_repo_target(
             kube,
-            path,
+            self.path,
             deadline=deadline,
         )
         await _converge_repository(
@@ -1144,5 +1090,5 @@ async def bertrand_init(
             enable=enabled,
             disable=disabled,
             deadline=deadline,
-            yes=yes,
+            yes=self.yes,
         )

@@ -124,7 +124,7 @@ class WorkloadTopology:
         Returns
         -------
         bool
-            ``True`` for Job, CronJob, and Deployment topologies.
+            `True` for Job, CronJob, and Deployment topologies.
         """
         return self.kind != "none"
 
@@ -214,7 +214,7 @@ def project_image_tag(project_version: str) -> str:
     Parameters
     ----------
     project_version : str
-        Version from the worktree's ``[project].version`` field.
+        Version from the worktree's `[project].version` field.
 
     Returns
     -------
@@ -2175,13 +2175,13 @@ def workload_topology(config: BertrandModel | None) -> WorkloadTopology:
     Parameters
     ----------
     config : BertrandModel | None
-        Parsed Bertrand configuration, or ``None`` when the worktree does not define
+        Parsed Bertrand configuration, or `None` when the worktree does not define
         Bertrand workload configuration.
 
     Returns
     -------
     WorkloadTopology
-        Inferred controller family.  Missing config selects ``"none"``.
+        Inferred controller family.  Missing config selects `"none"`.
     """
     if config is None:
         return WorkloadTopology(kind="none")

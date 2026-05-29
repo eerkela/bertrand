@@ -170,7 +170,7 @@ class Node(
         Returns
         -------
         str
-            Canonical platform string such as ``"linux/amd64"``, or an empty
+            Canonical platform string such as `"linux/amd64"`, or an empty
             string when the Kubernetes OS or architecture labels are missing.
         """
         labels = self.labels
@@ -186,7 +186,7 @@ class Node(
         Returns
         -------
         bool
-            ``True`` when the node is ready, schedulable, Linux, and has a valid
+            `True` when the node is ready, schedulable, Linux, and has a valid
             platform label pair.
         """
         return (

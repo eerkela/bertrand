@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from bertrand.env.cli.external._helper import (
     _project_command_context,
 )
 from bertrand.env.cli.external.build import _publish_project_image
-from bertrand.env.git import INFINITY
 from bertrand.env.kube.dev import (
     code_open_bridge,
     create_project_dev_session,
@@ -33,7 +33,7 @@ async def bertrand_code(
         Project repository or worktree path. Repository roots target the worktree
         attached to HEAD.
     editor : str | None
-        Optional editor alias override forwarded to internal ``bertrand code``.
+        Optional editor alias override forwarded to internal `bertrand code`.
 
     Raises
     ------
@@ -44,7 +44,7 @@ async def bertrand_code(
     """
     session_id = new_session_id()
     host_id = current_host_id()
-    async with _project_command_context(target, timeout=INFINITY) as (
+    async with _project_command_context(target, timeout=math.inf) as (
         kube,
         _repo,
         _worktree,
@@ -54,7 +54,7 @@ async def bertrand_code(
             kube,
             config=config,
             repo_id=config.repo.repo_id,
-            timeout=INFINITY,
+            timeout=math.inf,
         )
 
         command = ["bertrand", "code", "--block"]
@@ -74,13 +74,13 @@ async def bertrand_code(
             host_id=host_id,
             command=command,
             interactive=False,
-            timeout=INFINITY,
+            timeout=math.inf,
         )
         async with code_open_bridge(kube, session_id=session_id, host_id=host_id):
             try:
                 terminal = await pod.wait_terminal(
                     kube,
-                    timeout=INFINITY,
+                    timeout=math.inf,
                 )
                 if terminal.phase != "Succeeded":
                     log = await terminal.logs(
@@ -98,4 +98,4 @@ async def bertrand_code(
                         msg = f"{msg}\n{detail}"
                     raise OSError(msg)
             finally:
-                await pod.delete(kube, timeout=INFINITY, grace_period_seconds=1)
+                await pod.delete(kube, timeout=math.inf, grace_period_seconds=1)

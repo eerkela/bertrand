@@ -8,6 +8,7 @@ CRDs, and deterministic resource names rather than snap ownership.
 from __future__ import annotations
 
 import json
+import math
 import re
 import shutil
 from collections.abc import Mapping
@@ -19,7 +20,6 @@ import yaml
 from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
-    INFINITY,
     CommandError,
     CompletedProcess,
     Deadline,
@@ -185,7 +185,7 @@ async def kubectl(
     check: bool = True,
     capture_output: bool | None = False,
     stdin: str | None = None,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
     attempts: int = 1,
     delay: float = 0.1,
     cwd: Path | None = None,
@@ -468,8 +468,8 @@ async def microk8s_join_token(*, worker: bool, timeout: float) -> str:
     Returns
     -------
     str
-        Join target in ``host:port/token`` form.  The caller decides whether to
-        append ``--worker`` when consuming the token.
+        Join target in `host:port/token` form.  The caller decides whether to
+        append `--worker` when consuming the token.
 
     Raises
     ------
@@ -510,8 +510,8 @@ async def join_microk8s_cluster(
     Parameters
     ----------
     token : str
-        MicroK8s join target in ``host:port/token`` form, or a full
-        ``microk8s join`` command.
+        MicroK8s join target in `host:port/token` form, or a full
+        `microk8s join` command.
     worker : bool
         Whether to join this node as a worker.
     timeout : float

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 from contextlib import suppress
 from typing import TYPE_CHECKING, Annotated
@@ -12,7 +13,7 @@ from typing import TYPE_CHECKING, Annotated
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, INFINITY, Deadline
+from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.custom_object import (
@@ -888,7 +889,7 @@ def allocated_selector_script(*, required_count: int) -> str:
     )
 
 
-async def run_dra_provider_agent(*, timeout: float = INFINITY) -> None:
+async def run_dra_provider_agent(*, timeout: float = math.inf) -> None:
     """Run the ResourceSlice publisher loop for one node.
 
     Parameters

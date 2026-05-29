@@ -259,8 +259,12 @@ class Kube:
 
         return cls(namespace=namespace, client=_client_from_config(config_file))
 
+    # TODO: getting an internal kubernetes client should be simpler, and should also be
+    # async, similar to getting one from the host.  I'm also not totally sure if
+    # `outside_cluster` is actually useful.
+
     @classmethod
-    def inside_cluster(
+    async def inside_cluster(
         cls,
         *,
         namespace: str | None = None,
@@ -277,7 +281,6 @@ class Kube:
         -------
         Kube
             Configured in-cluster Kubernetes API wrapper.
-
         """
         configuration = _incluster_configuration()
         resolved_namespace = namespace
@@ -332,13 +335,13 @@ class Kube:
         context : str
             Human-readable context for timeout and API error messages.
         missing_ok : bool, optional
-            Whether HTTP 404 should be returned as ``None`` instead of raised as a
+            Whether HTTP 404 should be returned as `None` instead of raised as a
             structured API error.
 
         Returns
         -------
         T | None
-            The API payload, or ``None`` if the operation returned HTTP 404 and
+            The API payload, or `None` if the operation returned HTTP 404 and
             `missing_ok` is true.
 
         Raises

@@ -220,7 +220,7 @@ def platform_token(platform: str) -> str:
     Parameters
     ----------
     platform : str
-        OCI platform string such as ``"linux/amd64"``.
+        OCI platform string such as `"linux/amd64"`.
 
     Returns
     -------

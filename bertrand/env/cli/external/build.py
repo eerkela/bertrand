@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import re
 import sys
 from typing import TYPE_CHECKING
@@ -12,7 +13,7 @@ from bertrand.env.cli.external._helper import (
     _project_command_context,
 )
 from bertrand.env.config.core import _check_kube_name
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.build.controller import BUILDKIT_BUILD_CONTROLLER
 from bertrand.env.kube.build.daemon import buildkit_pool_status
 from bertrand.env.kube.build.project import (
@@ -56,8 +57,10 @@ _BUILD_LOG_TAIL_LINES = 240
 
 
 async def bertrand_build(
-    target: Path,
     *,
+    kube: Kube,
+    deadline: Deadline,
+    path: Path,
     publish: str | None = None,
     auth: str | None = None,
     quiet: bool,
@@ -67,7 +70,11 @@ async def bertrand_build(
 
     Parameters
     ----------
-    target : Path
+    kube : Kube
+        Kubernetes client instance.
+    deadline : Deadline
+        Deadline for the build operation.
+    path : Path
         Project repository or worktree path.
     publish : str | None, optional
         Optional external OCI repository root to publish manifests to.
@@ -103,7 +110,7 @@ async def bertrand_build(
 
     result: BuildKitBuildRecord | None = None
     request_name: str | None = None
-    async with _project_command_context(target, timeout=INFINITY) as (
+    async with _project_command_context(path, timeout=math.inf) as (
         kube,
         _repo,
         _worktree,
@@ -112,7 +119,7 @@ async def bertrand_build(
         publish_repo = await _publish_repository(config.repo, publish)
         repo_id = config.repo.repo_id
         if detach:
-            await _assert_build_runtime(kube, timeout=INFINITY)
+            await _assert_build_runtime(kube, timeout=math.inf)
             spec = project_image_spec(config, repo_id=repo_id)
             external_image = (
                 _external_image(publish_repo, spec.image)
@@ -120,11 +127,11 @@ async def bertrand_build(
                 else None
             )
             spec = _publication_spec(spec, external_image=external_image, auth_id=auth)
-            await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=INFINITY)
+            await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=math.inf)
             request = await submit_buildkit_build(
                 kube,
                 spec=spec,
-                timeout=INFINITY,
+                timeout=math.inf,
             )
             request_name = request.name
         else:
@@ -132,7 +139,7 @@ async def bertrand_build(
                 kube,
                 config=config,
                 repo_id=repo_id,
-                timeout=INFINITY,
+                timeout=math.inf,
                 external_repository=publish_repo,
                 auth_id=auth,
                 quiet=quiet,

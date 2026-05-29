@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.cli.external._runtime import emit_json
 from bertrand.env.cli.external._storage import (
     node_report_status_payload,
     print_node_storage_doctor,
     print_node_storage_status,
     storage_cli_snapshot,
 )
-from bertrand.env.git import INFINITY
+from bertrand.env.cli.util import emit_json
 from bertrand.env.kube.api.bootstrap import microk8s_cluster_ready
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.capability.device import (
@@ -199,8 +199,8 @@ async def bertrand_node_storage_status(*, json_output: bool) -> None:
     json_output : bool
         Whether to emit machine-readable JSON.
     """
-    with await Kube.host(timeout=INFINITY) as kube:
-        node = await ensure_local_bertrand_node(kube, timeout=INFINITY)
+    with await Kube.host(timeout=math.inf) as kube:
+        node = await ensure_local_bertrand_node(kube, timeout=math.inf)
         snapshot = await storage_cli_snapshot(kube, host_id=node.host_id)
     payload = snapshot.status_payload()
     if json_output:
@@ -217,8 +217,8 @@ async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
     json_output : bool
         Whether to emit machine-readable JSON.
     """
-    with await Kube.host(timeout=INFINITY) as kube:
-        node = await ensure_local_bertrand_node(kube, timeout=INFINITY)
+    with await Kube.host(timeout=math.inf) as kube:
+        node = await ensure_local_bertrand_node(kube, timeout=math.inf)
         snapshot = await storage_cli_snapshot(kube, host_id=node.host_id)
     if json_output:
         emit_json(snapshot.doctor_payload())
@@ -227,7 +227,7 @@ async def bertrand_node_storage_doctor(*, json_output: bool) -> None:
 
 
 def parse_device_attrs(values: list[str]) -> dict[str, str]:
-    """Parse repeated ``KEY=VALUE`` device attributes.
+    """Parse repeated `KEY=VALUE` device attributes.
 
     Returns
     -------
@@ -237,7 +237,7 @@ def parse_device_attrs(values: list[str]) -> dict[str, str]:
     Raises
     ------
     ValueError
-        If any attribute does not use ``KEY=VALUE`` syntax.
+        If any attribute does not use `KEY=VALUE` syntax.
     """
     attributes: dict[str, str] = {}
     for raw in values:
@@ -259,7 +259,7 @@ async def _node_status_payload() -> dict[str, object]:
     except OSError:
         host_id = ""
     try:
-        microk8s_ready = bool(await microk8s_cluster_ready(timeout=INFINITY))
+        microk8s_ready = bool(await microk8s_cluster_ready(timeout=math.inf))
     except (OSError, TimeoutError, RuntimeError, ValueError):
         microk8s_ready = False
     payload: dict[str, object] = {
@@ -273,24 +273,24 @@ async def _node_status_payload() -> dict[str, object]:
         "devices": [],
     }
     try:
-        with await Kube.host(timeout=INFINITY) as kube:
-            payload["rook_ceph_ready"] = await rook_ceph_ready(kube, timeout=INFINITY)
+        with await Kube.host(timeout=math.inf) as kube:
+            payload["rook_ceph_ready"] = await rook_ceph_ready(kube, timeout=math.inf)
             bertrand_node: BertrandNodeRecord | None = None
             if host_id:
                 bertrand_node = await ensure_local_bertrand_node(
                     kube,
                     host_id=host_id,
-                    timeout=INFINITY,
+                    timeout=math.inf,
                 )
                 node = await Node.get(
                     kube,
                     name=bertrand_node.node_name,
-                    timeout=INFINITY,
+                    timeout=math.inf,
                 )
                 if node is None:
-                    node = await Node.local(kube, timeout=INFINITY)
+                    node = await Node.local(kube, timeout=math.inf)
             else:
-                node = await Node.local(kube, timeout=INFINITY)
+                node = await Node.local(kube, timeout=math.inf)
             if bertrand_node is not None:
                 payload["display_name"] = bertrand_node.display_name
                 payload["phase"] = bertrand_node.phase
@@ -304,7 +304,7 @@ async def _node_status_payload() -> dict[str, object]:
                 "internal_ips": list(node.internal_ips),
                 "external_ips": list(node.external_ips),
             }
-            storage = await read_storage_state(kube, timeout=INFINITY)
+            storage = await read_storage_state(kube, timeout=math.inf)
             report = next(
                 (
                     item
@@ -319,7 +319,7 @@ async def _node_status_payload() -> dict[str, object]:
                 kube,
                 host_ids=(host_id,) if host_id else None,
                 node_names=(node.name,),
-                timeout=INFINITY,
+                timeout=math.inf,
             )
             payload["devices"] = [_device_payload(device) for device in devices]
     except (OSError, TimeoutError, RuntimeError, ValueError) as err:

@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Literal, overload
 
 from bertrand.env.git import (
-    INFINITY,
     CompletedProcess,
     Deadline,
     HostLock,
@@ -131,7 +130,7 @@ def parse_size_bytes(size: str) -> int:
     Parameters
     ----------
     size : str
-        Storage size such as ``"16G"``.
+        Storage size such as `"16G"`.
 
     Returns
     -------
@@ -178,7 +177,7 @@ def _ceph_argv(argv: list[str]) -> list[str]:
 async def ceph(
     argv: list[str],
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
     check: bool = True,
     capture_output: Literal[True],
 ) -> CompletedProcess: ...
@@ -188,7 +187,7 @@ async def ceph(
 async def ceph(
     argv: list[str],
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
     check: bool = True,
     capture_output: Literal[False] = False,
 ) -> str: ...
@@ -197,7 +196,7 @@ async def ceph(
 async def ceph(
     argv: list[str],
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
     check: bool = True,
     capture_output: bool = False,
 ) -> CompletedProcess | str:
@@ -436,7 +435,7 @@ def _fallback_loop_active(path: Path = LOOP_FALLBACK_STORAGE_PATH) -> bool:
 
 
 async def _lvm_inventory(*, timeout: float = 5.0) -> tuple[_LvmPV, ...]:
-    """Return concrete PV inventory for the ``bertrand`` LVM VG.
+    """Return concrete PV inventory for the `bertrand` LVM VG.
 
     Returns
     -------

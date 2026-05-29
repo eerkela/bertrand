@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import socket
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.cli.external._runtime import emit_json
 from bertrand.env.cli.external._storage import (
     print_cluster_storage_doctor,
     print_cluster_storage_status,
@@ -20,7 +20,8 @@ from bertrand.env.cli.external.init import (
     _converge_host_cluster_runtime,
     ensure_shared_runtime_installed,
 )
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
+from bertrand.env.cli.util import emit_json
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.bootstrap import (
     join_microk8s_cluster,
     microk8s_cluster_ready,
@@ -99,7 +100,7 @@ async def bertrand_cluster_status(*, json_output: bool) -> None:
         Whether to emit machine-readable JSON.
     """
     status: dict[str, object] = {
-        "microk8s": await _probe_bool(lambda: microk8s_cluster_ready(timeout=INFINITY)),
+        "microk8s": await _probe_bool(lambda: microk8s_cluster_ready(timeout=math.inf)),
     }
     kube_checks = (
         ("rook_ceph", _rook_ceph_status),
@@ -111,7 +112,7 @@ async def bertrand_cluster_status(*, json_output: bool) -> None:
         ("dev", _dev_status),
     )
     try:
-        with await Kube.host(timeout=INFINITY) as kube:
+        with await Kube.host(timeout=math.inf) as kube:
             for name, probe in kube_checks:
                 try:
                     status[name] = await probe(kube)
@@ -188,7 +189,7 @@ async def bertrand_cluster_join(
     Parameters
     ----------
     token : str
-        Sensitive join bundle produced by ``bertrand cluster invite``.
+        Sensitive join bundle produced by `bertrand cluster invite`.
     worker : bool
         Whether to force MicroK8s worker join semantics.
     timeout : float
@@ -272,7 +273,7 @@ async def bertrand_cluster_storage_status(
     doctor : bool
         Whether to print diagnostic guidance in addition to status.
     """
-    with await Kube.host(timeout=INFINITY) as kube:
+    with await Kube.host(timeout=math.inf) as kube:
         snapshot = await storage_cli_snapshot(kube)
     payload = snapshot.status_payload()
     if json_output:
@@ -333,8 +334,8 @@ async def bertrand_cluster_network_lb_status(*, json_output: bool) -> None:
     json_output : bool
         Whether to emit machine-readable JSON.
     """
-    with await Kube.host(timeout=INFINITY) as kube:
-        status = await metallb_status(kube, timeout=INFINITY)
+    with await Kube.host(timeout=math.inf) as kube:
+        status = await metallb_status(kube, timeout=math.inf)
     if json_output:
         emit_json(status)
         return
@@ -448,7 +449,7 @@ async def bertrand_cluster_network_lb_bgp_advertise_upsert(
 
 
 async def _network_report() -> dict[str, object]:
-    with await Kube.host(timeout=INFINITY) as kube:
+    with await Kube.host(timeout=math.inf) as kube:
         (
             profile,
             config_hash,
@@ -457,17 +458,17 @@ async def _network_report() -> dict[str, object]:
             cni,
             load_balancer,
         ) = await asyncio.gather(
-            NetworkProfile.get(kube, timeout=INFINITY),
-            current_buildkit_config_hash(kube, timeout=INFINITY),
-            image_repository_status(kube, timeout=INFINITY),
+            NetworkProfile.get(kube, timeout=math.inf),
+            current_buildkit_config_hash(kube, timeout=math.inf),
+            image_repository_status(kube, timeout=math.inf),
             _network_gateway_status(kube),
-            inspect_cni(kube, timeout=INFINITY),
-            metallb_status(kube, timeout=INFINITY),
+            inspect_cni(kube, timeout=math.inf),
+            metallb_status(kube, timeout=math.inf),
         )
         buildkit, routes = await asyncio.gather(
             buildkit_pool_status(
                 kube,
-                timeout=INFINITY,
+                timeout=math.inf,
                 config_hash=config_hash,
             ),
             _route_dns_status(
@@ -545,13 +546,13 @@ async def _network_gateway_status(kube: Kube) -> dict[str, object]:
             GATEWAY_CLASS_RESOURCE.get(
                 kube,
                 name=BERTRAND_GATEWAY_CLASS,
-                timeout=INFINITY,
+                timeout=math.inf,
             ),
             GATEWAY_RESOURCE.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=BERTRAND_GATEWAY,
-                timeout=INFINITY,
+                timeout=math.inf,
             ),
         )
     except OSError as err:
@@ -597,7 +598,7 @@ async def _route_dns_status(
             kube,
             namespace=BERTRAND_NAMESPACE,
             labels={HTTP_ROUTE_LABEL: HTTP_ROUTE_LABEL_VALUE},
-            timeout=INFINITY,
+            timeout=math.inf,
         )
     except OSError as err:
         return {
@@ -799,7 +800,7 @@ async def _probe_bool(fn: Callable[[], Awaitable[bool]]) -> dict[str, object]:
 
 
 async def _namespace_status(kube: Kube) -> dict[str, object]:
-    namespace = await Namespace.get(kube, name=BERTRAND_NAMESPACE, timeout=INFINITY)
+    namespace = await Namespace.get(kube, name=BERTRAND_NAMESPACE, timeout=math.inf)
     return {
         "ready": namespace is not None,
         "message": "" if namespace is not None else "Bertrand namespace is missing",
@@ -807,11 +808,11 @@ async def _namespace_status(kube: Kube) -> dict[str, object]:
 
 
 async def _buildkit_status(kube: Kube) -> dict[str, object]:
-    config_hash = await current_buildkit_config_hash(kube, timeout=INFINITY)
-    registry = await image_repository_status(kube, timeout=INFINITY)
+    config_hash = await current_buildkit_config_hash(kube, timeout=math.inf)
+    registry = await image_repository_status(kube, timeout=math.inf)
     buildkit = await buildkit_pool_status(
         kube,
-        timeout=INFINITY,
+        timeout=math.inf,
         config_hash=config_hash,
     )
     failures = [*registry.failures, *buildkit.failures]
@@ -830,7 +831,7 @@ async def _gateway_status(kube: Kube) -> dict[str, object]:
         kube,
         namespace=ENVOY_GATEWAY_NAMESPACE,
         name=ENVOY_GATEWAY_DEPLOYMENT,
-        timeout=INFINITY,
+        timeout=math.inf,
     )
     ready = deployment is not None and deployment.has_available_replicas()
     return {
@@ -840,7 +841,7 @@ async def _gateway_status(kube: Kube) -> dict[str, object]:
 
 
 async def _rook_ceph_status(kube: Kube) -> dict[str, object]:
-    ready = await rook_ceph_ready(kube, timeout=INFINITY)
+    ready = await rook_ceph_ready(kube, timeout=math.inf)
     return {
         "ready": ready,
         "message": "" if ready else "Rook Ceph substrate is not ready",
@@ -848,7 +849,7 @@ async def _rook_ceph_status(kube: Kube) -> dict[str, object]:
 
 
 async def _ceph_csi_status(kube: Kube) -> dict[str, object]:
-    classes = await StorageClass.list(kube, timeout=INFINITY)
+    classes = await StorageClass.list(kube, timeout=math.inf)
     names = [storage.name for storage in classes if storage.is_cephfs]
     return {
         "ready": bool(names),
@@ -858,7 +859,7 @@ async def _ceph_csi_status(kube: Kube) -> dict[str, object]:
 
 
 async def _storage_status(kube: Kube) -> dict[str, object]:
-    storage = await read_storage_state(kube, timeout=INFINITY)
+    storage = await read_storage_state(kube, timeout=math.inf)
     status = storage.policy_status
     ready = status is not None and not status.last_error
     return {
@@ -872,7 +873,7 @@ async def _dev_status(kube: Kube) -> dict[str, object]:
     crd = await CustomResourceDefinition.get(
         kube,
         name=f"{CODE_OPEN_PLURAL}.{DEV_GROUP}",
-        timeout=INFINITY,
+        timeout=math.inf,
     )
     ready = crd is not None and crd.is_established
     return {

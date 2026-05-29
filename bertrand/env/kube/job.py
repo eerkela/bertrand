@@ -531,7 +531,7 @@ class Job(
         failure_label : str
             Human-readable label for diagnostic failures.
         include_headers : bool, optional
-            Whether to prefix each pod's log chunk with ``namespace/name``.
+            Whether to prefix each pod's log chunk with `namespace/name`.
 
         Returns
         -------

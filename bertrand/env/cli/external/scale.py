@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from bertrand.env.cli.external._helper import _project_command_context
-from bertrand.env.git import INFINITY
 from bertrand.env.kube.workload.project import scale_project_workload
 
 if TYPE_CHECKING:
@@ -19,7 +19,7 @@ async def bertrand_scale(
     *,
     replicas: int,
     grace_period_seconds: int = 10,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> None:
     """Scale active Kubernetes workload execution for a project target.
 

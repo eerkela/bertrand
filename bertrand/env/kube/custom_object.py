@@ -66,7 +66,7 @@ class CustomObjectMetadata(BaseModel):
     generation : int
         Kubernetes metadata generation.
     resource_version : str
-        Kubernetes resource version, parsed from ``resourceVersion``.
+        Kubernetes resource version, parsed from `resourceVersion`.
     labels : dict[str, str]
         Kubernetes metadata labels.
     """
@@ -203,7 +203,7 @@ class CustomObject:
         Returns
         -------
         datetime | None
-            Parsed UTC timestamp, or ``None`` when unavailable or malformed.
+            Parsed UTC timestamp, or `None` when unavailable or malformed.
         """
         return _parse_kubernetes_datetime(str(value or ""))
 
@@ -229,7 +229,7 @@ class CustomObjectResource[T_co]:
     payload_parser : Callable[[object], T_co] | None, optional
         Payload validator for record-oriented resources.
     payload_error_context : str | None, optional
-        Context used when wrapping Pydantic validation errors as ``OSError``.
+        Context used when wrapping Pydantic validation errors as `OSError`.
     """
 
     group: str
@@ -326,7 +326,7 @@ class CustomObjectResource[T_co]:
         Returns
         -------
         T_co | None
-            Wrapped custom object, or ``None`` when absent.
+            Wrapped custom object, or `None` when absent.
 
         Raises
         ------
@@ -544,7 +544,7 @@ class CustomObjectResource[T_co]:
         Raises
         ------
         OSError
-            If neither ``spec`` nor ``manifest`` is provided, or the API call fails.
+            If neither `spec` nor `manifest` is provided, or the API call fails.
         """
         namespace = self._object_namespace(namespace, action="upsert")
         if manifest is None:

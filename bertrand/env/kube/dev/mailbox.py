@@ -66,7 +66,7 @@ class CodeOpenSpec(BaseModel):
         Returns
         -------
         bool
-            ``True`` when the current wall clock is past ``deadline``.
+            `True` when the current wall clock is past `deadline`.
         """
         return time.time() >= self.deadline
 
@@ -88,13 +88,13 @@ class CodeOpenStatus(BaseModel):
         Returns
         -------
         bool
-            ``True`` for ``Succeeded``, ``Failed``, or ``Expired``.
+            `True` for `Succeeded`, `Failed`, or `Expired`.
         """
         return self.phase in ("Succeeded", "Failed", "Expired")
 
 
 class CodeOpenRecord(BaseModel):
-    """Validated Kubernetes ``CodeOpenRequest`` custom object."""
+    """Validated Kubernetes `CodeOpenRequest` custom object."""
 
     model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
     api_version: str = Field(alias="apiVersion")
@@ -265,7 +265,7 @@ async def wait_code_open_request(
     Raises
     ------
     TimeoutError
-        If the request does not complete before ``timeout``.
+        If the request does not complete before `timeout`.
     OSError
         If the request disappears before completion.
     """

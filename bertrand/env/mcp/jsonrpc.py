@@ -27,7 +27,7 @@ def params(payload: JSON | None) -> JSON:
     Returns
     -------
     JSON
-        Empty mapping when no params are present, otherwise a ``params`` fragment.
+        Empty mapping when no params are present, otherwise a `params` fragment.
     """
     return {} if payload is None else {"params": payload}
 

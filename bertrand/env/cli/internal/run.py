@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 def bertrand_run(args: argparse.Namespace) -> None:
-    """Execute the internal ``bertrand run`` command.
+    """Execute the internal `bertrand run` command.
 
     Parameters
     ----------

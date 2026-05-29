@@ -164,7 +164,7 @@ async def ensure_workload_controller(
         Validated Bertrand workload config. Missing config selects no workload.
     workload : WorkloadPod | WorkloadIdentity | None
         Workload pod intent for Deployment and CronJob topologies, or a stable
-        identity for no-workload cleanup. Passing ``None`` makes no-workload cleanup
+        identity for no-workload cleanup. Passing `None` makes no-workload cleanup
         a no-op because there is no resource name to target.
     timeout : float
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
@@ -176,7 +176,7 @@ async def ensure_workload_controller(
     Returns
     -------
     Deployment | CronJob | None
-        Converged stable controller, or ``None`` for Job/no-workload topology.
+        Converged stable controller, or `None` for Job/no-workload topology.
 
     """
     message = "workload controller convergence timeout must be positive"
@@ -335,7 +335,7 @@ async def create_workload_job_run(
     kube : Kube
         Active Kubernetes API context.
     config : WorkloadConfig
-        Validated Bertrand workload config whose topology must be ``"job"``.
+        Validated Bertrand workload config whose topology must be `"job"`.
     workload : WorkloadPod
         Workload pod intent to render into the generated Job.
     timeout : float

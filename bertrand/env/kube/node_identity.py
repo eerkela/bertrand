@@ -226,7 +226,7 @@ async def get_bertrand_node(
     Returns
     -------
     BertrandNodeRecord | None
-        Matching record, or ``None`` when it does not exist.
+        Matching record, or `None` when it does not exist.
     """
     return await BERTRAND_NODE_RESOURCE.get(
         kube,
@@ -338,7 +338,7 @@ async def resolve_host_id_for_node(
     Returns
     -------
     str | None
-        Durable host UUID, or ``None`` when no BertrandNode record exists.
+        Durable host UUID, or `None` when no BertrandNode record exists.
 
     Raises
     ------

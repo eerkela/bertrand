@@ -135,7 +135,7 @@ class NetworkProfile(BaseModel):
         Returns
         -------
         bool
-            ``True`` when any DNS field is set.
+            `True` when any DNS field is set.
         """
         return bool(self.nameservers or self.search_domains or self.options)
 
@@ -145,7 +145,7 @@ class NetworkProfile(BaseModel):
         Returns
         -------
         str
-            TOML fragment for BuildKit's ``[dns]`` section, or an empty string
+            TOML fragment for BuildKit's `[dns]` section, or an empty string
             when no DNS overrides are configured.
         """
         if not self.has_dns:

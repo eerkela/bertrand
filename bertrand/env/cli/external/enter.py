@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from typing import TYPE_CHECKING
 
@@ -12,7 +13,6 @@ from bertrand.env.cli.external.build import _publish_project_image
 from bertrand.env.cli.external.run import _attach_pod
 from bertrand.env.config.bertrand import SHELLS, Bertrand
 from bertrand.env.config.vscode import DEV_SHELL_ENTRYPOINT
-from bertrand.env.git import INFINITY
 from bertrand.env.kube.dev import (
     code_open_bridge,
     create_project_dev_session,
@@ -53,7 +53,7 @@ async def bertrand_enter(
 
     session_id = new_session_id()
     host_id = current_host_id()
-    async with _project_command_context(target, timeout=INFINITY) as (
+    async with _project_command_context(target, timeout=math.inf) as (
         kube,
         _repo,
         worktree,
@@ -74,7 +74,7 @@ async def bertrand_enter(
             kube,
             config=config,
             repo_id=config.repo.repo_id,
-            timeout=INFINITY,
+            timeout=math.inf,
         )
         pod, primary_container = await create_project_dev_session(
             kube,
@@ -85,7 +85,7 @@ async def bertrand_enter(
             host_id=host_id,
             command=dev_shell_cmd,
             interactive=True,
-            timeout=INFINITY,
+            timeout=math.inf,
         )
         async with code_open_bridge(kube, session_id=session_id, host_id=host_id):
             try:
@@ -93,7 +93,7 @@ async def bertrand_enter(
                     kube,
                     pod,
                     primary_container=primary_container,
-                    timeout=INFINITY,
+                    timeout=math.inf,
                 )
                 await _attach_pod(
                     kube,
@@ -101,4 +101,4 @@ async def bertrand_enter(
                     primary_container=primary_container,
                 )
             finally:
-                await pod.delete(kube, timeout=INFINITY, grace_period_seconds=1)
+                await pod.delete(kube, timeout=math.inf, grace_period_seconds=1)

@@ -3,25 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import (
-    BERTRAND_NAMESPACE,
-    INFINITY,
-    Deadline,
-)
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
     Kube,
     is_missing_api_resource,
 )
-from bertrand.env.kube.api.spec import (
-    ContainerSpec,
-    PodTemplateSpec,
-)
+from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.build.job import publish_project_platforms
 from bertrand.env.kube.build.manifest import _publish_project_image_manifest
 from bertrand.env.kube.build.repository import (
@@ -589,7 +583,7 @@ async def ensure_buildkit_build_controller(
     await deployment.wait_rollout(kube, timeout=deadline.remaining())
 
 
-async def run_buildkit_build_controller(*, timeout: float = INFINITY) -> None:
+async def run_buildkit_build_controller(*, timeout: float = math.inf) -> None:
     """Run the in-cluster durable BuildKit build controller.
 
     Parameters

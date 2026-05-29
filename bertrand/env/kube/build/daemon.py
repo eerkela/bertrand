@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.host import CACHE_DIR
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.daemonset import DaemonSet
@@ -199,7 +200,7 @@ class _BuildKitPoolInventory:
 async def ensure_buildkit_pool(
     kube: Kube,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
     config_hash: str | None = None,
 ) -> None:
     """Converge the per-node BuildKit DaemonSet.
@@ -248,7 +249,7 @@ async def ensure_buildkit_pool(
 async def buildkit_pool_status(
     kube: Kube,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
     config_hash: str | None = None,
 ) -> BuildKitPoolStatus:
     """Inspect BuildKit pool readiness without mutating the cluster.

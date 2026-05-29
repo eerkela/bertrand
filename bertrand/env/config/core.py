@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import string
 import uuid
@@ -32,7 +33,7 @@ from pydantic import (
     ValidationError,
 )
 
-from bertrand.env.git import INFINITY, GitRepository
+from bertrand.env.git import GitRepository
 from bertrand.env.kube.lock.cluster import ClusterLock
 
 if TYPE_CHECKING:
@@ -479,7 +480,7 @@ class Resource[ModelT: BaseModel]:
         image_build : bool
             Whether this hook is being invoked from an image-build or dev-container
             context. Hooks must use this to choose either source-tree artifacts
-            (``False``) or container-local artifacts (``True``), never both.
+            (`False`) or container-local artifacts (`True`), never both.
 
         Notes
         -----
@@ -649,14 +650,14 @@ class Config:
         *,
         kube: Kube | None = None,
         repo: GitRepository | None = None,
-        timeout: float = INFINITY,
+        timeout: float = math.inf,
     ) -> Self:
         """Load a worktree or standalone configuration root.
 
         This scans the environment root for known resource placements based on their
-        managed paths, then resolves collisions and invalid placements.  If ``root``
+        managed paths, then resolves collisions and invalid placements.  If `root`
         belongs to a Git repository, then the resulting config is scoped to that
-        repository worktree.  Otherwise, ``root`` is loaded as a standalone config tree
+        repository worktree.  Otherwise, `root` is loaded as a standalone config tree
         for offline artifact-rendering contexts.
 
         Parameters
@@ -667,9 +668,9 @@ class Config:
             Active Kubernetes API context used for cluster-wide metadata locking.  If
             omitted, config parsing and rendering run without acquiring a cluster lock.
         repo : GitRepository | None, optional
-            An optional parent git repository containing ``root``, which determines the
+            An optional parent git repository containing `root`, which determines the
             project root for the environment.  If not provided, then it will be inferred
-            from ``root`` when possible.  Missing repositories select standalone mode.
+            from `root` when possible.  Missing repositories select standalone mode.
         timeout : float, optional
             Maximum time to wait for acquiring the worktree lock, in seconds.  If
             infinite, then wait indefinitely for lock acquisition.  Otherwise, if the
@@ -686,11 +687,11 @@ class Config:
         Raises
         ------
         FileNotFoundError
-            If standalone ``root`` does not exist.
+            If standalone `root` does not exist.
         NotADirectoryError
-            If standalone ``root`` is not a directory.
+            If standalone `root` is not a directory.
         ValueError
-            If an explicit or discovered Git repository does not contain ``root`` as a
+            If an explicit or discovered Git repository does not contain `root` as a
             valid worktree.
 
         """

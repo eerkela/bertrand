@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import errno
 import grp
+import math
 import os
 import pwd
 import shlex
@@ -26,14 +27,12 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
-from typing import TYPE_CHECKING, Any, Literal, Self, TextIO, cast
-
-if TYPE_CHECKING:
-    from types import TracebackType
+from typing import Any, Literal, Self, TextIO, cast
 
 if os.name == "nt":
     import msvcrt
@@ -58,7 +57,6 @@ else:
 # generic utils
 ROOT_DIR = Path(Path(sys.executable).anchor)
 HOST_MOUNTS = ROOT_DIR / "proc" / "self" / "mountinfo"
-INFINITY = float("inf")
 NORMALIZE_ARCH = {
     "x86_64": "amd64",
     "amd64": "amd64",
@@ -129,97 +127,6 @@ type JSONValue = Scalar | Sequence[JSONValue] | Mapping[str, JSONValue] | None
 type GitRefState = Literal["prepared", "committed", "aborted"]
 
 
-@dataclass(frozen=True)
-class Deadline:
-    """Absolute event-loop deadline derived from a caller timeout.
-
-    Attributes
-    ----------
-    expires_at : float
-        Event-loop timestamp when the budget expires.
-    timeout : float
-        Original caller timeout in seconds.
-    """
-
-    expires_at: float
-    timeout: float
-
-    @classmethod
-    def from_timeout(cls, timeout: float, *, message: str) -> Self:
-        """Create a deadline from a positive timeout budget.
-
-        Parameters
-        ----------
-        timeout : float
-            Timeout budget in seconds.
-        message : str
-            Error message to raise when `timeout` is not positive.
-
-        Returns
-        -------
-        Self
-            Absolute deadline tracked against the current event loop.
-
-        Raises
-        ------
-        TimeoutError
-            If `timeout` is not positive.
-        """
-        if timeout <= 0:
-            raise TimeoutError(message)
-        loop = asyncio.get_running_loop()
-        return cls(expires_at=loop.time() + timeout, timeout=timeout)
-
-    def remaining(self) -> float:
-        """Return the remaining budget in seconds.
-
-        Returns
-        -------
-        float
-            Remaining time until expiration.  The value may be negative after the
-            deadline has elapsed.
-        """
-        return self.expires_at - asyncio.get_running_loop().time()
-
-    def check(self, message: str) -> float:
-        """Return remaining time or raise when the deadline has elapsed.
-
-        Parameters
-        ----------
-        message : str
-            Error message to raise when no time remains.
-
-        Returns
-        -------
-        float
-            Positive remaining budget in seconds.
-
-        Raises
-        ------
-        TimeoutError
-            If the deadline has elapsed.
-        """
-        remaining = self.remaining()
-        if remaining <= 0:
-            raise TimeoutError(message)
-        return remaining
-
-    def bounded(self, seconds: float) -> float:
-        """Cap an interval by the non-negative remaining budget.
-
-        Parameters
-        ----------
-        seconds : float
-            Desired interval in seconds.
-
-        Returns
-        -------
-        float
-            `seconds` capped to the remaining budget and floored at zero.
-        """
-        return min(seconds, max(0.0, self.remaining()))
-
-
 def inside_image() -> bool:
     """Check if the current process is in a Bertrand image context.
 
@@ -254,205 +161,150 @@ def inside_container() -> bool:
 
 
 @dataclass(frozen=True)
-class User:
-    """A simple structure representing a user identity by user ID and group ID.
+class Deadline:
+    """An absolute time deadline as a unix timestamp plus a user-provided timeout.
 
     Attributes
     ----------
-    uid : int
-        The numeric user ID.
-    gid : int
-        The numeric group ID.
-    name : str
-        The username.
-    home : Path
-        The path to the user's home directory.
+    start : float
+        Unix timestamp when the deadline was created.
+    timeout : float
+        Seconds until the deadline expires.  Must be positive (including infinity), but
+        not NaN.
     """
 
-    uid: int = field(init=False)
-    gid: int = field(init=False)
-    name: str = field(init=False)
-    home: Path = field(init=False)
+    timeout: float
+    start: float = field(default_factory=time.time)
 
     def __post_init__(self) -> None:
-        """Resolve the effective host user identity."""
-        euid = os.geteuid()
-        sudo_uid = os.environ.get("SUDO_UID")
-        sudo_user = os.environ.get("SUDO_USER")
-        if euid == 0 and sudo_uid:
-            object.__setattr__(self, 'uid', int(sudo_uid))
-            pw = pwd.getpwuid(self.uid)
-            object.__setattr__(self, 'gid', pw.pw_gid)
-            object.__setattr__(self, 'name', sudo_user or pw.pw_name)
-            object.__setattr__(self, 'home', Path(pw.pw_dir))
-        else:
-            object.__setattr__(self, 'uid', os.getuid())
-            pw = pwd.getpwuid(self.uid)
-            object.__setattr__(self, 'gid', pw.pw_gid)
-            object.__setattr__(self, 'name', pw.pw_name)
-            object.__setattr__(self, 'home', Path(pw.pw_dir))
+        """Validate that the deadline has not already expired.
 
+        Raises
+        ------
+        TimeoutError
+            If the deadline has already expired at the time of creation.
+        ValueError
+            If the timeout is NaN.
+        """
+        if math.isnan(self.timeout):
+            msg = "timeout cannot be NaN"
+            raise ValueError(msg)
+        if self.timeout <= 0:
+            raise TimeoutError
 
-def abspath(path: Path) -> Path:
-    """Normalize a filesystem path without resolving symlinks.
+    @property
+    def stop(self) -> float:
+        """Return the unix timestamp when the deadline expires.
 
-    Parameters
-    ----------
-    path : Path
-        The path to normalize.
+        Returns
+        -------
+        float
+            Unix timestamp when the deadline expires.
+        """
+        return self.start + self.timeout
 
-    Returns
-    -------
-    Path
-        The normalized path.
-    """
-    return Path(os.path.abspath(path.expanduser()))  # noqa: PTH100
+    @property
+    def remaining(self) -> float:
+        """Return the remaining budget in seconds.
 
+        Returns
+        -------
+        float
+            Remaining time until expiration.  The value may be negative after the
+            deadline has elapsed.
+        """
+        return self.stop - time.time()
 
-def symlink_points_to(path: Path, target: Path) -> bool:
-    """Return whether `path` is a symlink to `target`.
+    def check(self, msg: str = "", err: BaseException | None = None) -> float:
+        """Return remaining time or raise when the deadline has elapsed.
 
-    Parameters
-    ----------
-    path : Path
-        Candidate alias path.
-    target : Path
-        Expected hidden mount destination.
+        Parameters
+        ----------
+        msg : str, optional
+            Error message to raise when no time remains.  Defaults to an empty string.
+        err : BaseException | None, optional
+            Optional inner exception to raise from when throwing a TimeoutError.
 
-    Returns
-    -------
-    bool
-        True when `path` is a symlink whose raw target is absolute and exactly
-        equal to `target`.
-    """
-    try:
-        if path.is_symlink():
-            current = path.readlink()
-            return current.is_absolute() and current == target
-    except OSError:
-        pass
-    return False
+        Returns
+        -------
+        float
+            Positive remaining budget in seconds.  This method is similar to
+            `remaining`, but raises a TimeoutError with the provided message rather
+            than returning a negative value when the deadline has elapsed.
 
+        Raises
+        ------
+        TimeoutError
+            If the deadline has elapsed.
+        """
+        remaining = self.remaining
+        if remaining <= 0:
+            raise TimeoutError(msg) from err
+        return remaining
 
-def atomic_symlink(source: Path, target: Path, *, private: bool = False) -> None:
-    """Atomically create a symbolic link, avoiding race conditions and partial writes.
+    async def call[T](
+        self,
+        closure: Callable[[Deadline], Awaitable[T]],
+        *,
+        msg: str,
+        timeout: float = math.inf,
+        delay: float = 0.0,
+        catch: tuple[type[BaseException], ...] = (
+            TimeoutError,
+            subprocess.TimeoutExpired,
+        ),
+    ) -> T:
+        """Retry an async closure until it succeeds or the deadline expires.
 
-    Parameters
-    ----------
-    source : Path
-        The source path the symbolic link should point to.
-    target : Path
-        The target path of the symbolic link to create.
-    private : bool, optional
-        Whether to set private permissions (0600) on the created symlink, by default
-        False.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(f"{target.name}.tmp.{uuid.uuid4().hex}")
-    tmp.symlink_to(source)
-    if private:
-        tmp.chmod(0o600)
-    tmp.replace(target)
+        Parameters
+        ----------
+        closure : Callable[[Deadline], Awaitable[T]]
+            Async function to call with the remaining timeout budget for each attempt.
+            Any returned value, including None, is treated as success.
+        msg : str
+            Error message to raise if the overall deadline expires before `closure`
+            succeeds.
+        timeout : float
+            Maximum time to wait for `op` to succeed before giving up and retrying.
+            Must be positive (including infinity), but not NaN.  The actual timeout
+            used to run each attempt will be the minimum of this and the remaining time
+            until the overall deadline expires.
+        delay : float
+            Number of seconds to wait between failed attempts.  A value of zero will
+            yield to the event loop before retrying.
+        catch : tuple[type[BaseException], ...], optional
+            Exceptions to catch and retry on.  Defaults to
+            `(TimeoutError, subprocess.TimeoutExpired)`.
 
+        Returns
+        -------
+        T
+            The value returned by `op`.
 
-def atomic_write_text(
-    path: Path,
-    text: str,
-    encoding: str | None = None,
-    *,
-    private: bool = False,
-) -> None:
-    """Atomically write text to a file, avoiding race conditions and partial writes.
+        Raises
+        ------
+        TimeoutError
+            If the overall deadline expires before `op` succeeds.
+        ValueError
+            If `delay` is negative or infinite.
+        """
+        if delay < 0 or math.isinf(delay):
+            msg = f"delay must be non-negative and finite: {delay}"
+            raise ValueError(msg)
 
-    Parameters
-    ----------
-    path : Path
-        The path to write to.
-    text : str
-        The text to write.
-    encoding : str | None, optional
-        The text encoding to use (default is None, which uses the system default).
-    private : bool, optional
-        Whether to set private permissions (0600) on the written file, by default False.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
-    tmp.write_text(text, encoding=encoding)
-    with tmp.open("r+", encoding=encoding) as f:
-        f.flush()
-        os.fsync(f.fileno())
-    if private:
-        tmp.chmod(0o600)
-    tmp.replace(path)
+        last_error: BaseException | None = None
+        while True:
+            remaining = self.remaining
+            if remaining <= 0:
+                raise TimeoutError(msg) from last_error
 
+            try:
+                return await closure(Deadline(min(timeout, remaining)))
+            except catch as err:
+                last_error = err
 
-def read_worktree_id(worktree: Path) -> str:
-    """Read the stable Bertrand worktree identity for a checked-out worktree.
-
-    Parameters
-    ----------
-    worktree : Path
-        Worktree root containing Bertrand metadata.
-
-    Returns
-    -------
-    str
-        UUID hex string stored at ``.bertrand/worktree_id``.
-
-    Raises
-    ------
-    OSError
-        If the worktree ID is missing or malformed.
-    """
-    _check_worktree_metadata_root(worktree)
-    path = worktree / METADATA_WORKTREE_ID
-    try:
-        return uuid.UUID(path.read_text(encoding="utf-8").strip()).hex
-    except FileNotFoundError as err:
-        msg = f"Bertrand worktree identity is missing at {path}"
-        raise OSError(msg) from err
-    except (OSError, ValueError) as err:
-        msg = f"Bertrand worktree identity is malformed at {path}"
-        raise OSError(msg) from err
-
-
-def ensure_worktree_id(worktree: Path) -> str:
-    """Ensure a checked-out worktree has a stable Bertrand UUID.
-
-    Parameters
-    ----------
-    worktree : Path
-        Worktree root that should contain Bertrand metadata.
-
-    Returns
-    -------
-    str
-        Existing or newly generated UUID hex string.
-
-    Raises
-    ------
-    OSError
-        If existing metadata is malformed or cannot be written safely.
-    """
-    _check_worktree_metadata_root(worktree)
-    path = worktree / METADATA_WORKTREE_ID
-    if path.exists():
-        if not path.is_file():
-            msg = f"Bertrand worktree identity path is not a file: {path}"
-            raise OSError(msg)
-        return read_worktree_id(worktree)
-    worktree_id = uuid.uuid4().hex
-    atomic_write_text(path, f"{worktree_id}\n", encoding="utf-8")
-    return worktree_id
-
-
-def _check_worktree_metadata_root(worktree: Path) -> None:
-    if not worktree.exists():
-        msg = f"worktree path does not exist: {worktree}"
-        raise FileNotFoundError(msg)
-    if not worktree.is_dir():
-        msg = f"worktree path is not a directory: {worktree}"
-        raise NotADirectoryError(msg)
+            remaining = self.remaining
+            await asyncio.sleep(min(delay, remaining))
 
 
 class CompletedProcess(subprocess.CompletedProcess[str]):
@@ -517,13 +369,7 @@ class TimeoutExpired(subprocess.TimeoutExpired, TimeoutError):  # noqa: N818
         return "\n\n".join(out)
 
 
-_HOOK_OPERATION_ERRORS: tuple[type[Exception], ...] = (
-    OSError,
-    RuntimeError,
-    TimeoutError,
-    ValueError,
-    CommandError,
-)
+NO_DEADLINE = Deadline(timeout=math.inf)
 
 
 def can_escalate() -> bool:
@@ -563,28 +409,40 @@ def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
     return response in {"y", "yes"}
 
 
-def _warn(message: str) -> None:
-    print(f"bertrand: {message}", file=sys.stderr)
+def warn(msg: str) -> None:
+    """Print a Bertrand warning to standard error.
+
+    Parameters
+    ----------
+    msg : str
+        Warning text without the CLI prefix.
+    """
+    print(f"[bertrand] warning: {msg}", file=sys.stderr)
 
 
 async def _run_no_capture(
+    *,
     argv: list[str],
     proc: asyncio.subprocess.Process,
-    timeout: float,
     stdin: str | None,
-) -> CompletedProcess | CommandError | None:
+    deadline: Deadline,
+) -> CompletedProcess | CommandError | TimeoutExpired | None:
     stdin_bytes = None if stdin is None else stdin.encode("utf-8", errors="replace")
     try:
+        remaining = deadline.check()
         await asyncio.wait_for(
             proc.communicate(stdin_bytes),
-            timeout=None if timeout == INFINITY else timeout,
+            timeout=None if math.isinf(remaining) else remaining,
         )
-    except TimeoutError as err:
+    except TimeoutError:
         proc.kill()
-        await proc.communicate()
-        raise TimeoutExpired(
-            cmd=argv, timeout=timeout or 0.0, output=None, stderr=None
-        ) from err
+        await proc.wait()
+        return TimeoutExpired(
+            cmd=argv,
+            timeout=deadline.timeout,
+            output=None,
+            stderr=None,
+        )
 
     if proc.returncode is None:
         proc.kill()
@@ -592,31 +450,43 @@ async def _run_no_capture(
         return None
 
     if proc.returncode == 0:
-        return CompletedProcess(argv, proc.returncode, "", "")
-    return CommandError(proc.returncode, argv, "", "")
+        return CompletedProcess(
+            args=argv,
+            returncode=proc.returncode,
+            stdout=None,
+            stderr=None,
+        )
+    return CommandError(
+        returncode=proc.returncode,
+        cmd=argv,
+        output=None,
+        stderr=None,
+    )
 
 
 async def _run_capture(
+    *,
     argv: list[str],
     proc: asyncio.subprocess.Process,
-    timeout: float,
     stdin: str | None,
-) -> CompletedProcess | CommandError | None:
+    deadline: Deadline,
+) -> CompletedProcess | CommandError | TimeoutExpired | None:
     stdin_bytes = None if stdin is None else stdin.encode("utf-8", errors="replace")
     try:
+        remaining = deadline.check()
         stdout_raw, stderr_raw = await asyncio.wait_for(
             proc.communicate(stdin_bytes),
-            timeout=None if timeout == INFINITY else timeout,
+            timeout=None if math.isinf(remaining) else remaining,
         )
-    except TimeoutError as err:
+    except TimeoutError:
         proc.kill()
         stdout_raw, stderr_raw = await proc.communicate()
-        raise TimeoutExpired(
+        return TimeoutExpired(
             cmd=argv,
-            timeout=timeout or 0.0,
+            timeout=deadline.timeout,
             output=stdout_raw.decode("utf-8", errors="replace") or None,
             stderr=stderr_raw.decode("utf-8", errors="replace") or None,
-        ) from err
+        )
 
     if proc.returncode is None:
         proc.kill()
@@ -626,8 +496,18 @@ async def _run_capture(
     stdout_text = stdout_raw.decode("utf-8", errors="replace")
     stderr_text = stderr_raw.decode("utf-8", errors="replace")
     if proc.returncode == 0:
-        return CompletedProcess(argv, proc.returncode, stdout_text, stderr_text)
-    return CommandError(proc.returncode, argv, stdout_text, stderr_text)
+        return CompletedProcess(
+            args=argv,
+            returncode=proc.returncode,
+            stdout=stdout_text,
+            stderr=stderr_text,
+        )
+    return CommandError(
+        returncode=proc.returncode,
+        cmd=argv,
+        output=stdout_text,
+        stderr=stderr_text,
+    )
 
 
 async def _tee(
@@ -667,11 +547,12 @@ async def _write_stdin(dst: asyncio.StreamWriter | None, data: str) -> None:
 
 
 async def _run_tee(
+    *,
     argv: list[str],
     proc: asyncio.subprocess.Process,
-    timeout: float,
     stdin: str | None,
-) -> CompletedProcess | CommandError | None:
+    deadline: Deadline,
+) -> CompletedProcess | CommandError | TimeoutExpired | None:
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
     tasks: list[asyncio.Task[None]] = [
@@ -682,24 +563,22 @@ async def _run_tee(
         tasks.append(asyncio.create_task(_write_stdin(proc.stdin, stdin)))
 
     try:
-        try:
-            await asyncio.wait_for(
-                proc.wait(),
-                timeout=None if timeout == INFINITY else timeout,
-            )
-        except TimeoutError as err:
-            proc.kill()
-            await proc.wait()
-            for task in tasks:
-                await task
-            stdout_text = "".join(stdout_lines)
-            stderr_text = "".join(stderr_lines)
-            raise TimeoutExpired(
-                cmd=argv,
-                timeout=timeout or 0.0,
-                output=stdout_text or None,
-                stderr=stderr_text or None,
-            ) from err
+        remaining = deadline.check()
+        await asyncio.wait_for(
+            proc.wait(),
+            timeout=None if math.isinf(remaining) else remaining,
+        )
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        stdout_text = "".join(stdout_lines)
+        stderr_text = "".join(stderr_lines)
+        return TimeoutExpired(
+            cmd=argv,
+            timeout=deadline.timeout,
+            output=stdout_text or None,
+            stderr=stderr_text or None,
+        )
     finally:
         for task in tasks:
             await task
@@ -712,8 +591,18 @@ async def _run_tee(
     stdout_text = "".join(stdout_lines)
     stderr_text = "".join(stderr_lines)
     if proc.returncode == 0:
-        return CompletedProcess(argv, proc.returncode, stdout_text, stderr_text)
-    return CommandError(proc.returncode, argv, stdout_text, stderr_text)
+        return CompletedProcess(
+            args=argv,
+            returncode=proc.returncode,
+            stdout=stdout_text,
+            stderr=stderr_text
+        )
+    return CommandError(
+        returncode=proc.returncode,
+        cmd=argv,
+        output=stdout_text,
+        stderr=stderr_text
+    )
 
 
 async def run(
@@ -721,10 +610,10 @@ async def run(
     *,
     check: bool = True,
     capture_output: bool | None = False,
-    stdin: str | None = None,
-    timeout: float = INFINITY,
+    input: str | None = None,  # noqa: A002
+    deadline: Deadline = NO_DEADLINE,
     attempts: int = 1,
-    delay: float = 0.1,
+    delay: float = 0.0,
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> CompletedProcess:
@@ -745,14 +634,14 @@ async def run(
         None, then output will be "tee'd" to both the console and the returned objects
         simultaneously.  Note that teeing output in this way may break TTY behavior for
         some commands, and is not recommended for interactive use.
-    stdin : str | None, optional
+    input : str | None, optional
         Input to send to the command's stdin (default is None).
-    timeout : float, optional
-        An optional timeout in seconds to wait for the command to complete before
-        raising a `TimeoutExpired` exception.  Default is infinite, which means to wait
-        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.  Note that this does not reset between `attempts`, so only the
-        overall time spent on retries counts against the timeout.
+    deadline : Deadline, optional
+        An overall deadline by which the command must complete before raising a
+        `TimeoutExpired` exception.  Defaults to an infinite deadline, which causes the
+        command to block indefinitely until completion.  If the deadline is earlier
+        than the time this method is called, then a `TimeoutExpired` exception will be
+        raised immediately.
     attempts : int, optional
         The total number of times to attempt the command.  Defaults to 1, which means
         no retries.  If greater than 1, then any command that exits with a nonzero
@@ -784,82 +673,89 @@ async def run(
         If `attempts` is less than one or `delay` is negative.
     """
     if attempts < 1:
-        msg = "attempts must be at least 1"
+        msg = f"attempts must be at least 1: {attempts}"
         raise ValueError(msg)
     if delay < 0:
-        msg = "delay must be non-negative"
+        msg = f"delay must be non-negative: {delay}"
         raise ValueError(msg)
-
-    # get overall deadline across attempts
-    if timeout <= 0.0:
-        raise TimeoutExpired(cmd=argv, timeout=timeout, output=None, stderr=None)
-    deadline = Deadline.from_timeout(timeout, message="")
+    if deadline.remaining <= 0:
+        raise TimeoutExpired(
+            cmd=argv,
+            timeout=deadline.timeout,
+            output=None,
+            stderr=None,
+        )
 
     # loop until success, deadline is exceeded, or attempts are exhausted
-    last_error: CommandError | None = None
-    while attempts > 0:
+    while True:
         proc = await asyncio.create_subprocess_exec(
             *argv,
-            stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+            stdin=asyncio.subprocess.PIPE if input is not None else None,
             stdout=None if capture_output is False else asyncio.subprocess.PIPE,
             stderr=None if capture_output is False else asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
         )
-        timeout = deadline.remaining()
 
         # capture_output=False -> inherit terminal streams and do not capture output
-        result: CompletedProcess | CommandError | None = None
         if capture_output is False:
             result = await _run_no_capture(
-                argv,
-                proc,
-                timeout,
-                stdin,
+                argv=argv,
+                proc=proc,
+                stdin=input,
+                deadline=deadline,
             )
 
         # capture_output=True -> full capture with no tee
         elif capture_output is True:
             result = await _run_capture(
-                argv,
-                proc,
-                timeout,
-                stdin,
+                argv=argv,
+                proc=proc,
+                stdin=input,
+                deadline=deadline,
             )
 
         # capture_output=None -> tee streams while capturing for return/errors
         else:
             result = await _run_tee(
-                argv,
-                proc,
-                timeout,
-                stdin,
+                argv=argv,
+                proc=proc,
+                stdin=input,
+                deadline=deadline,
             )
-
         if isinstance(result, CompletedProcess):
             return result
-        last_error = result
+        if isinstance(result, TimeoutExpired):
+            raise result
+
         attempts -= 1
         if attempts > 0:
-            await asyncio.sleep(deadline.bounded(delay))
-
-    # exhausted all attempts
-    if last_error is not None:
-        if check:
-            raise last_error
-        return CompletedProcess(
-            argv,
-            last_error.returncode,
-            last_error.output or "",
-            last_error.stderr or "",
-        )
-    err = (
-        "unspecified error: command did not complete successfully, but no error "
-        "information was captured"
-    )
-    if check:
-        raise CommandError(-1, argv, None, err)
-    return CompletedProcess(argv, -1, "", err)
+            remaining = deadline.remaining
+            if remaining <= 0:
+                raise TimeoutExpired(
+                    cmd=argv,
+                    timeout=deadline.timeout,
+                    output=result.stdout if result else None,
+                    stderr=result.stderr if result else None,
+                ) from result
+            await asyncio.sleep(min(delay, remaining))
+        elif result is not None:
+            if check:
+                raise result
+            return CompletedProcess(
+                args=argv,
+                returncode=result.returncode,
+                stdout=result.output,
+                stderr=result.stderr,
+            )
+        else:
+            err = (
+                "unspecified error: command did not complete successfully, but no "
+                "error information was captured"
+            )
+            if check:
+                raise CommandError(returncode=-1, cmd=argv, output=None, stderr=err)
+            return CompletedProcess(args=argv, returncode=-1, stdout="", stderr=err)
 
 
 def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
@@ -902,221 +798,44 @@ def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
     return out
 
 
-async def until[T](
-    probe: Callable[[float], Awaitable[T]],
-    *,
-    timeout: float,
-    interval: float,
-    action: str,
-) -> T:
-    """Retry an async probe until it succeeds or a timeout expires.
-
-    Parameters
-    ----------
-    probe : Callable[[float], Awaitable[T]]
-        Async function to call with the remaining timeout budget for each attempt.
-        Any returned value, including None, is treated as success.
-    timeout : float
-        Maximum number of seconds to retry before failing.
-    interval : float
-        Number of seconds to wait between failed probe attempts.  A value of zero
-        yields to the event loop before retrying.
-    action : str
-        Human-readable action used in the timeout error message.
-
-    Returns
-    -------
-    T
-        The value returned by `probe`.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` expires before `probe` succeeds.
-    ValueError
-        If `interval` is negative.
-    """
-    if timeout <= 0:
-        msg = f"timed out {action}"
-        raise TimeoutError(msg)
-    if interval < 0:
-        msg = "interval must be non-negative"
-        raise ValueError(msg)
-
-    deadline = Deadline.from_timeout(timeout, message=f"timed out {action}")
-    last_error: TimeoutError | subprocess.TimeoutExpired | None = None
-
-    while True:
-        remaining = deadline.remaining()
-        if remaining <= 0:
-            msg = f"timed out {action}"
-            raise TimeoutError(msg) from last_error
-
-        try:
-            return await probe(remaining)
-        except (TimeoutError, subprocess.TimeoutExpired) as err:
-            last_error = err
-
-        remaining = deadline.remaining()
-        if remaining <= 0:
-            msg = f"timed out {action}"
-            raise TimeoutError(msg) from last_error
-        await asyncio.sleep(deadline.bounded(interval))
-
-
 @dataclass(frozen=True)
-class _PackageSpec:
-    install: list[str]
-    refresh: list[str] | None
-    yes_install: list[str]
-    yes_refresh: list[str]
-    noninteractive_env: dict[str, str] | None
+class User:
+    """A simple structure representing a user identity by user ID and group ID.
 
-
-_INSTALL_SPECS: dict[str, _PackageSpec] = {
-    "apt": _PackageSpec(
-        install=["apt-get", "install"],
-        refresh=["apt-get", "update"],
-        yes_install=["-y"],
-        yes_refresh=[],
-        noninteractive_env={"DEBIAN_FRONTEND": "noninteractive"},
-    ),
-    "dnf": _PackageSpec(
-        install=["dnf", "install"],
-        refresh=["dnf", "makecache"],
-        yes_install=["-y"],
-        yes_refresh=["-y"],
-        noninteractive_env=None,
-    ),
-    "yum": _PackageSpec(
-        install=["yum", "install"],
-        refresh=["yum", "makecache"],
-        yes_install=["-y"],
-        yes_refresh=["-y"],
-        noninteractive_env=None,
-    ),
-    "zypper": _PackageSpec(
-        install=["zypper", "install"],
-        refresh=["zypper", "refresh"],
-        yes_install=["--non-interactive"],
-        yes_refresh=["--non-interactive"],
-        noninteractive_env=None,
-    ),
-    "pacman": _PackageSpec(
-        install=["pacman", "-S"],
-        refresh=["pacman", "-Sy"],
-        yes_install=["--noconfirm"],
-        yes_refresh=[],
-        noninteractive_env=None,
-    ),
-    "apk": _PackageSpec(
-        install=["apk", "add"],
-        refresh=["apk", "update"],
-        yes_install=["--no-interactive"],
-        yes_refresh=["--no-interactive"],
-        noninteractive_env=None,
-    ),
-}
-
-
-async def install_packages(
-    package_manager: str,
-    packages: Sequence[str],
-    *,
-    assume_yes: bool,
-    timeout: float,
-) -> None:
-    """Install OS packages with the requested host package manager.
-
-    Parameters
+    Attributes
     ----------
-    package_manager : str
-        The package manager to use (e.g. "apt", "dnf", etc.).
-    packages : Sequence[str]
-        The packages to install.
-    assume_yes : bool
-        If True, automatically confirm any prompts for installation or refreshing
-        package lists.  Default is False.
-    timeout : float
-        An optional timeout in seconds to wait for each package manager command to
-        complete before raising a `TimeoutExpired` exception.  If infinite, wait
-        indefinitely.  If zero or negative, a `TimeoutExpired` exception will be raised
-        immediately.
-
-    Raises
-    ------
-    OSError
-        If the package manager is not supported on the current system.
-    PermissionError
-        If the package manager requires root privileges and they are not available.
-    ValueError
-        If the specified package manager is not supported.
-    FileNotFoundError
-        If the package manager's executable or its refresh command (if applicable) is
-        not found in the system PATH.
-    TimeoutExpired
-        If the package manager command does not complete within the specified timeout.
+    uid : int
+        The numeric user ID.
+    gid : int
+        The numeric group ID.
+    name : str
+        The username.
+    home : Path
+        The path to the user's home directory.
     """
-    if os.name != "posix":
-        msg = "package manager operations require a POSIX system."
-        raise OSError(msg)
-    if os.geteuid() != 0 and not can_escalate():
-        msg = (
-            f"package installation using {package_manager!r} requires root "
-            "privileges; sudo not available."
-        )
-        raise PermissionError(msg)
-    if timeout <= 0.0:
-        raise TimeoutExpired(
-            cmd=[package_manager],
-            timeout=timeout,
-            output=None,
-            stderr="timed out before command could be started",
-        )
-    deadline = Deadline.from_timeout(timeout, message="")
 
-    # get package manager spec
-    spec = _INSTALL_SPECS.get(package_manager)
-    if spec is None:
-        msg = (
-            f"unsupported package manager {package_manager!r} (supported: "
-            f"{sorted(_INSTALL_SPECS)})"
-        )
-        raise ValueError(msg)
-    if not shutil.which(spec.install[0]):
-        msg = f"package manager {package_manager!r} not found: {spec.install[0]}"
-        raise FileNotFoundError(msg)
-    if spec.refresh is not None and not shutil.which(spec.refresh[0]):
-        msg = f"refresh command not found: {spec.refresh[0]}"
-        raise FileNotFoundError(msg)
+    uid: int = field(init=False)
+    gid: int = field(init=False)
+    name: str = field(init=False)
+    home: Path = field(init=False)
 
-    # generate environment for non-interactive installs, if needed
-    env: dict[str, str] | None = None
-    if assume_yes and spec.noninteractive_env:
-        env = os.environ.copy()
-        env.update(spec.noninteractive_env)
-
-    # refresh package lists if supported
-    if spec.refresh is not None:
-        cmd = spec.refresh.copy()
-        if assume_yes:
-            cmd.extend(spec.yes_refresh)
-        await run(
-            sudo(cmd, non_interactive=assume_yes),
-            env=env,
-            timeout=deadline.remaining(),
-        )
-
-    # install requested packages
-    cmd = spec.install.copy()
-    if assume_yes:
-        cmd.extend(spec.yes_install)
-    cmd.extend(packages)
-    await run(
-        sudo(cmd, non_interactive=assume_yes),
-        env=env,
-        timeout=deadline.remaining(),
-    )
+    def __post_init__(self) -> None:
+        """Resolve the effective host user identity."""
+        euid = os.geteuid()
+        sudo_uid = os.environ.get("SUDO_UID")
+        sudo_user = os.environ.get("SUDO_USER")
+        if euid == 0 and sudo_uid:
+            object.__setattr__(self, 'uid', int(sudo_uid))
+            pw = pwd.getpwuid(self.uid)
+            object.__setattr__(self, 'gid', pw.pw_gid)
+            object.__setattr__(self, 'name', sudo_user or pw.pw_name)
+            object.__setattr__(self, 'home', Path(pw.pw_dir))
+        else:
+            object.__setattr__(self, 'uid', os.getuid())
+            pw = pwd.getpwuid(self.uid)
+            object.__setattr__(self, 'gid', pw.pw_gid)
+            object.__setattr__(self, 'name', pw.pw_name)
+            object.__setattr__(self, 'home', Path(pw.pw_dir))
 
 
 @dataclass(frozen=True)
@@ -1220,7 +939,7 @@ class GroupStatus:
 
         # warn if group membership is not active in current session
         if not status.active:
-            _warn(
+            warn(
                 f"added {status.user!r} to the {status.group!r} group, but "
                 "sudo is still required for this session.  Run "
                 f"`newgrp {status.group}` "
@@ -1229,45 +948,272 @@ class GroupStatus:
             )
 
 
-class HostLock:
-    """Provide a re-entrant asynchronous file lock.
+@dataclass(frozen=True)
+class _PackageSpec:
+    install: list[str]
+    refresh: list[str] | None
+    yes_install: list[str]
+    yes_refresh: list[str]
+    noninteractive_env: dict[str, str] | None
+
+
+_INSTALL_SPECS: dict[str, _PackageSpec] = {
+    "apt": _PackageSpec(
+        install=["apt-get", "install"],
+        refresh=["apt-get", "update"],
+        yes_install=["-y"],
+        yes_refresh=[],
+        noninteractive_env={"DEBIAN_FRONTEND": "noninteractive"},
+    ),
+    "dnf": _PackageSpec(
+        install=["dnf", "install"],
+        refresh=["dnf", "makecache"],
+        yes_install=["-y"],
+        yes_refresh=["-y"],
+        noninteractive_env=None,
+    ),
+    "yum": _PackageSpec(
+        install=["yum", "install"],
+        refresh=["yum", "makecache"],
+        yes_install=["-y"],
+        yes_refresh=["-y"],
+        noninteractive_env=None,
+    ),
+    "zypper": _PackageSpec(
+        install=["zypper", "install"],
+        refresh=["zypper", "refresh"],
+        yes_install=["--non-interactive"],
+        yes_refresh=["--non-interactive"],
+        noninteractive_env=None,
+    ),
+    "pacman": _PackageSpec(
+        install=["pacman", "-S"],
+        refresh=["pacman", "-Sy"],
+        yes_install=["--noconfirm"],
+        yes_refresh=[],
+        noninteractive_env=None,
+    ),
+    "apk": _PackageSpec(
+        install=["apk", "add"],
+        refresh=["apk", "update"],
+        yes_install=["--no-interactive"],
+        yes_refresh=["--no-interactive"],
+        noninteractive_env=None,
+    ),
+}
+
+
+async def install_packages(
+    package_manager: str,
+    packages: Sequence[str],
+    *,
+    deadline: Deadline = NO_DEADLINE,
+    yes: bool = False,
+) -> None:
+    """Install OS packages with the requested host package manager.
+
+    Parameters
+    ----------
+    package_manager : str
+        The package manager to use (e.g. "apt", "dnf", etc.).
+    packages : Sequence[str]
+        The packages to install.
+    deadline : Deadline, optional
+        An overall deadline by which the installation must complete before raising a
+        `TimeoutExpired` exception.  Defaults to an infinite deadline, which causes the
+        command to block indefinitely until completion.  If the deadline is earlier than
+        the time this method is called, a `TimeoutExpired` exception will be raised
+        immediately.
+    yes : bool, optional
+        If True, automatically confirm any prompts for installation or refreshing
+        package lists.  Default is False.
+
+    Raises
+    ------
+    OSError
+        If the package manager is not supported on the current system.
+    PermissionError
+        If the package manager requires root privileges and they are not available.
+    ValueError
+        If the specified package manager is not supported.
+    FileNotFoundError
+        If the package manager's executable or its refresh command (if applicable) is
+        not found in the system PATH.
+    """
+    if os.name != "posix":
+        msg = "package manager operations require a POSIX system."
+        raise OSError(msg)
+    if os.geteuid() != 0 and not can_escalate():
+        msg = (
+            f"package installation using {package_manager!r} requires root "
+            "privileges; sudo not available."
+        )
+        raise PermissionError(msg)
+
+    # get package manager spec
+    spec = _INSTALL_SPECS.get(package_manager)
+    if spec is None:
+        msg = (
+            f"unsupported package manager {package_manager!r} (supported: "
+            f"{sorted(_INSTALL_SPECS)})"
+        )
+        raise ValueError(msg)
+    if not shutil.which(spec.install[0]):
+        msg = f"package manager {package_manager!r} not found: {spec.install[0]}"
+        raise FileNotFoundError(msg)
+    if spec.refresh is not None and not shutil.which(spec.refresh[0]):
+        msg = f"refresh command not found: {spec.refresh[0]}"
+        raise FileNotFoundError(msg)
+
+    # generate environment for non-interactive installs, if needed
+    env: dict[str, str] | None = None
+    if yes and spec.noninteractive_env:
+        env = os.environ.copy()
+        env.update(spec.noninteractive_env)
+
+    # refresh package lists if supported
+    if spec.refresh is not None:
+        cmd = spec.refresh.copy()
+        if yes:
+            cmd.extend(spec.yes_refresh)
+        await run(
+            sudo(cmd, non_interactive=yes),
+            env=env,
+            deadline=deadline,
+        )
+
+    # install requested packages
+    cmd = spec.install.copy()
+    if yes:
+        cmd.extend(spec.yes_install)
+    cmd.extend(packages)
+    await run(
+        sudo(cmd, non_interactive=yes),
+        env=env,
+        deadline=deadline,
+    )
+
+
+def abspath(path: Path) -> Path:
+    """Normalize a filesystem path without resolving symlinks.
 
     Parameters
     ----------
     path : Path
-        Local file path used for host-level locking.
-    timeout : float
-        The maximum number of seconds to wait for the lock to be acquired before
-        raising a `TimeoutError`.  Note that due to the shared lock instances across
-        the process, this timeout may be widened by later lock construction for the
-        same lock file.  Non-positive timeouts are permitted for opportunistic
-        `try_lock()` calls, but blocking `lock()` calls will reject them.
-    privileges : int
-        The file mode to apply when creating the lock file. Defaults to `0o600`.
+        The path to normalize.
 
-    Raises
-    ------
-    ValueError
-        If `privileges` is not a valid file mode.
-    OSError
-        If the lock path is invalid.
+    Returns
+    -------
+    Path
+        The normalized path.
     """
+    return Path(os.path.abspath(path.expanduser()))  # noqa: PTH100
+
+
+def symlink_points_to(path: Path, target: Path) -> bool:
+    """Return whether `path` is a symlink to `target`.
+
+    Parameters
+    ----------
+    path : Path
+        Candidate alias path.
+    target : Path
+        Expected hidden mount destination.
+
+    Returns
+    -------
+    bool
+        True when `path` is a symlink whose raw target is absolute and exactly
+        equal to `target`.
+    """
+    try:
+        if path.is_symlink():
+            current = path.readlink()
+            return current.is_absolute() and current == target
+    except OSError:
+        pass
+    return False
+
+
+def atomic_symlink(source: Path, target: Path, *, private: bool = False) -> None:
+    """Atomically create a symbolic link, avoiding race conditions and partial writes.
+
+    Parameters
+    ----------
+    source : Path
+        The source path the symbolic link should point to.
+    target : Path
+        The target path of the symbolic link to create.
+    private : bool, optional
+        Whether to set private permissions (0600) on the created symlink, by default
+        False.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.tmp.{uuid.uuid4().hex}")
+    tmp.symlink_to(source)
+    if private:
+        tmp.chmod(0o600)
+    tmp.replace(target)
+
+
+def atomic_write_text(
+    path: Path,
+    text: str,
+    encoding: str | None = None,
+    *,
+    private: bool = False,
+) -> None:
+    """Atomically write text to a file, avoiding race conditions and partial writes.
+
+    Parameters
+    ----------
+    path : Path
+        The path to write to.
+    text : str
+        The text to write.
+    encoding : str | None, optional
+        The text encoding to use (default is None, which uses the system default).
+    private : bool, optional
+        Whether to set private permissions (0600) on the written file, by default False.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
+    tmp.write_text(text, encoding=encoding)
+    with tmp.open("r+", encoding=encoding) as f:
+        f.flush()
+        os.fsync(f.fileno())
+    if private:
+        tmp.chmod(0o600)
+    tmp.replace(path)
+
+
+class HostLock:
+    """A re-entrant, OS-level, asynchronous file lock."""
 
     path: Path
-    timeout: float
     privileges: int
     _key: tuple[str, int]
     _fd: int | None
     _owner: asyncio.Task[Any] | None
     _depth: int
 
-    def __new__(  # noqa: D102
-        cls,
-        path: Path,
-        timeout: float,
-        *,
-        privileges: int = LOCK_DEFAULT_PRIVILEGES,
-    ) -> Self:
+    def __new__(cls, path: Path, *, privileges: int = LOCK_DEFAULT_PRIVILEGES) -> Self:
+        """Construct or return a shared lock instance for the given path.
+
+        Parameters
+        ----------
+        path : Path
+            Local file path used for host-level locking.
+        privileges : int
+            The file mode to apply when creating the lock file. Defaults to `0o600`.
+
+        Raises
+        ------
+        ValueError
+            If `privileges` is not a valid file mode.
+        OSError
+            If the lock path is invalid.
+        """
         path = path.expanduser().resolve()
         if privileges < 0 or privileges > 0o777:
             msg = f"invalid host lock file mode: {oct(privileges)}"
@@ -1285,15 +1231,12 @@ class HostLock:
             if self is None:
                 self = super().__new__(cls)
                 self.path = path
-                self.timeout = timeout
                 self.privileges = privileges
                 self._key = key
                 self._fd = None
                 self._owner = None
                 self._depth = 0
                 HOST_LOCKS[key] = self
-            elif self.timeout < timeout:
-                self.timeout = timeout
         return cast("Self", self)
 
     @staticmethod
@@ -1320,13 +1263,6 @@ class HostLock:
             self._depth = 0
             if unregister:
                 HOST_LOCKS.pop(self._key, None)
-
-    async def _acquire_file(self, deadline: Deadline) -> bool:
-        while not await self._try_acquire_file():
-            if deadline.remaining() <= 0:
-                return False
-            await asyncio.sleep(deadline.bounded(LOCK_POLL_SECONDS))
-        return True
 
     async def _try_acquire_file(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1362,6 +1298,14 @@ class HostLock:
             raise
         return True
 
+    async def _acquire_file(self, deadline: Deadline) -> bool:
+        while not await self._try_acquire_file():
+            remaining = deadline.remaining
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(LOCK_POLL_SECONDS, remaining))
+        return True
+
     async def _release_file(self) -> None:
         if self._fd is None:
             return
@@ -1380,8 +1324,14 @@ class HostLock:
             with contextlib.suppress(OSError):
                 self.path.unlink()
 
-    async def lock(self) -> Self:
+    async def lock(self, deadline: Deadline) -> Self:
         """Acquire this file lock, waiting for this lock's timeout if needed.
+
+        Parameters
+        ----------
+        deadline : Deadline
+            The deadline by which the lock must be acquired before raising a
+            `TimeoutError`.
 
         Returns
         -------
@@ -1396,15 +1346,7 @@ class HostLock:
             If the lock file cannot be created, locked, or cleaned up after a failed
             acquisition.
         """
-        if self.timeout <= 0:
-            msg = f"could not acquire lock within {self.timeout} seconds"
-            raise TimeoutError(msg)
-
         owner = self._get_owner()
-        deadline = Deadline.from_timeout(
-            self.timeout,
-            message=f"could not acquire lock within {self.timeout} seconds",
-        )
 
         # fast-path: same task re-entrancy
         while True:
@@ -1416,28 +1358,29 @@ class HostLock:
                 if self._owner == owner:
                     self._depth += 1
                     return self
-            if deadline.remaining() <= 0:
-                msg = f"could not acquire lock within {self.timeout} seconds"
+            if deadline.remaining <= 0:
+                msg = (
+                    f"could not acquire lock at {self.path} within {deadline.timeout} "
+                    "seconds"
+                )
                 raise TimeoutError(msg)
-            await asyncio.sleep(deadline.bounded(LOCK_POLL_SECONDS))
+            await asyncio.sleep(min(deadline.remaining, LOCK_POLL_SECONDS))
 
         # slow path: acquire via backend
         try:
             if not await self._acquire_file(deadline):
-                msg = f"could not acquire lock within {self.timeout} seconds"
+                msg = f"could not acquire lock within {deadline.timeout} seconds"
                 raise TimeoutError(msg)
-            return self  # noqa: TRY300
         except OSError:
             with contextlib.suppress(OSError):
                 await self._release_file()
             self._clear_owner(owner=owner)
             raise
 
+        return self
+
     async def try_lock(self) -> bool:
         """Attempt to acquire this lock immediately, without waiting on contention.
-
-        Note that this ignores the lock's timeout, since it is a non-blocking
-        operation.
 
         Returns
         -------
@@ -1514,23 +1457,36 @@ class HostLock:
         finally:
             self._clear_owner(unregister=True)
 
-    async def __aenter__(self) -> Self:  # noqa: D105
-        return await self.lock()
+    def __bool__(self) -> bool:
+        """Return whether this lock is currently held by any task or process.
 
-    async def __aexit__(  # noqa: D105
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.unlock(ignore_errors=exc_value is not None)
-
-    def __bool__(self) -> bool:  # noqa: D105
+        Returns
+        -------
+        bool
+            `True` if this lock is currently held by any task or process, or `False
+            if this lock is currently free.
+        """
         with LOCK_GUARD:
             return self._depth > 0
 
-    def __repr__(self) -> str:  # noqa: D105
-        return f"HostLock(path={self.path!r}, timeout={self.timeout})"
+    def __repr__(self) -> str:
+        """Return a string representation of this lock.
+
+        Returns
+        -------
+        str
+            A string representation of this lock.
+        """
+        return f"HostLock(path={self.path!r})"
+
+
+_HOOK_OPERATION_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    RuntimeError,
+    TimeoutError,
+    ValueError,
+    CommandError,
+)
 
 
 @dataclass(frozen=True)
@@ -1625,6 +1581,60 @@ class GitRefUpdate:
         return updates
 
 
+# TODO: this should be refactored to be a method on GitRepository itself, and then
+# we'll make sure that a GitRepository instance is always injected from the top-level
+# `cli()` helper, or None if the command is run outside of one.
+
+
+def ensure_worktree_id(worktree: Path) -> str:
+    """Ensure a checked-out worktree has a stable Bertrand UUID.
+
+    Parameters
+    ----------
+    worktree : Path
+        Worktree root that should contain Bertrand metadata.
+
+    Returns
+    -------
+    str
+        Existing or newly generated UUID hex string.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the worktree path does not exist.
+    NotADirectoryError
+        If the worktree path is not a directory.
+    OSError
+        If the worktree ID file exists, but is not a UTF-8 text file containing a valid
+        UUID hex.
+    """
+    if not worktree.exists():
+        msg = f"worktree path does not exist: {worktree}"
+        raise FileNotFoundError(msg)
+    if not worktree.is_dir():
+        msg = f"worktree path is not a directory: {worktree}"
+        raise NotADirectoryError(msg)
+
+    # read an existing worktree ID if possible
+    path = worktree / METADATA_WORKTREE_ID
+    if path.exists():
+        if not path.is_file():
+            msg = f"Bertrand worktree identity path is not a file: {path}"
+            raise OSError(msg)
+        text = path.read_text(encoding="utf-8").strip()
+        return uuid.UUID(text).hex
+
+    # generate a new worktree ID and write it atomically
+    worktree_id = uuid.uuid4().hex
+    atomic_write_text(path, f"{worktree_id}\n", encoding="utf-8")
+    return worktree_id
+
+
+# TODO: the timeout -> deadline refactor should also apply to all GitRepository
+# commands, since we need to expand coverage over this part of the interface anyways.
+
+
 @dataclass(frozen=True)
 class GitRepository:
     """Wrap a Git repository.
@@ -1693,33 +1703,48 @@ class GitRepository:
         object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())
 
     @classmethod
-    async def discover(cls, path: Path | None = None) -> GitRepository | None:
+    async def discover(
+        cls,
+        path: Path | None = None,
+        *,
+        deadline: Deadline = NO_DEADLINE,
+    ) -> GitRepository | None:
         """Discover the Git repository for the current working directory.
 
         Parameters
         ----------
         path : Path | None, optional
             An optional path to use as the starting point for discovery.  If None (the
-            default), then the current working directory will be used.
+            default), then the current working directory will be used instead.
+        deadline : Deadline, optional
+            An overall deadline by which the discovery must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
 
         Returns
         -------
         GitRepository | None
             The discovered Git repository, assuming a `path` is inside a Git repository
-
         """
         result = await run(
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
             cwd=path,
             check=False,
             capture_output=True,
+            deadline=deadline,
         )
         if result.returncode == 0:
             return cls(git_dir=Path(result.stdout.strip()))
         return None
 
     @classmethod
-    async def resolve(cls, path: Path) -> tuple[GitRepository, Path]:
+    async def resolve(
+        cls,
+        path: Path,
+        *,
+        deadline: Deadline = NO_DEADLINE
+    ) -> tuple[GitRepository, Path]:
         """Resolve a repository and worktree path.
 
         Parameters
@@ -1732,6 +1757,11 @@ class GitRepository:
             treated as an uninitialized repository, and the worktree will be "."
             (repository-level targeting).  If the path leads to a bare repository,
             then non-root targets must match a registered worktree root exactly.
+        deadline : Deadline, optional
+            An overall deadline by which the resolution must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
 
         Returns
         -------
@@ -1749,18 +1779,18 @@ class GitRepository:
             or if a non-root target is not registered as a worktree of the resolved
             repository.
         """
-        repo = await cls.discover(path)
+        repo = await cls.discover(path, deadline=deadline)
 
         # new bare repository
         if repo is None:
-            if not await cls.supports_relative_paths():
+            if not await cls.supports_relative_paths(deadline=deadline):
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
             repo = cls(path / ".git")
             return repo, Path()
 
         # existing bare repository
         if await repo.is_bare():
-            if not await cls.supports_relative_paths():
+            if not await cls.supports_relative_paths(deadline=deadline):
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
             worktree = path.relative_to(repo.root)
             if not worktree.parts:
@@ -1783,7 +1813,17 @@ class GitRepository:
             raise OSError(msg)
         return repo, worktree
 
-    def __bool__(self) -> bool:  # noqa: D105
+    # TODO: remove __bool__ in exchange for an explicit .valid(deadline=...) method
+    # instead.
+
+    def __bool__(self) -> bool:
+        """Return whether this repository is a valid, initialized repository.
+
+        Returns
+        -------
+        bool
+            True if this repository has been initialized, or False if it has not.
+        """
         return (
             self.git_dir.exists()
             and self.git_dir.is_dir()
@@ -1792,9 +1832,10 @@ class GitRepository:
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-            ).returncode
-            == 0
+            ).returncode == 0
         )
+
+    # TODO: add docstrings to these methods
 
     def __hash__(self) -> int:  # noqa: D105
         return hash(self.git_dir)
@@ -1804,7 +1845,13 @@ class GitRepository:
             return self.git_dir == other.git_dir
         return NotImplemented
 
-    async def init(self, *, branch: str | None = None, bare: bool = True) -> None:
+    async def init(
+        self,
+        *,
+        branch: str | None = None,
+        bare: bool = True,
+        deadline: Deadline = NO_DEADLINE,
+    ) -> None:
         """Initialize a new Git repository at the given path.
 
         Parameters
@@ -1816,7 +1863,12 @@ class GitRepository:
         bare : bool, optional
             Whether to create a bare repository (default is True).  If false, then a
             standard repository with a working tree will be created instead.
-
+        deadline : Deadline, optional
+            An overall deadline by which the initialization must complete before raising
+            a `TimeoutError`.  Defaults to an infinite deadline, which causes the
+            command to block indefinitely until completion.  If the deadline is earlier
+            than the time this method is called, a `TimeoutError` will be raised
+            immediately.
         """
         self.git_dir.mkdir(parents=True, exist_ok=True)
         cmd = ["git", "init", "--quiet"]
@@ -1825,7 +1877,7 @@ class GitRepository:
         if bare:
             cmd.append("--bare")
         cmd.append(str(self.git_dir))
-        await run(cmd)
+        await run(cmd, deadline=deadline)
 
     async def mirror_from(
         self,
@@ -1862,10 +1914,7 @@ class GitRepository:
                 f"cannot mirror from uninitialized source repository: {source.git_dir}"
             )
             raise OSError(msg)
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="timeout must be non-negative",
-        )
+        deadline = Deadline(timeout)
 
         # if this is a fresh repository, just clone directly to initialize it
         if not self:
@@ -1878,7 +1927,7 @@ class GitRepository:
                     str(self.git_dir),
                 ],
                 capture_output=True,
-                timeout=deadline.remaining(),
+                timeout=deadline.remaining,
             )
 
         # otherwise, fetch and mirror all refs to converge with the source repository
@@ -1894,7 +1943,7 @@ class GitRepository:
                     "+refs/*:refs/*",
                 ],
                 capture_output=True,
-                timeout=deadline.remaining(),
+                timeout=deadline.remaining,
             )
 
     async def run(
@@ -1904,7 +1953,7 @@ class GitRepository:
         check: bool = True,
         capture_output: bool | None = False,
         stdin: str | None = None,
-        timeout: float = INFINITY,
+        timeout: float = math.inf,
         attempts: int = 1,
         delay: float = 0.1,
         cwd: Path | None = None,
@@ -2050,8 +2099,16 @@ class GitRepository:
         raise ValueError(msg)
 
     @staticmethod
-    async def supports_relative_paths() -> bool:
+    async def supports_relative_paths(*, deadline: Deadline = NO_DEADLINE) -> bool:
         """Return whether this Git supports relative worktree paths.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An optional deadline by which this check must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
 
         Returns
         -------
@@ -2063,6 +2120,7 @@ class GitRepository:
             ["git", "worktree", "add", "-h"],
             check=False,
             capture_output=True,
+            deadline=deadline,
         )
         add_text = f"{add_help.stdout}\n{add_help.stderr}".lower()
         if add_help.returncode != 0 or "--relative-paths" not in add_text:
@@ -2071,6 +2129,7 @@ class GitRepository:
             ["git", "worktree", "move", "-h"],
             check=False,
             capture_output=True,
+            deadline=deadline,
         )
         move_text = f"{move_help.stdout}\n{move_help.stderr}".lower()
         return move_help.returncode == 0 and "--relative-paths" in move_text
@@ -2285,7 +2344,8 @@ class GitRepository:
         return None
 
     def _intended_worktree_changes(
-        self, updates: Sequence[GitRefUpdate]
+        self,
+        updates: Sequence[GitRefUpdate],
     ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
         # get creation/destruction intent from transaction updates
         created_: dict[str, list[str]] = {}
@@ -2346,7 +2406,7 @@ class GitRepository:
             if conflict is None:
                 winners.append(branch)
                 continue
-            _warn(
+            warn(
                 f"skipping branch '{branch}' due nested path conflict with "
                 f"'{conflict}'"
             )
@@ -2595,7 +2655,7 @@ class GitRepository:
             )
             current[branch] = target
         except _HOOK_OPERATION_ERRORS as err:
-            _warn(
+            warn(
                 f"failed to create worktree for branch '{branch}' at {target}:\n{err}"
             )
 
@@ -2614,7 +2674,7 @@ class GitRepository:
                 current.pop(old_branch, None)
             current[branch] = target
         except _HOOK_OPERATION_ERRORS as err:
-            _warn(
+            warn(
                 f"failed to move worktree for branch '{branch}' from {source} "
                 f"to {target}:\n{err}"
             )
@@ -2629,7 +2689,7 @@ class GitRepository:
             if await self.destroy_worktree(branch, target=path):
                 current.pop(branch, None)
         except _HOOK_OPERATION_ERRORS as err:
-            _warn(f"failed to destroy worktree for branch '{branch}' at {path}:\n{err}")
+            warn(f"failed to destroy worktree for branch '{branch}' at {path}:\n{err}")
 
     async def sync_worktrees(self, updates: Sequence[GitRefUpdate] = ()) -> None:
         """Converge worktrees to the authoritative branch set.

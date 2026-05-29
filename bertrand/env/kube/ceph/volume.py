@@ -170,7 +170,7 @@ def repository_worktree_path(worktree: str | PurePosixPath) -> str:
     Parameters
     ----------
     worktree : str | PurePosixPath
-        Repository-relative worktree path. Empty and ``.`` normalize to ``.``.
+        Repository-relative worktree path. Empty and `.` normalize to `.`.
 
     Returns
     -------

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bertrand.env.cli.external._runtime import warn
+from bertrand.env.cli.util import warn
 from bertrand.env.config.core import Config
 from bertrand.env.git import GitRepository, abspath
 from bertrand.env.kube.api.client import Kube
@@ -17,6 +17,15 @@ from bertrand.env.kube.ceph.mount import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+
+# TODO: _project_command_context is horrific.  We should probably just do this in
+# main.py anyways, and pass those objects down to the command implementations instead
+# of having them all import this same helper module, which should be entirely
+# eliminated.
+
+# -> We also absolutely do not want to open multiple kube client handlers per command
+# invocation, since that's totally unnecessary and wasteful.
 
 
 @asynccontextmanager
@@ -103,7 +112,7 @@ async def resolve_project_scope(
     -------
     tuple[GitRepository, Path]
         Resolved repository and relative worktree path. Repository roots return
-        ``Path()``.
+        `Path()`.
     """
     raw = abspath(target)
     await refresh_repository_alias_for_path(kube, raw, timeout=timeout)

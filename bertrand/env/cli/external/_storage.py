@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
+from bertrand.env.git import BERTRAND_NAMESPACE
 from bertrand.env.kube.ceph.capacity import (
     STORAGE_ACTION_PHASES,
     STORAGE_ACTION_RESOURCE,
@@ -194,7 +195,7 @@ async def storage_cli_snapshot(
     kube: Kube,
     *,
     host_id: str | None = None,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> StorageCliSnapshot:
     """Collect storage records for external CLI status and doctor commands.
 
@@ -205,7 +206,7 @@ async def storage_cli_snapshot(
     host_id : str | None, default None
         Optional host ID used to scope node-local records. Reservations remain
         cluster-wide to preserve existing CLI output.
-    timeout : float, default INFINITY
+    timeout : float, default infinity
         Kubernetes request budget in seconds.
 
     Returns
@@ -357,20 +358,20 @@ async def storage_csi_status(kube: Kube) -> dict[str, object]:
                 name=CSI_DRIVER_NAME,
                 _request_timeout=request_timeout,
             ),
-            timeout=INFINITY,
+            timeout=math.inf,
             context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
         ),
         Deployment.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=CSI_CONTROLLER_NAME,
-            timeout=INFINITY,
+            timeout=math.inf,
         ),
         DaemonSet.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=CSI_NODE_NAME,
-            timeout=INFINITY,
+            timeout=math.inf,
         ),
     )
     return {

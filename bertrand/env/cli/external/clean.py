@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
 
+from bertrand.env.cli.util import warn
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
@@ -78,10 +79,6 @@ def _host_id() -> str | None:
         return None
 
 
-def _warn(message: str) -> None:
-    print(f"bertrand: warning: {message}", file=sys.stderr)
-
-
 _CLEAN_ERROR_TYPES = (OSError, RuntimeError, ValueError)
 
 
@@ -95,7 +92,7 @@ def _handle_clean_error(
     if final or not state.force:
         msg = f"bertrand clean stage {stage!r} failed: {err}"
         raise OSError(msg) from err
-    _warn(f"clean stage {stage!r} failed; continuing due to --force: {err}")
+    warn(f"clean stage {stage!r} failed; continuing due to --force: {err}")
 
 
 async def _clean_repo_mounts_aliases(state: CleanState) -> None:
@@ -136,7 +133,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
                 )
                 if not state.force:
                     raise OSError(msg)
-                _warn(msg)
+                warn(msg)
 
     if not REPO_DIR.exists():
         return
@@ -254,14 +251,13 @@ async def _finalize_cleanup(state: CleanState) -> None:
         raise OSError(msg)
 
 
-async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> None:
+async def bertrand_clean(*, deadline: Deadline, assume_yes: bool, force: bool) -> None:
     """Clean Bertrand-managed runtime objects and local state on the host.
 
     Parameters
     ----------
-    timeout : float
-        Maximum time in seconds to wait for cleanup convergence.  If infinite, wait
-        indefinitely.
+    deadline : Deadline
+        Overall deadline before cleanup stages time out and raise an error.
     assume_yes : bool
         Whether to auto-accept prompts during cleanup.
     force : bool
@@ -275,11 +271,6 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
     OSError
         If cleanup fails to converge.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="cleanup timeout must be positive",
-    )
-
     # require root privileges for global cleanup
     if os.geteuid() != 0:
         msg = (
@@ -311,19 +302,22 @@ async def bertrand_clean(*, timeout: float, assume_yes: bool, force: bool) -> No
                 f"it can retire this host's records without guessing: {err}"
             )
             raise OSError(msg) from err
-        _warn(
+        warn(
             "continuing local cleanup without Kubernetes mount record retirement due "
             "to --force. Repository PVCs and active mount records may remain "
             f"recoverable in the shared cluster: {err}"
         )
 
-    host_id = _host_id()
-    if kube is not None and host_id is None and not force:
-        msg = (
-            f"failed to read Bertrand host identity at {HOST_ID_FILE}; cannot retire "
-            "this host's repository mount records safely"
-        )
-        raise OSError(msg)
+    try:
+        host_id = UUID(HOST_ID_FILE.read_text(encoding="utf-8").strip()).hex
+    except (OSError, ValueError) as err:
+        if kube is not None and not force:
+            msg = (
+                f"failed to read Bertrand host identity at {HOST_ID_FILE}; cannot "
+                "retire this host's repository mount records safely"
+            )
+            raise OSError(msg) from err
+        host_id = None
 
     state = CleanState(
         assume_yes=assume_yes,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import math
@@ -19,7 +20,6 @@ from typing import TYPE_CHECKING, cast
 from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
-    INFINITY,
     Deadline,
     run,
     sudo,
@@ -489,7 +489,7 @@ def registry_config_data(*, read_only: bool = False) -> dict[str, str]:
 async def image_repository_maintenance_status(
     kube: Kube,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> ImageRepositoryMaintenanceStatus:
     """Read the current registry maintenance status.
 
@@ -530,7 +530,7 @@ async def start_image_repository_maintenance(
     *,
     reason: str,
     message: str,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> None:
     """Mark registry maintenance as active.
 
@@ -564,7 +564,7 @@ async def start_image_repository_maintenance(
 async def clear_image_repository_maintenance(
     kube: Kube,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> None:
     """Clear registry maintenance status."""
     deadline = Deadline.from_timeout(
@@ -585,7 +585,7 @@ async def mark_image_repository_storage_dirty(
     kube: Kube,
     *,
     count: int,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> None:
     """Mark registry storage as needing garbage collection.
 
@@ -618,7 +618,7 @@ async def clear_image_repository_storage_dirty(
     kube: Kube,
     *,
     last_gc_at: datetime | None = None,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> None:
     """Clear the durable registry storage dirty marker."""
     deadline = Deadline.from_timeout(
@@ -662,12 +662,7 @@ async def current_buildkit_config_hash(kube: Kube, *, timeout: float) -> str:
     return _config_hash(await current_buildkit_config_data(kube, timeout=timeout))
 
 
-async def ensure_image_repository_trust(*, timeout: float = INFINITY) -> None:
-    """Converge local MicroK8s containerd trust for the registry."""
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image repository trust timeout must be positive",
-    )
+async def _ensure_image_repository_trust(*, deadline: Deadline) -> None:
     content = (
         f"server = \"{IMAGE_REPOSITORY_PULL_SERVER}\"\n"
         f"[host.\"{IMAGE_REPOSITORY_PULL_SERVER}\"]\n"
@@ -687,66 +682,34 @@ async def ensure_image_repository_trust(*, timeout: float = INFINITY) -> None:
             trust_dir = Path(f"/var/snap/microk8s/current/args/certs.d/{host}")
             trust_file = trust_dir / "hosts.toml"
             if trust_file.is_file():
-                try:
+                with contextlib.suppress(OSError):
                     if trust_file.read_text(encoding="utf-8") == content:
                         continue
-                except OSError:
-                    pass
             await run(
                 sudo(["install", "-d", "-m", "0755", str(trust_dir)]),
                 capture_output=True,
-                timeout=deadline.remaining(),
+                timeout=deadline.remaining,
             )
             await run(
                 sudo(["install", "-m", "0644", str(staged), str(trust_file)]),
                 capture_output=True,
-                timeout=deadline.remaining(),
+                timeout=deadline.remaining,
             )
 
 
-async def ensure_image_repository_node_trust(
-    kube: Kube,
-    *,
-    timeout: float = INFINITY,
-) -> None:
-    """Converge local registry trust and mark the local node ready."""
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image repository node-trust timeout must be positive",
-    )
-    await ensure_image_repository_trust(timeout=deadline.remaining())
-    await assert_image_repository_local_route(timeout=deadline.remaining())
-    node = await Node.local(kube, timeout=deadline.remaining())
-    await node.set_label(
-        kube=kube,
-        label=CLUSTER_REGISTRY_READY_LABEL,
-        value=CLUSTER_REGISTRY_READY_VALUE,
-        timeout=deadline.remaining(),
-    )
+# TODO: I should just be able to use deadline.until() to replace the loop here?
 
 
-async def assert_image_repository_local_route(*, timeout: float = INFINITY) -> None:
-    """Assert the local registry route is reachable.
-
-    Raises
-    ------
-    TimeoutError
-        If `timeout` is non-positive or the local registry route does not return an
-        accepted status before the deadline.
-    """
+async def _assert_image_repository_local_route(*, deadline: Deadline) -> None:
     url = f"{IMAGE_REPOSITORY_PULL_SERVER}/v2/"
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image repository local route timeout must be positive",
-    )
-    last_error = ""
+    last_error: OSError | TimeoutError | urllib.error.URLError | None = None
     while True:
-        remaining = deadline.remaining()
+        remaining = deadline.remaining
         if remaining <= 0:
             msg = f"local image repository route {url!r} is not ready"
-            if last_error:
+            if last_error is not None:
                 msg = f"{msg}: {last_error}"
-            raise TimeoutError(msg)
+            raise TimeoutError(msg) from last_error
         request_timeout = min(IMAGE_REPOSITORY_ROUTE_REQUEST_TIMEOUT_SECONDS, remaining)
         try:
             status = await asyncio.to_thread(
@@ -756,18 +719,36 @@ async def assert_image_repository_local_route(*, timeout: float = INFINITY) -> N
             )
             if status in IMAGE_REPOSITORY_ROUTE_READY_STATUS:
                 return
-            last_error = f"HTTP status {status}"
+            msg = f"HTTP status {status}"
+            last_error = urllib.error.URLError(msg)
         except (OSError, TimeoutError, urllib.error.URLError) as err:
-            last_error = str(err)
+            last_error = err
         await asyncio.sleep(
             deadline.bounded(IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS),
         )
 
 
+async def ensure_image_repository_node_trust(*, kube: Kube, deadline: Deadline) -> None:
+    """Converge local registry trust and mark the local node ready."""
+    await _ensure_image_repository_trust(deadline=deadline)
+    await _assert_image_repository_local_route(deadline=deadline)
+    node = await Node.local(kube, timeout=deadline.remaining)
+    await node.set_label(
+        kube=kube,
+        label=CLUSTER_REGISTRY_READY_LABEL,
+        value=CLUSTER_REGISTRY_READY_VALUE,
+        timeout=deadline.remaining,
+    )
+
+
+# TODO: assert_image_repository_node_trust should be rolled into
+# ensure_image_repository_node_trust
+
+
 async def assert_image_repository_node_trust(
     kube: Kube,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> None:
     """Assert all cluster nodes are marked ready for registry pulls.
 
@@ -799,7 +780,7 @@ async def assert_image_repository_node_trust(
 async def image_repository_status(
     kube: Kube,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> ImageRepositoryStatus:
     """Inspect repository readiness without mutating the cluster.
 
@@ -1015,7 +996,7 @@ async def image_repository_status(
         raise OSError(msg) from err
 
 
-async def ensure_image_repository(kube: Kube, *, timeout: float = INFINITY) -> None:
+async def ensure_image_repository(kube: Kube, *, timeout: float = math.inf) -> None:
     """Converge Bertrand's OCI image repository resources.
 
     Raises
@@ -1113,7 +1094,7 @@ async def ensure_image_repository(kube: Kube, *, timeout: float = INFINITY) -> N
 async def restore_image_repository_writable(
     kube: Kube,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> None:
     """Converge the registry Deployment back to writable mode.
 
@@ -1145,7 +1126,7 @@ async def restore_image_repository_writable(
 async def garbage_collect_image_repository_storage(
     kube: Kube,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
     preflight: Callable[[float], Awaitable[bool]] | None = None,
 ) -> bool:
     """Run registry storage garbage collection with writes disabled.
@@ -1385,7 +1366,7 @@ def image_repository_pull_ref(ref: str) -> str:
 async def delete_image_manifest(
     digest_ref: str,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> None:
     """Delete one image manifest by immutable registry digest reference.
 

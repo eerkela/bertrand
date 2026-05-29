@@ -112,7 +112,7 @@ class BuiltinResource[PayloadT]:
     kind : str
         Human-readable Kubernetes kind for diagnostics.
     slug : str
-        Generated-client method slug, such as ``config_map`` or ``deployment``.
+        Generated-client method slug, such as `config_map` or `deployment`.
     expected : type[PayloadT]
         Kubernetes client payload type returned by single-object operations.
     list_type : type[object]
@@ -165,7 +165,7 @@ class BuiltinResource[PayloadT]:
         Returns
         -------
         PayloadT | None
-            Raw Kubernetes payload, or ``None`` when absent.
+            Raw Kubernetes payload, or `None` when absent.
         """
         namespace = self._single_namespace(namespace, action="read")
         label = self._object_label(name=name, namespace=namespace)
@@ -292,7 +292,7 @@ class BuiltinResource[PayloadT]:
         malformed_message : str | None, optional
             Payload validation message override.
         missing_ok : bool, optional
-            Whether HTTP 404 should be converted to ``None`` before payload
+            Whether HTTP 404 should be converted to `None` before payload
             validation.
 
         Returns
@@ -447,7 +447,7 @@ class BuiltinResource[PayloadT]:
         timeout : float
             Maximum wait budget in seconds.
         refresh : Callable[[float], Awaitable[object | None]]
-            Callback that returns the live object, or ``None`` when absent.
+            Callback that returns the live object, or `None` when absent.
         """
         await _wait_until_deleted(label=label, timeout=timeout, refresh=refresh)
 
@@ -728,7 +728,7 @@ class BuiltinResourceObject[PayloadT]:
         Returns
         -------
         Self | None
-            Wrapped Kubernetes object, or ``None`` when absent.
+            Wrapped Kubernetes object, or `None` when absent.
         """
         payload = await cls.resource.get(
             kube,
@@ -807,7 +807,7 @@ class BuiltinResourceObject[PayloadT]:
         Returns
         -------
         Self | None
-            Fresh wrapper for the same object, or ``None`` if it no longer exists.
+            Fresh wrapper for the same object, or `None` if it no longer exists.
         """
         resource = type(self).resource
         if resource.scope == "cluster":
@@ -842,7 +842,7 @@ class BuiltinResourceObject[PayloadT]:
             Maximum request budget in seconds.
         propagation_policy : {"Background", "Foreground", "Orphan"} | None, optional
             Optional Kubernetes deletion propagation policy. Defaults to
-            ``"Background"``.
+            `"Background"`.
         grace_period_seconds : int | None, optional
             Optional Kubernetes deletion grace period.
         """

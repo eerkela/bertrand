@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import Config, _check_uuid
 from bertrand.env.git import (
-    INFINITY,
     PROJECT_MOUNT,
     REPO_ID_ENV,
     WORKTREE_MOUNT,
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 async def live_project_context(
     command: str,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> AsyncIterator[tuple[Kube, Config, str]]:
     """Open the current dev Pod's project config using in-cluster credentials.
 
@@ -66,7 +66,7 @@ async def live_project_context(
 async def image_build_context(
     command: str,
     *,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> AsyncIterator[Config]:
     """Open a standalone image-build config.
 

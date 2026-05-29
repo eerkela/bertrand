@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from bertrand.env.cli.external._helper import _project_command_context
-from bertrand.env.git import INFINITY
 from bertrand.env.kube.workload.project import remove_project_workload
 
 if TYPE_CHECKING:
@@ -18,7 +18,7 @@ async def bertrand_rm(
     target: Path,
     *,
     grace_period_seconds: int = 10,
-    timeout: float = INFINITY,
+    timeout: float = math.inf,
 ) -> None:
     """Remove managed Kubernetes workload topology for a project target.
 

@@ -36,7 +36,7 @@ async def bertrand_dashboard(
     port : int
         Local TCP port to bind. Zero selects a free localhost port.
     open_browser : bool | None
-        Whether to open the dashboard URL in a browser. ``None`` enables an
+        Whether to open the dashboard URL in a browser. `None` enables an
         automatic GUI-capability check.
     timeout : float
         Maximum backend convergence and port-forward readiness budget in seconds.

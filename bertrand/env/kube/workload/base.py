@@ -55,7 +55,7 @@ class WorkloadIdentity:
     worktree_id : str
         Stable UUID for this concrete checkout instance.
     worktree : str | PurePosixPath
-        Relative worktree path inside the repository volume. Use ``"."`` for the
+        Relative worktree path inside the repository volume. Use `"."` for the
         repository root.
     """
 
@@ -94,7 +94,7 @@ class WorkloadIdentity:
         Returns
         -------
         str
-            ``"."`` for root worktrees, otherwise the POSIX relative path.
+            `"."` for root worktrees, otherwise the POSIX relative path.
         """
         worktree = cast("PurePosixPath", self.worktree)
         if not worktree.parts:

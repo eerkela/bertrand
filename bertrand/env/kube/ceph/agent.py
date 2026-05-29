@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import platform
 import sys
@@ -10,7 +11,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.ceph.api import (
     PreparedOSD,
@@ -787,12 +788,12 @@ class CephStorageAgent:
         for action in await self._pending_actions(kube, deadline=deadline):
             await self._execute_action(kube, action=action, deadline=deadline)
 
-    async def run(self, *, timeout: float = INFINITY) -> None:
+    async def run(self, *, timeout: float = math.inf) -> None:
         """Run the node agent loop until cancelled or timed out.
 
         Parameters
         ----------
-        timeout : float, default=INFINITY
+        timeout : float, default=math.inf
             Maximum agent runtime in seconds.
 
         """

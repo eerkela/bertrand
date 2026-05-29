@@ -200,7 +200,7 @@ def gateway_class_accepted(gateway_class: CustomObject) -> bool:
     Returns
     -------
     bool
-        ``True`` when the GatewayClass has `Accepted=True`.
+        `True` when the GatewayClass has `Accepted=True`.
     """
     return _condition_status(gateway_class.status, "Accepted") == "true"
 
@@ -339,7 +339,7 @@ def gateway_api_crd_missing(err: OSError) -> bool:
     Returns
     -------
     bool
-        ``True`` when the error suggests the Gateway API resource type is not
+        `True` when the error suggests the Gateway API resource type is not
         installed in the cluster.
     """
     return is_missing_api_resource(err)

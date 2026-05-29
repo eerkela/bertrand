@@ -121,7 +121,7 @@ class NetworkPolicy(
             Network directions governed by this policy.
         ingress : Collection[Mapping[str, object]] | None, optional
             Raw Kubernetes ingress rule dictionaries. An empty collection with
-            ``policyTypes = ["Ingress"]`` denies all ingress to selected Pods.
+            `policyTypes = ["Ingress"]` denies all ingress to selected Pods.
         egress : Collection[Mapping[str, object]] | None, optional
             Raw Kubernetes egress rule dictionaries.
         labels : Mapping[str, str] | None, optional

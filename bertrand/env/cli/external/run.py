@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import select
 import shutil
@@ -21,7 +22,7 @@ from bertrand.env.cli.external._helper import (
 )
 from bertrand.env.cli.external.build import _publish_project_image
 from bertrand.env.config.bertrand import Bertrand, BertrandModel
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY
+from bertrand.env.git import BERTRAND_NAMESPACE
 from bertrand.env.kube.cronjob import CronJob
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.pod import Pod
@@ -77,8 +78,8 @@ async def bertrand_run(
         Whether to return after workload submission/convergence without attaching
         foreground log streaming.
     tty : bool | None
-        Foreground attachment mode. ``True`` forces TTY attachment, ``False`` forces
-        log streaming, and ``None`` selects TTY attachment only when it is safe and
+        Foreground attachment mode. `True` forces TTY attachment, `False` forces
+        log streaming, and `None` selects TTY attachment only when it is safe and
         the caller has an interactive terminal.
     args : Sequence[str]
         Runtime arguments to append to the configured primary container command.
@@ -94,7 +95,7 @@ async def bertrand_run(
             "attach"
         )
         raise ValueError(msg)
-    async with _project_command_context(target, timeout=INFINITY) as (
+    async with _project_command_context(target, timeout=math.inf) as (
         kube,
         _repo,
         _worktree,
@@ -134,19 +135,19 @@ async def run_configured_project(
     detach : bool
         Whether to return after workload submission/convergence.
     tty : bool | None
-        Foreground attachment mode. ``True`` forces TTY attachment, ``False`` forces
-        log streaming, and ``None`` selects automatically.
+        Foreground attachment mode. `True` forces TTY attachment, `False` forces
+        log streaming, and `None` selects automatically.
     args : Sequence[str]
         Runtime arguments appended to the configured primary container command.
     ensure_build_crds : bool
         Whether to converge BuildKit/image lifecycle CRDs before submitting the
         build request. Host-side commands should enable this; in-cluster dev commands
-        should rely on ``bertrand init`` and avoid CRD-definition write privileges.
+        should rely on `bertrand init` and avoid CRD-definition write privileges.
 
     Raises
     ------
     RuntimeError
-        If ``config`` is inactive.
+        If `config` is inactive.
     ValueError
         If detached TTY mode is requested or the project has no runnable workload.
     """
@@ -180,7 +181,7 @@ async def run_configured_project(
         kube,
         config=config,
         repo_id=repo_id,
-        timeout=INFINITY,
+        timeout=math.inf,
         quiet=detach,
         ensure_crds=ensure_build_crds,
     )
@@ -192,7 +193,7 @@ async def run_configured_project(
             kube,
             config=config,
             repo_id=repo_id,
-            timeout=INFINITY,
+            timeout=math.inf,
             image_ref=image_ref,
             primary_args=runtime_args,
             interactive=interactive,
@@ -213,7 +214,7 @@ async def run_configured_project(
         kube,
         config=config,
         repo_id=repo_id,
-        timeout=INFINITY,
+        timeout=math.inf,
         image_ref=image_ref,
         primary_args=runtime_args,
         interactive=interactive,
@@ -356,7 +357,7 @@ async def _run_job_foreground(
 
 async def _wait_foreground_job_complete(kube: Kube, job: Job) -> None:
     try:
-        await job.wait_complete(kube, timeout=INFINITY)
+        await job.wait_complete(kube, timeout=math.inf)
     except (OSError, TimeoutError) as err:
         diagnostics = await job.pod_diagnostics(
             kube,
@@ -436,7 +437,7 @@ async def _run_deployment_foreground(
         return
     deployment = await deployment.wait_rollout(
         kube,
-        timeout=INFINITY,
+        timeout=math.inf,
         minimum=replicas,
     )
     if attach_tty:

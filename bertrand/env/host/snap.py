@@ -7,11 +7,11 @@ Bertrand owns an installed snap package.
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 
 from bertrand.env.git import (
-    INFINITY,
     CommandError,
     can_escalate,
     confirm,
@@ -79,7 +79,7 @@ async def ensure_snapd(
             package_manager,
             ["snapd"],
             assume_yes=assume_yes,
-            timeout=INFINITY,
+            timeout=math.inf,
         )
     except (CommandError, OSError, ValueError) as err:
         msg = (

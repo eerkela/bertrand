@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import math
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from bertrand.env.cli.external._runtime import run_async, validate_timeout
 from bertrand.env.cli.external.build import bertrand_build
 from bertrand.env.cli.external.clean import bertrand_clean
 from bertrand.env.cli.external.cluster import (
@@ -33,7 +33,7 @@ from bertrand.env.cli.external.cluster import (
 from bertrand.env.cli.external.code import bertrand_code
 from bertrand.env.cli.external.dashboard import bertrand_dashboard
 from bertrand.env.cli.external.enter import bertrand_enter
-from bertrand.env.cli.external.init import bertrand_init
+from bertrand.env.cli.external.init import ExternalInit
 from bertrand.env.cli.external.node import (
     bertrand_node_device_add,
     bertrand_node_device_list,
@@ -58,12 +58,12 @@ from bertrand.env.cli.external.secret import (
     bertrand_shared_secret_list,
     bertrand_shared_secret_rm,
 )
-from bertrand.env.git import INFINITY
+from bertrand.env.cli.util import CLICommand, cli
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.version import __version__
 
 type _KwargSpec = tuple[str, str] | tuple[str, str, Callable[[Any], Any]]
 
-_JSON_HELP = "Emit machine-readable JSON instead of human-readable text."
 _KUBE_TIMEOUT_HELP = "Maximum time in seconds for Kubernetes API convergence."
 _PROJECT_PATH_HELP = (
     "Project repository or worktree path. Repository roots target the worktree "
@@ -77,27 +77,22 @@ _CAPABILITY_KIND_REMOVE_HELP = "Capability kind to remove."
 _CAPABILITY_KIND_FILTER_HELP = "Optional capability kind filter."
 
 
-def _resolved_path(raw: str) -> Path:
-    return Path(raw).expanduser().resolve()
+def external_cli(op: CLICommand, *, timeout: float) -> None:
+    """Run a CLI command in the external CLI context.
 
+    Parameters
+    ----------
+    op : CLICommand
+        Command closure to run, which must conform to the `CLICommand` protocol and
+        capture any additional parameters it needs to run from the CLI argument parser.
+    timeout : float
+        CLI timeout used to set the `Deadline` for the command.
+    """
+    async def _helper() -> None:
+        with await Kube.host(timeout=timeout) as kube:
+            await cli(op, kube=kube, timeout=timeout)
 
-def _display_path(raw: str) -> Path:
-    return Path(raw).expanduser()
-
-
-def _append_flag(cmd: list[str], flag: str, *, enabled: bool) -> None:
-    if enabled:
-        cmd.append(flag)
-
-
-def _append_option(cmd: list[str], flag: str, value: object | None) -> None:
-    if value is not None:
-        cmd.extend([flag, str(value)])
-
-
-def _append_timeout(cmd: list[str], timeout: float) -> None:
-    if not math.isinf(timeout):
-        cmd.extend(["--timeout", str(timeout)])
+    return asyncio.run(_helper())
 
 
 class External:
@@ -140,6 +135,11 @@ class External:
             self.rm()
             self.clean()
 
+        # TODO: these helpers are terrible for clarity and readability.  We should
+        # revert to the first design, where all the methods here are just flat
+        # descriptions of the command structure, without any helper abstractions or
+        # constants/type hints.
+
         @staticmethod
         def subcommands(
             parser: argparse.ArgumentParser,
@@ -165,7 +165,11 @@ class External:
         @staticmethod
         def json(parser: argparse.ArgumentParser) -> None:
             """Add the shared JSON output flag."""
-            parser.add_argument("--json", action="store_true", help=_JSON_HELP)
+            parser.add_argument(
+                "--json",
+                action="store_true",
+                help="Emit machine-readable JSON instead of human-readable text."
+            )
 
         @staticmethod
         def timeout(
@@ -178,7 +182,7 @@ class External:
                 "-t",
                 "--timeout",
                 type=float,
-                default=INFINITY,
+                default=math.inf,
                 help=help_text,
             )
 
@@ -1076,7 +1080,7 @@ class External:
                 "-t",
                 "--timeout",
                 type=float,
-                default=INFINITY,
+                default=math.inf,
                 help="Maximum time in seconds for repository convergence.  Use inf to "
                 "wait indefinitely.",
             )
@@ -1485,7 +1489,7 @@ class External:
             return args
 
     @staticmethod
-    def version(_args: argparse.Namespace) -> None:
+    def version(_: argparse.Namespace) -> None:
         """Execute the `bertrand --version` CLI command.
 
         Parameters
@@ -1503,17 +1507,18 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
-
         """
-        timeout = validate_timeout("init", args.timeout)
-        run_async(
-            bertrand_init(
-                None if args.path is None else Path(args.path).expanduser().resolve(),
-                timeout=timeout,
+        external_cli(
+            ExternalInit(
+                path=(
+                    None if args.path is None
+                    else Path(args.path).expanduser().resolve()
+                ),
                 enable=args.enable,
                 disable=args.disable,
-                yes=args.yes,
-            )
+                yes=args.yes
+            ),
+            timeout=args.timeout,
         )
 
     @staticmethod
@@ -1524,55 +1529,17 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
-
         """
-        worktree = _resolved_path(args.path)
-        cmd = ["bertrand", "build", str(worktree)]
-        if args.publish is not None:
-            cmd.append("--publish")
-            if args.publish:
-                cmd.append(args.publish)
-        _append_option(cmd, "--auth", args.auth or None)
-        _append_flag(cmd, "--detach", enabled=args.detach)
-        run_async(
-            bertrand_build(
-                worktree,
-                publish=args.publish,
-                auth=args.auth,
-                quiet=False,
-                detach=args.detach,
-            ),
-            cmd=cmd,
-            timeout=0.0,
+        worktree = Path(args.path).expanduser().resolve()
+        external_cli(
+            bertrand_build,
+            timeout=math.inf,
+            path=worktree,
+            publish=args.publish,
+            auth=args.auth,
+            quiet=False,
+            detach=args.detach,
         )
-
-    @staticmethod
-    def terminal(args: argparse.Namespace) -> None:
-        """Execute an async terminal parser leaf.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        """
-        timeout = validate_timeout(
-            args.terminal_timeout_scope,
-            getattr(args, "timeout", INFINITY),
-        )
-        kwargs = dict(args.terminal_fixed)
-        for spec in args.terminal_kwargs:
-            key, attr = spec[0], spec[1]
-            value = timeout if attr == "timeout" else getattr(args, attr)
-            if len(spec) == 3:
-                value = spec[2](value)
-            kwargs[key] = value
-        cmd = list(args.terminal_cmd)
-        cmd.extend(
-            str(_display_path(getattr(args, attr)))
-            for attr in args.terminal_display_args
-        )
-        run_async(args.terminal_func(**kwargs), cmd=cmd, timeout=timeout)
 
     @staticmethod
     def run(args: argparse.Namespace) -> None:
@@ -1582,28 +1549,15 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
-
         """
-        target = _display_path(args.path)
-        cmd = ["bertrand", "run", str(target)]
-        _append_flag(cmd, "--detach", enabled=args.detach)
-        if args.tty is True:
-            cmd.append("--tty")
-        elif args.tty is False:
-            cmd.append("--no-tty")
-        if args.args:
-            cmd.append("--")
-            cmd.extend(args.args)
-        run_async(
-            bertrand_run(
-                _resolved_path(args.path),
+        cli(
+            lambda _: asyncio.run(bertrand_run(
+                Path(args.path).expanduser().resolve(),
                 detach=args.detach,
                 tty=args.tty,
                 args=args.args,
-            ),
-            cmd=cmd,
-            timeout=0.0,
-            swallow_keyboard_interrupt=True,
+            )),
+            timeout=math.inf,
         )
 
     @staticmethod
@@ -1614,18 +1568,13 @@ class External:
         ----------
         args : argparse.Namespace
             The parsed command-line arguments.
-
         """
-        target = _display_path(args.path)
-        cmd = ["bertrand", "enter", str(target)]
-        _append_option(cmd, "--shell", args.shell or None)
-        run_async(
-            bertrand_enter(
-                _resolved_path(args.path),
+        cli(
+            lambda _: asyncio.run(bertrand_enter(
+                Path(args.path).expanduser().resolve(),
                 shell=args.shell or None,
-            ),
-            cmd=cmd,
-            timeout=0.0,
+            )),
+            timeout=math.inf,
         )
 
     @staticmethod
@@ -1638,16 +1587,12 @@ class External:
             The parsed command-line arguments.
 
         """
-        target = _display_path(args.path)
-        cmd = ["bertrand", "code", str(target)]
-        _append_option(cmd, "--editor", args.editor or None)
-        run_async(
-            bertrand_code(
-                _resolved_path(args.path),
+        cli(
+            lambda _: asyncio.run(bertrand_code(
+                Path(args.path).expanduser().resolve(),
                 editor=args.editor or None,
-            ),
-            cmd=cmd,
-            timeout=0.0,
+            )),
+            timeout=math.inf,
         )
 
     @staticmethod
@@ -1670,26 +1615,14 @@ class External:
         if args.grace < 0:
             msg = "scale grace period must be non-negative"
             raise OSError(msg)
-        timeout = validate_timeout("scale", args.timeout)
-        target = _display_path(args.path)
-        cmd = [
-            "bertrand",
-            "scale",
-            str(target),
-            "--replicas",
-            str(args.replicas),
-        ]
-        _append_option(cmd, "--grace", args.grace if args.grace != 10 else None)
-        _append_timeout(cmd, timeout)
-        run_async(
-            bertrand_scale(
-                _resolved_path(args.path),
+        cli(
+            lambda deadline: asyncio.run(bertrand_scale(
+                Path(args.path).expanduser().resolve(),
+                deadline=deadline,
                 replicas=args.replicas,
                 grace_period_seconds=args.grace,
-                timeout=timeout,
-            ),
-            cmd=cmd,
-            timeout=timeout,
+            )),
+            timeout=args.timeout,
         )
 
     @staticmethod
@@ -1709,19 +1642,13 @@ class External:
         if args.grace < 0:
             msg = "rm grace period must be non-negative"
             raise OSError(msg)
-        timeout = validate_timeout("rm", args.timeout)
-        target = _display_path(args.path)
-        cmd = ["bertrand", "rm", str(target)]
-        _append_option(cmd, "--grace", args.grace if args.grace != 10 else None)
-        _append_timeout(cmd, timeout)
-        run_async(
-            bertrand_rm(
-                _resolved_path(args.path),
+        cli(
+            lambda deadline: asyncio.run(bertrand_rm(
+                Path(args.path).expanduser().resolve(),
+                deadline=deadline,
                 grace_period_seconds=args.grace,
-                timeout=timeout,
-            ),
-            cmd=cmd,
-            timeout=timeout,
+            )),
+            timeout=args.timeout,
         )
 
     @staticmethod
@@ -1734,20 +1661,12 @@ class External:
             The parsed command-line arguments.
 
         """
-        cmd = ["bertrand", "dashboard"]
-        _append_option(cmd, "--port", args.port if args.port else None)
-        if args.open_browser is True:
-            cmd.append("--open")
-        elif args.open_browser is False:
-            cmd.append("--no-open")
-        _append_timeout(cmd, args.timeout)
-        run_async(
-            bertrand_dashboard(
+        cli(
+            lambda deadline: asyncio.run(bertrand_dashboard(
+                deadline=deadline,
                 port=args.port,
                 open_browser=args.open_browser,
-                timeout=args.timeout,
-            ),
-            cmd=cmd,
+            )),
             timeout=args.timeout,
         )
 
@@ -1761,13 +1680,13 @@ class External:
             The parsed command-line arguments.
 
         """
-        timeout = validate_timeout("clean", args.timeout)
-        run_async(
-            bertrand_clean(
-                timeout=timeout,
+        cli(
+            lambda deadline: asyncio.run(bertrand_clean(
+                deadline=deadline,
                 assume_yes=args.yes,
                 force=args.force,
-            )
+            )),
+            timeout=args.timeout,
         )
 
     def __call__(self) -> None:

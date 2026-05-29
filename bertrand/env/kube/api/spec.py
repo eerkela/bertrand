@@ -197,7 +197,7 @@ class PodTemplateSpec:
     annotations : Mapping[str, str] | None, optional
         Annotations to apply to the Pod template metadata.
     restart_policy : str | None, optional
-        Optional Pod restart policy, such as ``"Never"`` or ``"OnFailure"``.
+        Optional Pod restart policy, such as `"Never"` or `"OnFailure"`.
     automount_service_account_token : bool, optional
         Whether pods should automount the default service-account token.
     service_account_name : str | None, optional
@@ -207,7 +207,7 @@ class PodTemplateSpec:
     node_name : str | None, optional
         Optional exact node name.
     host_pid : bool | None, optional
-        Optional ``hostPID`` value.
+        Optional `hostPID` value.
     tolerations : Collection[Mapping[str, object]], optional
         Optional pod toleration manifest fragments.
     image_pull_secrets : Collection[str], optional
@@ -217,7 +217,7 @@ class PodTemplateSpec:
     dns_policy : str | None, optional
         Optional DNS policy.
     host_network : bool | None, optional
-        Optional ``hostNetwork`` value.
+        Optional `hostNetwork` value.
     termination_grace_period_seconds : int | None, optional
         Optional pod termination grace period in seconds.
     """
@@ -318,8 +318,8 @@ class VolumeSpec:
     name : str
         Pod volume name.
     source : Mapping[str, object]
-        Single Kubernetes volume source fragment, such as ``{"emptyDir": {}}`` or
-        ``{"persistentVolumeClaim": {"claimName": "repo"}}``.
+        Single Kubernetes volume source fragment, such as `{"emptyDir": {}}` or
+        `{"persistentVolumeClaim": {"claimName": "repo"}}`.
     """
 
     name: str

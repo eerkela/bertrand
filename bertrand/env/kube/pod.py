@@ -268,8 +268,8 @@ class Pod(
         Returns
         -------
         bool
-            ``True`` when the Pod is active and has a Ready condition with status
-            ``True``.
+            `True` when the Pod is active and has a Ready condition with status
+            `True`.
         """
         if not self.is_active:
             return False

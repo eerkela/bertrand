@@ -74,7 +74,7 @@ async def ensure_project_workload_controller(
     Returns
     -------
     Deployment | CronJob | None
-        Converged stable controller, or ``None`` for Job/no-workload topology.
+        Converged stable controller, or `None` for Job/no-workload topology.
 
     """
     _require_active_config(config)

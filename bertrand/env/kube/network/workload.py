@@ -52,7 +52,7 @@ async def ensure_workload_service(
     Returns
     -------
     Service | None
-        Converged ClusterIP Service, or ``None`` when the workload declares no ports
+        Converged ClusterIP Service, or `None` when the workload declares no ports
         and any stale managed Service has been removed.
 
     """
@@ -146,7 +146,7 @@ async def ensure_workload_network_policy(
     Returns
     -------
     NetworkPolicy | None
-        Converged ingress-only NetworkPolicy, or ``None`` when policy is ``"open"``
+        Converged ingress-only NetworkPolicy, or `None` when policy is `"open"`
         and any stale managed NetworkPolicy has been removed.
 
     Raises

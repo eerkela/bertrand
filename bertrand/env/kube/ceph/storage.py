@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from bertrand.env.git import BERTRAND_NAMESPACE, INFINITY, Deadline
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
@@ -1684,12 +1684,12 @@ async def _patch_storage_controller_error(
     )
 
 
-async def run_ceph_storage_controller(*, timeout: float = INFINITY) -> None:
+async def run_ceph_storage_controller(*, timeout: float = math.inf) -> None:
     """Run the Ceph storage controller loop until cancelled or timed out.
 
     Parameters
     ----------
-    timeout : float, default=INFINITY
+    timeout : float, default=math.inf
         Maximum controller runtime in seconds.
 
     Raises
@@ -1790,11 +1790,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     with asyncio.Runner() as runner:
         if role == "controller":
-            runner.run(run_ceph_storage_controller(timeout=INFINITY))
+            runner.run(run_ceph_storage_controller(timeout=math.inf))
         else:
             from bertrand.env.kube.ceph.agent import CephStorageAgent
 
-            runner.run(CephStorageAgent().run(timeout=INFINITY))
+            runner.run(CephStorageAgent().run(timeout=math.inf))
     return 0
 
 

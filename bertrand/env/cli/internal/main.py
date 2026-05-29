@@ -8,18 +8,54 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.cli.internal._helper import live_project_context
 from bertrand.env.cli.internal.build import bertrand_build
 from bertrand.env.cli.internal.run import bertrand_run
+from bertrand.env.cli.util import cli
 from bertrand.env.git import (
     CONTAINER_ARTIFACT_MOUNT,
     WORKTREE_MOUNT,
     inside_container,
 )
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.dev import send_code_open_request
 from bertrand.env.version import __version__
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+
+def internal_cli[T](
+    op: Callable[..., Awaitable[T]],
+    *,
+    timeout: float,
+    **kwargs: Any,
+) -> T:
+    """Run a CLI command in the internal CLI context.
+
+    Parameters
+    ----------
+    op : Callable[[Deadline], T]
+        Command closure to run, which accepts a `Deadline` object representing its total
+        time budget from the start of computation.
+    timeout : float
+        CLI timeout used to set the `Deadline` for the command.
+    kwargs : Any
+        Additional keyword arguments to forward to the command function, in addition to
+        `kube: Kube` and `deadline: Deadline`.
+
+    Returns
+    -------
+    T
+        The return type of the provided `op` closure.
+    """
+    async def _helper() -> T:
+        with await Kube.inside_cluster(timeout=timeout) as kube:
+            return await cli(op, kube=kube, timeout=timeout, **kwargs)
+
+    return asyncio.run(_helper())
 
 
 class Internal:

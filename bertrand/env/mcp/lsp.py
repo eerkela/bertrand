@@ -971,7 +971,7 @@ def daemon_main(argv: list[str] | None = None) -> None:
     Parameters
     ----------
     argv : list[str] | None
-        Command-line arguments. Defaults to None, which means ``sys.argv``.
+        Command-line arguments. Defaults to None, which means `sys.argv`.
     """
     parser = argparse.ArgumentParser(
         prog="bertrand-lsp-daemon",
