@@ -8,12 +8,7 @@ import uuid
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import (
-    BERTRAND_NAMESPACE,
-    CONTAINER_ID_ENV,
-    IMAGE_ID_ENV,
-    Deadline,
-)
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.build.project import project_image_spec
 from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
 from bertrand.env.kube.dev.mailbox import (
@@ -242,7 +237,6 @@ async def create_project_dev_session(
         interactive=interactive,
         session_id=session_id,
         host_id=host_id,
-        image_ref=image,
         labels=labels,
     )
     pod = await Pod.create(
@@ -407,7 +401,6 @@ def _dev_session_template(
     interactive: bool,
     session_id: str,
     host_id: str,
-    image_ref: str,
     labels: Mapping[str, str],
 ) -> PodTemplateSpec:
     template = workload.pod_template(
@@ -420,7 +413,6 @@ def _dev_session_template(
             session_id=session_id,
             host_id=host_id,
             primary_container=workload.primary_container,
-            image_ref=image_ref,
         )
         for container in template.containers
     )
@@ -442,7 +434,6 @@ def _dev_container(
     session_id: str,
     host_id: str,
     primary_container: str,
-    image_ref: str,
 ) -> ContainerSpec:
     env = list(container.env)
     for entry in (
@@ -450,14 +441,9 @@ def _dev_container(
         {"name": DEV_HOST_ID_ENV, "value": host_id},
         {"name": DEV_PRIMARY_CONTAINER_ENV, "value": primary_container},
         {
-            "name": CONTAINER_ID_ENV,
-            "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}},
-        },
-        {
             "name": DEV_POD_NAME_ENV,
             "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}},
         },
-        {"name": IMAGE_ID_ENV, "value": image_ref},
     ):
         env = [current for current in env if current.get("name") != entry["name"]]
         env.append(entry)

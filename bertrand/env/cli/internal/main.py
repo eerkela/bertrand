@@ -15,7 +15,7 @@ from bertrand.env.cli.internal.build import bertrand_build
 from bertrand.env.cli.internal.run import bertrand_run
 from bertrand.env.cli.util import cli
 from bertrand.env.git import (
-    CONTAINER_ARTIFACT_MOUNT,
+    CONTAINER_TMP,
     WORKTREE_MOUNT,
     inside_container,
 )
@@ -313,8 +313,8 @@ class Internal:
 
         asyncio.run(_refresh_artifacts("check"))
         files = _compile_command_sources()
-        artifact_root = str(CONTAINER_ARTIFACT_MOUNT)
-        clang_tidy_config = CONTAINER_ARTIFACT_MOUNT / ".clang-tidy"
+        artifact_root = str(CONTAINER_TMP)
+        clang_tidy_config = CONTAINER_TMP / ".clang-tidy"
 
         # Python static checks
         for cmd in (["ruff", "check", "."], ["ty", "check", "."]):
@@ -362,7 +362,7 @@ class Internal:
 
         asyncio.run(_refresh_artifacts("format"))
         files = _compile_command_sources()
-        clang_format_config = CONTAINER_ARTIFACT_MOUNT / ".clang-format"
+        clang_format_config = CONTAINER_TMP / ".clang-format"
 
         # Python formatting
         result = subprocess.run(
@@ -429,7 +429,7 @@ async def _refresh_artifacts(command: str) -> None:
 
 
 def _compile_command_sources() -> list[Path]:
-    path = CONTAINER_ARTIFACT_MOUNT / "compile_commands.json"
+    path = CONTAINER_TMP / "compile_commands.json"
     if not path.is_file():
         return []
     try:

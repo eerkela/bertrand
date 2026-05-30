@@ -20,7 +20,7 @@ from conan.errors import ConanException
 from conan.internal.model.conf import ConfDefinition
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-from bertrand.env.git import CONTAINER_ARTIFACT_MOUNT, Scalar, atomic_write_text, run
+from bertrand.env.git import CONTAINER_TMP, Scalar, atomic_write_text, run
 from bertrand.env.version import VERSION
 
 from .core import (
@@ -492,7 +492,7 @@ class ConanConfig(Resource[ConanConfigModel]):
         lines.append("")
 
         atomic_write_text(
-            CONTAINER_ARTIFACT_MOUNT / "conanfile.py",
+            CONTAINER_TMP / "conanfile.py",
             "\n".join(lines),
             encoding="utf-8",
         )

@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from bertrand.env.kube.api.metadata import NamespacedKubeMetadata
+from bertrand.env.kube.api.resource import BuiltinResource, BuiltinResourceObject
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from .api.client import Kube
+    from bertrand.env.kube.api.client import Kube
 
 
 @dataclass(frozen=True)

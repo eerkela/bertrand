@@ -13,10 +13,8 @@ from uuid import UUID
 from bertrand.env.config.core import _check_kube_name
 from bertrand.env.git.bertrand_git import (
     BERTRAND_ENV,
-    PROJECT_ENV,
-    PROJECT_MOUNT,
     REPO_ID_ENV,
-    WORKTREE_ENV,
+    REPO_MOUNT,
     WORKTREE_ID_ENV,
     WORKTREE_MOUNT,
 )
@@ -205,8 +203,8 @@ class WorkloadIdentity:
         """
         worktree = cast("PurePosixPath", self.worktree)
         if not worktree.parts:
-            return PROJECT_MOUNT
-        return PROJECT_MOUNT / worktree
+            return REPO_MOUNT
+        return REPO_MOUNT / worktree
 
 
 @dataclass(frozen=True)
@@ -358,7 +356,7 @@ class WorkloadPod:
         rendered_containers: list[ContainerSpec] = []
         repository_mount: VolumeMountManifest = {
             "name": WORKLOAD_REPOSITORY_VOLUME,
-            "mountPath": PROJECT_MOUNT.as_posix(),
+            "mountPath": REPO_MOUNT.as_posix(),
             "readOnly": self.repository_read_only,
         }
         repository_env = _repository_env(self.identity, self.runtime_env)
@@ -466,8 +464,6 @@ def _repository_env(
         BERTRAND_ENV: "1",
         REPO_ID_ENV: identity.repo_id,
         WORKTREE_ID_ENV: identity.worktree_id,
-        PROJECT_ENV: PROJECT_MOUNT.as_posix(),
-        WORKTREE_ENV: identity.worktree_env,
     }
     for key, value in runtime_env.items():
         if key in env and env[key] != value:
@@ -599,7 +595,7 @@ def _label_hash(value: str) -> str:
 
 
 def _bootstrap_script(identity: WorkloadIdentity) -> str:
-    repo_root = shlex.quote(PROJECT_MOUNT.as_posix())
+    repo_root = shlex.quote(REPO_MOUNT.as_posix())
     worktree = shlex.quote(identity.worktree_env)
     target = shlex.quote(identity.target_path.as_posix())
     worktree_mount = shlex.quote(WORKTREE_MOUNT.as_posix())

@@ -64,35 +64,12 @@ from bertrand.env.version import __version__
 
 type _KwargSpec = tuple[str, str] | tuple[str, str, Callable[[Any], Any]]
 
-_KUBE_TIMEOUT_HELP = "Maximum time in seconds for Kubernetes API convergence."
-_PROJECT_PATH_HELP = (
-    "Project repository or worktree path. Repository roots target the worktree "
-    "attached to HEAD."
-)
 _CAPABILITY_SOURCE_HELP = (
     "Payload file path, '-' for stdin, or omitted to read piped stdin."
 )
 _CAPABILITY_KIND_STORE_HELP = "Capability kind to store."
 _CAPABILITY_KIND_REMOVE_HELP = "Capability kind to remove."
 _CAPABILITY_KIND_FILTER_HELP = "Optional capability kind filter."
-
-
-def external_cli(op: CLICommand, *, timeout: float) -> None:
-    """Run a CLI command in the external CLI context.
-
-    Parameters
-    ----------
-    op : CLICommand
-        Command closure to run, which must conform to the `CLICommand` protocol and
-        capture any additional parameters it needs to run from the CLI argument parser.
-    timeout : float
-        CLI timeout used to set the `Deadline` for the command.
-    """
-    async def _helper() -> None:
-        with await Kube.host(timeout=timeout) as kube:
-            await cli(op, kube=kube, timeout=timeout)
-
-    return asyncio.run(_helper())
 
 
 class External:
@@ -141,30 +118,18 @@ class External:
         # constants/type hints.
 
         @staticmethod
-        def subcommands(
-            parser: argparse.ArgumentParser,
-            *,
-            dest: str,
-            title: str,
-            metavar: str = "(command)",
-        ) -> argparse._SubParsersAction[argparse.ArgumentParser]:
-            """Add a required command namespace.
-
-            Returns
-            -------
-            argparse._SubParsersAction[argparse.ArgumentParser]
-                The subcommand registry.
-            """
-            return parser.add_subparsers(
-                dest=dest,
-                title=title,
-                metavar=metavar,
-                required=True,
+        def _add_project_path(parser: argparse.ArgumentParser) -> None:
+            parser.add_argument(
+                "path",
+                metavar="REPO[/WORKTREE]",
+                help=(
+                    "Project repository or worktree path. Repository roots target the "
+                    "worktree attached to HEAD."
+                ),
             )
 
         @staticmethod
-        def json(parser: argparse.ArgumentParser) -> None:
-            """Add the shared JSON output flag."""
+        def _add_json(parser: argparse.ArgumentParser) -> None:
             parser.add_argument(
                 "--json",
                 action="store_true",
@@ -172,33 +137,18 @@ class External:
             )
 
         @staticmethod
-        def timeout(
+        def _add_timeout(
             parser: argparse.ArgumentParser,
             *,
-            help_text: str = _KUBE_TIMEOUT_HELP,
+            help: str,  # noqa: A002
         ) -> None:
-            """Add the shared Kubernetes convergence timeout flag."""
             parser.add_argument(
                 "-t",
                 "--timeout",
                 type=float,
                 default=math.inf,
-                help=help_text,
+                help=help,
             )
-
-        @staticmethod
-        def project_path(parser: argparse.ArgumentParser) -> None:
-            """Add the shared repository/worktree path argument."""
-            parser.add_argument(
-                "path",
-                metavar="REPO[/WORKTREE]",
-                help=_PROJECT_PATH_HELP,
-            )
-
-        @staticmethod
-        def handler(parser: argparse.ArgumentParser, handler: object) -> None:
-            """Attach the runtime handler for a command parser."""
-            parser.set_defaults(handler=handler)
 
         @staticmethod
         def terminal(
@@ -249,7 +199,7 @@ class External:
 
         def device_list_options(self, parser: argparse.ArgumentParser) -> None:
             """Add shared DRA device list flags."""
-            self.json(parser)
+            self._add_json(parser)
             self.timeout(parser)
 
         def json_command(
@@ -270,7 +220,7 @@ class External:
                 The command parser.
             """
             command = subcommands.add_parser(name, help=help_text)
-            self.json(command)
+            self._add_json(command)
             self.terminal(
                 command,
                 func,
@@ -298,10 +248,11 @@ class External:
         ) -> None:
             """Add a secret capability namespace."""
             secret = subcommands.add_parser("secret", help=namespace_help)
-            secret_subcommands = self.subcommands(
-                secret,
+            secret_subcommands = secret.add_subparsers(
                 dest=command_dest,
                 title="secret commands",
+                metavar="(command)",
+                required=True,
             )
 
             add = secret_subcommands.add_parser("add", help=add_help)
@@ -358,7 +309,7 @@ class External:
                 help_text=_CAPABILITY_KIND_FILTER_HELP,
                 default=None,
             )
-            self.json(listing)
+            self._add_json(listing)
             self.timeout(listing)
             list_kwargs: list[_KwargSpec] = [
                 ("kind", "kind"),
@@ -391,13 +342,14 @@ class External:
         ) -> None:
             """Add a storage status/doctor namespace."""
             storage = subcommands.add_parser("storage", help=namespace_help)
-            storage_subcommands = self.subcommands(
-                storage,
+            storage_subcommands = storage.add_subparsers(
                 dest=dest,
                 title="storage commands",
+                metavar="(command)",
+                required=True,
             )
             status = storage_subcommands.add_parser("status", help=status_help)
-            self.json(status)
+            self._add_json(status)
             self.terminal(
                 status,
                 status_func,
@@ -406,7 +358,7 @@ class External:
                 kwargs=(("json_output", "json"),),
             )
             doctor = storage_subcommands.add_parser("doctor", help=doctor_help)
-            self.json(doctor)
+            self._add_json(doctor)
             self.terminal(
                 doctor,
                 doctor_func,
@@ -444,9 +396,9 @@ class External:
                 action="store_true",
                 help="Generate/mark the bundle for a MicroK8s worker join.",
             )
-            self.timeout(
+            self._add_timeout(
                 invite,
-                help_text="Maximum time in seconds for join-token generation.",
+                help="Maximum time in seconds for join-token generation.",
             )
             self.terminal(
                 invite,
@@ -474,9 +426,9 @@ class External:
                 action="store_true",
                 help="Force the MicroK8s join to use worker-node semantics.",
             )
-            self.timeout(
+            self._add_timeout(
                 join,
-                help_text=(
+                help=(
                     "Maximum time in seconds for cluster join and backend convergence."
                 ),
             )
@@ -501,10 +453,11 @@ class External:
                 "device",
                 help="List managed DRA device capability inventory across the cluster.",
             )
-            device_subcommands = self.subcommands(
-                device,
+            device_subcommands = device.add_subparsers(
                 dest="cluster_device_command",
                 title="device commands",
+                metavar="(command)",
+                required=True,
             )
             cluster_device_list = device_subcommands.add_parser(
                 "list",
@@ -532,515 +485,6 @@ class External:
                     ("node", "node"),
                     ("capability_id", "capability"),
                     ("json_output", "json"),
-                    ("timeout", "timeout"),
-                ),
-            )
-
-        def load_balancer(
-            self,
-            subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
-        ) -> None:
-            """Add MetalLB load-balancer commands."""
-            lb = subcommands.add_parser(
-                "lb",
-                help="Inspect and configure Bertrand-managed MetalLB resources.",
-            )
-            lb_commands = self.subcommands(
-                lb,
-                dest="lb_command",
-                title="load-balancer commands",
-            )
-            self.json_command(
-                lb_commands,
-                "status",
-                help_text="Show MetalLB installation and advertisement state.",
-                func=bertrand_cluster_network_lb_status,
-                cmd=("bertrand", "cluster", "network", "lb", "status"),
-                timeout_scope="cluster",
-            )
-
-            lb_install = lb_commands.add_parser(
-                "install",
-                help="Install Bertrand-managed MetalLB with FRR/BGP support.",
-            )
-            self.timeout(
-                lb_install,
-                help_text="Maximum time in seconds for MetalLB convergence.",
-            )
-            self.terminal(
-                lb_install,
-                bertrand_cluster_network_lb_install,
-                cmd=("bertrand", "cluster", "network", "lb", "install"),
-                timeout_scope="cluster",
-                kwargs=(("timeout", "timeout"),),
-            )
-
-            lb_pool = lb_commands.add_parser(
-                "pool",
-                help="Manage MetalLB address pools.",
-            )
-            lb_pool_commands = self.subcommands(
-                lb_pool,
-                dest="lb_pool_command",
-                title="pool commands",
-            )
-            lb_pool_upsert = lb_pool_commands.add_parser(
-                "upsert",
-                help="Create or patch a Bertrand-managed MetalLB IPAddressPool.",
-            )
-            lb_pool_upsert.add_argument("name", metavar="NAME")
-            lb_pool_upsert.add_argument(
-                "--address",
-                action="append",
-                nargs="+",
-                required=True,
-                metavar="RANGE",
-                help="CIDR or start-end address range. Repeat or pass multiple.",
-            )
-            auto_assign = lb_pool_upsert.add_mutually_exclusive_group()
-            auto_assign.add_argument(
-                "--auto-assign",
-                dest="auto_assign",
-                action="store_true",
-                default=True,
-                help=(
-                    "Allow MetalLB to allocate addresses from this pool automatically."
-                ),
-            )
-            auto_assign.add_argument(
-                "--no-auto-assign",
-                dest="auto_assign",
-                action="store_false",
-                help="Require Services to request this pool explicitly.",
-            )
-            self.timeout(
-                lb_pool_upsert,
-                help_text="Maximum time in seconds for IPAddressPool convergence.",
-            )
-            self.terminal(
-                lb_pool_upsert,
-                bertrand_cluster_network_lb_pool_upsert,
-                cmd=("bertrand", "cluster", "network", "lb", "pool", "upsert"),
-                timeout_scope="cluster",
-                kwargs=(
-                    ("name", "name"),
-                    ("address", "address"),
-                    ("auto_assign", "auto_assign"),
-                    ("timeout", "timeout"),
-                ),
-            )
-
-            lb_l2 = lb_commands.add_parser(
-                "l2",
-                help="Manage MetalLB Layer 2 advertisements.",
-            )
-            lb_l2_commands = self.subcommands(
-                lb_l2,
-                dest="lb_l2_command",
-                title="l2 commands",
-            )
-            lb_l2_upsert = lb_l2_commands.add_parser(
-                "upsert",
-                help="Create or patch a Bertrand-managed L2Advertisement.",
-            )
-            lb_l2_upsert.add_argument("name", metavar="NAME")
-            lb_l2_upsert.add_argument("--pool", required=True, metavar="POOL")
-            lb_l2_upsert.add_argument(
-                "--interface",
-                action="append",
-                default=[],
-                metavar="IFACE",
-                help="Optional interface to advertise from. Repeat for several.",
-            )
-            self.timeout(
-                lb_l2_upsert,
-                help_text="Maximum time in seconds for L2Advertisement convergence.",
-            )
-            self.terminal(
-                lb_l2_upsert,
-                bertrand_cluster_network_lb_l2_upsert,
-                cmd=("bertrand", "cluster", "network", "lb", "l2", "upsert"),
-                timeout_scope="cluster",
-                kwargs=(
-                    ("name", "name"),
-                    ("pool", "pool"),
-                    ("interface", "interface"),
-                    ("timeout", "timeout"),
-                ),
-            )
-
-            lb_bgp = lb_commands.add_parser(
-                "bgp",
-                help="Manage MetalLB BGP peers and advertisements.",
-            )
-            lb_bgp_commands = self.subcommands(
-                lb_bgp,
-                dest="lb_bgp_command",
-                title="bgp commands",
-            )
-            lb_bgp_peer = lb_bgp_commands.add_parser(
-                "peer",
-                help="Manage MetalLB BGPPeer resources.",
-            )
-            lb_bgp_peer_commands = self.subcommands(
-                lb_bgp_peer,
-                dest="lb_bgp_peer_command",
-                title="bgp peer commands",
-            )
-            lb_bgp_peer_upsert = lb_bgp_peer_commands.add_parser(
-                "upsert",
-                help="Create or patch a Bertrand-managed BGPPeer.",
-            )
-            lb_bgp_peer_upsert.add_argument("name", metavar="NAME")
-            lb_bgp_peer_upsert.add_argument(
-                "--peer-address",
-                required=True,
-                metavar="IP",
-            )
-            lb_bgp_peer_upsert.add_argument(
-                "--peer-asn",
-                required=True,
-                type=int,
-                metavar="ASN",
-            )
-            lb_bgp_peer_upsert.add_argument(
-                "--local-asn",
-                required=True,
-                type=int,
-                metavar="ASN",
-            )
-            lb_bgp_peer_upsert.add_argument("--peer-port", type=int, default=None)
-            lb_bgp_peer_upsert.add_argument(
-                "--source-address",
-                default=None,
-                metavar="IP",
-            )
-            lb_bgp_peer_upsert.add_argument(
-                "--password-secret",
-                default=None,
-                metavar="SECRET",
-            )
-            self.timeout(
-                lb_bgp_peer_upsert,
-                help_text="Maximum time in seconds for BGPPeer convergence.",
-            )
-            self.terminal(
-                lb_bgp_peer_upsert,
-                bertrand_cluster_network_lb_bgp_peer_upsert,
-                cmd=(
-                    "bertrand",
-                    "cluster",
-                    "network",
-                    "lb",
-                    "bgp",
-                    "peer",
-                    "upsert",
-                ),
-                timeout_scope="cluster",
-                kwargs=(
-                    ("name", "name"),
-                    ("peer_address", "peer_address"),
-                    ("peer_asn", "peer_asn"),
-                    ("local_asn", "local_asn"),
-                    ("peer_port", "peer_port"),
-                    ("source_address", "source_address"),
-                    ("password_secret", "password_secret"),
-                    ("timeout", "timeout"),
-                ),
-            )
-
-            lb_bgp_advertise = lb_bgp_commands.add_parser(
-                "advertise",
-                help="Manage MetalLB BGPAdvertisement resources.",
-            )
-            lb_bgp_advertise_commands = self.subcommands(
-                lb_bgp_advertise,
-                dest="lb_bgp_advertise_command",
-                title="bgp advertise commands",
-            )
-            lb_bgp_advertise_upsert = lb_bgp_advertise_commands.add_parser(
-                "upsert",
-                help="Create or patch a Bertrand-managed BGPAdvertisement.",
-            )
-            lb_bgp_advertise_upsert.add_argument("name", metavar="NAME")
-            lb_bgp_advertise_upsert.add_argument(
-                "--pool",
-                required=True,
-                metavar="POOL",
-            )
-            lb_bgp_advertise_upsert.add_argument(
-                "--peer",
-                action="append",
-                default=[],
-                metavar="PEER",
-                help="Optional BGPPeer name to target. Repeat for several.",
-            )
-            lb_bgp_advertise_upsert.add_argument(
-                "--local-pref",
-                type=int,
-                default=None,
-                metavar="N",
-            )
-            lb_bgp_advertise_upsert.add_argument(
-                "--community",
-                action="append",
-                default=[],
-                metavar="VALUE",
-                help="Optional BGP community. Repeat for several.",
-            )
-            self.timeout(
-                lb_bgp_advertise_upsert,
-                help_text="Maximum time in seconds for BGPAdvertisement convergence.",
-            )
-            self.terminal(
-                lb_bgp_advertise_upsert,
-                bertrand_cluster_network_lb_bgp_advertise_upsert,
-                cmd=(
-                    "bertrand",
-                    "cluster",
-                    "network",
-                    "lb",
-                    "bgp",
-                    "advertise",
-                    "upsert",
-                ),
-                timeout_scope="cluster",
-                kwargs=(
-                    ("name", "name"),
-                    ("pool", "pool"),
-                    ("peer", "peer"),
-                    ("local_pref", "local_pref"),
-                    ("community", "community"),
-                    ("timeout", "timeout"),
-                ),
-            )
-
-        def network_dns(
-            self,
-            subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
-        ) -> None:
-            """Add cluster DNS commands."""
-            dns = subcommands.add_parser(
-                "dns",
-                help=(
-                    "Configure BuildKit/container DNS facts for Bertrand "
-                    "infrastructure."
-                ),
-            )
-            dns_commands = self.subcommands(
-                dns,
-                dest="dns_command",
-                title="dns commands",
-            )
-            dns_set = dns_commands.add_parser(
-                "set",
-                help="Replace BuildKit/container DNS overrides and roll builders.",
-            )
-            dns_set.add_argument(
-                "--server",
-                action="append",
-                nargs="+",
-                required=True,
-                metavar="IP",
-                help="DNS nameserver IP address. Repeat or pass multiple values.",
-            )
-            dns_set.add_argument(
-                "--search",
-                action="append",
-                nargs="+",
-                default=[],
-                metavar="DOMAIN",
-                help="DNS search domain. Repeat or pass multiple values.",
-            )
-            dns_set.add_argument(
-                "--option",
-                action="append",
-                nargs="+",
-                default=[],
-                metavar="OPTION",
-                help="Resolver option. Repeat or pass multiple values.",
-            )
-            self.timeout(
-                dns_set,
-                help_text="Maximum time in seconds for DNS profile convergence.",
-            )
-            self.terminal(
-                dns_set,
-                bertrand_cluster_network_dns_set,
-                cmd=("bertrand", "cluster", "network", "dns", "set"),
-                timeout_scope="cluster",
-                kwargs=(
-                    ("server", "server"),
-                    ("search", "search"),
-                    ("option", "option"),
-                    ("timeout", "timeout"),
-                ),
-            )
-
-            dns_clear = dns_commands.add_parser(
-                "clear",
-                help="Clear BuildKit/container DNS overrides and roll builders.",
-            )
-            self.timeout(
-                dns_clear,
-                help_text="Maximum time in seconds for DNS profile convergence.",
-            )
-            self.terminal(
-                dns_clear,
-                bertrand_cluster_network_dns_clear,
-                cmd=("bertrand", "cluster", "network", "dns", "clear"),
-                timeout_scope="cluster",
-                kwargs=(("timeout", "timeout"),),
-            )
-
-        def cluster_network(
-            self,
-            subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
-        ) -> None:
-            """Add cluster networking commands."""
-            network = subcommands.add_parser(
-                "network",
-                help="Inspect and configure cluster-level Bertrand networking.",
-            )
-            network_subcommands = self.subcommands(
-                network,
-                dest="network_command",
-                title="network commands",
-            )
-            self.json_command(
-                network_subcommands,
-                "status",
-                help_text=(
-                    "Show cluster CNI, Gateway, LoadBalancer, route, and DNS state."
-                ),
-                func=bertrand_cluster_network_status,
-                cmd=("bertrand", "cluster", "network", "status"),
-                timeout_scope="cluster",
-            )
-            self.json_command(
-                network_subcommands,
-                "doctor",
-                help_text="Print actionable cluster networking diagnostics.",
-                func=bertrand_cluster_network_doctor,
-                cmd=("bertrand", "cluster", "network", "doctor"),
-                timeout_scope="cluster",
-            )
-            self.load_balancer(network_subcommands)
-            self.network_dns(network_subcommands)
-
-        def node_name(
-            self,
-            subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
-        ) -> None:
-            """Add local node display-name commands."""
-            name = subcommands.add_parser(
-                "name",
-                help="Set or clear this host's optional Bertrand display name.",
-            )
-            name_subcommands = self.subcommands(
-                name,
-                dest="node_name_command",
-                title="name commands",
-            )
-            name_set = name_subcommands.add_parser(
-                "set",
-                help="Set the local Bertrand node display name.",
-            )
-            name_set.add_argument("name", metavar="NAME")
-            self.timeout(name_set)
-            self.terminal(
-                name_set,
-                bertrand_node_name_set,
-                cmd=("bertrand", "node", "name", "set"),
-                timeout_scope="node",
-                kwargs=(("display_name", "name"), ("timeout", "timeout")),
-            )
-
-            name_clear = name_subcommands.add_parser(
-                "clear",
-                help="Clear the local Bertrand node display name.",
-            )
-            self.timeout(name_clear)
-            self.terminal(
-                name_clear,
-                bertrand_node_name_set,
-                cmd=("bertrand", "node", "name", "clear"),
-                timeout_scope="node",
-                kwargs=(("timeout", "timeout"),),
-                fixed={"display_name": ""},
-            )
-
-        def node_device(
-            self,
-            subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
-        ) -> None:
-            """Add local node device inventory commands."""
-            device = subcommands.add_parser(
-                "device",
-                help="Manage local node DRA device inventory.",
-            )
-            device_subcommands = self.subcommands(
-                device,
-                dest="node_device_command",
-                title="device commands",
-            )
-            node_device_list = device_subcommands.add_parser(
-                "list",
-                help="List managed DRA device inventory on this node.",
-            )
-            self.device_list_options(node_device_list)
-            self.terminal(
-                node_device_list,
-                bertrand_node_device_list,
-                cmd=("bertrand", "node", "device", "list"),
-                timeout_scope="node",
-                kwargs=(("json_output", "json"), ("timeout", "timeout")),
-            )
-
-            node_device_add = device_subcommands.add_parser(
-                "add",
-                help="Add or update one local managed DRA device capability.",
-            )
-            node_device_add.add_argument("capability", metavar="CAPABILITY")
-            node_device_add.add_argument("--name", required=True, metavar="NAME")
-            node_device_add.add_argument("--cdi", required=True, metavar="SELECTOR")
-            node_device_add.add_argument(
-                "--attr",
-                action="append",
-                default=[],
-                metavar="KEY=VALUE",
-                help="Optional DRA device attribute. Repeat for several.",
-            )
-            self.timeout(node_device_add)
-            self.terminal(
-                node_device_add,
-                bertrand_node_device_add,
-                cmd=("bertrand", "node", "device", "add"),
-                timeout_scope="node",
-                kwargs=(
-                    ("capability_id", "capability"),
-                    ("device_name", "name"),
-                    ("cdi_selector", "cdi"),
-                    ("attributes", "attr", parse_device_attrs),
-                    ("timeout", "timeout"),
-                ),
-            )
-
-            node_device_rm = device_subcommands.add_parser(
-                "rm",
-                help="Remove one local managed DRA device capability.",
-            )
-            node_device_rm.add_argument("capability", metavar="CAPABILITY")
-            node_device_rm.add_argument("--name", required=True, metavar="NAME")
-            self.timeout(node_device_rm)
-            self.terminal(
-                node_device_rm,
-                bertrand_node_device_rm,
-                cmd=("bertrand", "node", "device", "rm"),
-                timeout_scope="node",
-                kwargs=(
-                    ("capability_id", "capability"),
-                    ("device_name", "name"),
                     ("timeout", "timeout"),
                 ),
             )
@@ -1115,7 +559,7 @@ class External:
                 "worktree.  Disabled resources always take precedence over enabled "
                 "ones.",
             )
-            self.handler(command, External.init)
+            command.set_defaults(handler=External.init)
 
         def build(self) -> None:
             """Add the 'build' command to the parser."""
@@ -1155,7 +599,7 @@ class External:
                 help="Submit durable build requests and exit without waiting for "
                 "publication.",
             )
-            self.handler(command, External.build)
+            command.set_defaults(handler=External.build)
 
         def secret(self) -> None:
             """Add the top-level path-scoped 'secret' command namespace."""
@@ -1184,10 +628,11 @@ class External:
                 "cluster",
                 help="Inspect and manage Bertrand's shared/distributed runtime.",
             )
-            subcommands = self.subcommands(
-                command,
+            subcommands = command.add_subparsers(
+                metavar="(command)",
                 dest="cluster_command",
                 title="cluster commands",
+                required=True,
             )
             self.cluster_lifecycle(subcommands)
             self.secret_namespace(
@@ -1216,7 +661,386 @@ class External:
                 cmd_prefix=("bertrand", "cluster", "storage"),
                 timeout_scope="cluster",
             )
-            self.cluster_network(subcommands)
+            network = subcommands.add_parser(
+                "network",
+                help="Inspect and configure cluster-level Bertrand networking.",
+            )
+            network_subcommands = network.add_subparsers(
+                dest="network_command",
+                title="network commands",
+                metavar="(command)",
+                required=True,
+            )
+            self.json_command(
+                network_subcommands,
+                "status",
+                help_text=(
+                    "Show cluster CNI, Gateway, LoadBalancer, route, and DNS state."
+                ),
+                func=bertrand_cluster_network_status,
+                cmd=("bertrand", "cluster", "network", "status"),
+                timeout_scope="cluster",
+            )
+            self.json_command(
+                network_subcommands,
+                "doctor",
+                help_text="Print actionable cluster networking diagnostics.",
+                func=bertrand_cluster_network_doctor,
+                cmd=("bertrand", "cluster", "network", "doctor"),
+                timeout_scope="cluster",
+            )
+            lb = subcommands.add_parser(
+                "lb",
+                help="Inspect and configure Bertrand-managed MetalLB resources.",
+            )
+            lb_commands = lb.add_subparsers(
+                dest="lb_command",
+                title="load-balancer commands",
+                metavar="(command)",
+                required=True,
+            )
+            self.json_command(
+                lb_commands,
+                "status",
+                help_text="Show MetalLB installation and advertisement state.",
+                func=bertrand_cluster_network_lb_status,
+                cmd=("bertrand", "cluster", "network", "lb", "status"),
+                timeout_scope="cluster",
+            )
+
+            lb_install = lb_commands.add_parser(
+                "install",
+                help="Install Bertrand-managed MetalLB with FRR/BGP support.",
+            )
+            self._add_timeout(
+                lb_install,
+                help="Maximum time in seconds for MetalLB convergence.",
+            )
+            self.terminal(
+                lb_install,
+                bertrand_cluster_network_lb_install,
+                cmd=("bertrand", "cluster", "network", "lb", "install"),
+                timeout_scope="cluster",
+                kwargs=(("timeout", "timeout"),),
+            )
+
+            lb_pool = lb_commands.add_parser(
+                "pool",
+                help="Manage MetalLB address pools.",
+            )
+            lb_pool_commands = lb_pool.add_subparsers(
+                dest="lb_pool_command",
+                title="pool commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_pool_upsert = lb_pool_commands.add_parser(
+                "upsert",
+                help="Create or patch a Bertrand-managed MetalLB IPAddressPool.",
+            )
+            lb_pool_upsert.add_argument("name", metavar="NAME")
+            lb_pool_upsert.add_argument(
+                "--address",
+                action="append",
+                nargs="+",
+                required=True,
+                metavar="RANGE",
+                help="CIDR or start-end address range. Repeat or pass multiple.",
+            )
+            auto_assign = lb_pool_upsert.add_mutually_exclusive_group()
+            auto_assign.add_argument(
+                "--auto-assign",
+                dest="auto_assign",
+                action="store_true",
+                default=True,
+                help=(
+                    "Allow MetalLB to allocate addresses from this pool automatically."
+                ),
+            )
+            auto_assign.add_argument(
+                "--no-auto-assign",
+                dest="auto_assign",
+                action="store_false",
+                help="Require Services to request this pool explicitly.",
+            )
+            self._add_timeout(
+                lb_pool_upsert,
+                help="Maximum time in seconds for IPAddressPool convergence.",
+            )
+            self.terminal(
+                lb_pool_upsert,
+                bertrand_cluster_network_lb_pool_upsert,
+                cmd=("bertrand", "cluster", "network", "lb", "pool", "upsert"),
+                timeout_scope="cluster",
+                kwargs=(
+                    ("name", "name"),
+                    ("address", "address"),
+                    ("auto_assign", "auto_assign"),
+                    ("timeout", "timeout"),
+                ),
+            )
+
+            lb_l2 = lb_commands.add_parser(
+                "l2",
+                help="Manage MetalLB Layer 2 advertisements.",
+            )
+            lb_l2_commands = lb_l2.add_subparsers(
+                dest="lb_l2_command",
+                title="l2 commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_l2_upsert = lb_l2_commands.add_parser(
+                "upsert",
+                help="Create or patch a Bertrand-managed L2Advertisement.",
+            )
+            lb_l2_upsert.add_argument("name", metavar="NAME")
+            lb_l2_upsert.add_argument("--pool", required=True, metavar="POOL")
+            lb_l2_upsert.add_argument(
+                "--interface",
+                action="append",
+                default=[],
+                metavar="IFACE",
+                help="Optional interface to advertise from. Repeat for several.",
+            )
+            self._add_timeout(
+                lb_l2_upsert,
+                help="Maximum time in seconds for L2Advertisement convergence.",
+            )
+            self.terminal(
+                lb_l2_upsert,
+                bertrand_cluster_network_lb_l2_upsert,
+                cmd=("bertrand", "cluster", "network", "lb", "l2", "upsert"),
+                timeout_scope="cluster",
+                kwargs=(
+                    ("name", "name"),
+                    ("pool", "pool"),
+                    ("interface", "interface"),
+                    ("timeout", "timeout"),
+                ),
+            )
+
+            lb_bgp = lb_commands.add_parser(
+                "bgp",
+                help="Manage MetalLB BGP peers and advertisements.",
+            )
+            lb_bgp_commands = lb_bgp.add_subparsers(
+                dest="lb_bgp_command",
+                title="bgp commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_bgp_peer = lb_bgp_commands.add_parser(
+                "peer",
+                help="Manage MetalLB BGPPeer resources.",
+            )
+            lb_bgp_peer_commands = lb_bgp_peer.add_subparsers(
+                dest="lb_bgp_peer_command",
+                title="bgp peer commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_bgp_peer_upsert = lb_bgp_peer_commands.add_parser(
+                "upsert",
+                help="Create or patch a Bertrand-managed BGPPeer.",
+            )
+            lb_bgp_peer_upsert.add_argument("name", metavar="NAME")
+            lb_bgp_peer_upsert.add_argument(
+                "--peer-address",
+                required=True,
+                metavar="IP",
+            )
+            lb_bgp_peer_upsert.add_argument(
+                "--peer-asn",
+                required=True,
+                type=int,
+                metavar="ASN",
+            )
+            lb_bgp_peer_upsert.add_argument(
+                "--local-asn",
+                required=True,
+                type=int,
+                metavar="ASN",
+            )
+            lb_bgp_peer_upsert.add_argument("--peer-port", type=int, default=None)
+            lb_bgp_peer_upsert.add_argument(
+                "--source-address",
+                default=None,
+                metavar="IP",
+            )
+            lb_bgp_peer_upsert.add_argument(
+                "--password-secret",
+                default=None,
+                metavar="SECRET",
+            )
+            self._add_timeout(
+                lb_bgp_peer_upsert,
+                help="Maximum time in seconds for BGPPeer convergence.",
+            )
+            self.terminal(
+                lb_bgp_peer_upsert,
+                bertrand_cluster_network_lb_bgp_peer_upsert,
+                cmd=(
+                    "bertrand",
+                    "cluster",
+                    "network",
+                    "lb",
+                    "bgp",
+                    "peer",
+                    "upsert",
+                ),
+                timeout_scope="cluster",
+                kwargs=(
+                    ("name", "name"),
+                    ("peer_address", "peer_address"),
+                    ("peer_asn", "peer_asn"),
+                    ("local_asn", "local_asn"),
+                    ("peer_port", "peer_port"),
+                    ("source_address", "source_address"),
+                    ("password_secret", "password_secret"),
+                    ("timeout", "timeout"),
+                ),
+            )
+
+            lb_bgp_advertise = lb_bgp_commands.add_parser(
+                "advertise",
+                help="Manage MetalLB BGPAdvertisement resources.",
+            )
+            lb_bgp_advertise_commands = lb_bgp_advertise.add_subparsers(
+                dest="lb_bgp_advertise_command",
+                title="bgp advertise commands",
+                metavar="(command)",
+                required=True,
+            )
+            lb_bgp_advertise_upsert = lb_bgp_advertise_commands.add_parser(
+                "upsert",
+                help="Create or patch a Bertrand-managed BGPAdvertisement.",
+            )
+            lb_bgp_advertise_upsert.add_argument("name", metavar="NAME")
+            lb_bgp_advertise_upsert.add_argument(
+                "--pool",
+                required=True,
+                metavar="POOL",
+            )
+            lb_bgp_advertise_upsert.add_argument(
+                "--peer",
+                action="append",
+                default=[],
+                metavar="PEER",
+                help="Optional BGPPeer name to target. Repeat for several.",
+            )
+            lb_bgp_advertise_upsert.add_argument(
+                "--local-pref",
+                type=int,
+                default=None,
+                metavar="N",
+            )
+            lb_bgp_advertise_upsert.add_argument(
+                "--community",
+                action="append",
+                default=[],
+                metavar="VALUE",
+                help="Optional BGP community. Repeat for several.",
+            )
+            self._add_timeout(
+                lb_bgp_advertise_upsert,
+                help="Maximum time in seconds for BGPAdvertisement convergence.",
+            )
+            self.terminal(
+                lb_bgp_advertise_upsert,
+                bertrand_cluster_network_lb_bgp_advertise_upsert,
+                cmd=(
+                    "bertrand",
+                    "cluster",
+                    "network",
+                    "lb",
+                    "bgp",
+                    "advertise",
+                    "upsert",
+                ),
+                timeout_scope="cluster",
+                kwargs=(
+                    ("name", "name"),
+                    ("pool", "pool"),
+                    ("peer", "peer"),
+                    ("local_pref", "local_pref"),
+                    ("community", "community"),
+                    ("timeout", "timeout"),
+                ),
+            )
+            dns = subcommands.add_parser(
+                "dns",
+                help=(
+                    "Configure BuildKit/container DNS facts for Bertrand "
+                    "infrastructure."
+                ),
+            )
+            dns_commands = dns.add_subparsers(
+                dest="dns_command",
+                title="dns commands",
+                metavar="(command)",
+                required=True,
+            )
+            dns_set = dns_commands.add_parser(
+                "set",
+                help="Replace BuildKit/container DNS overrides and roll builders.",
+            )
+            dns_set.add_argument(
+                "--server",
+                action="append",
+                nargs="+",
+                required=True,
+                metavar="IP",
+                help="DNS nameserver IP address. Repeat or pass multiple values.",
+            )
+            dns_set.add_argument(
+                "--search",
+                action="append",
+                nargs="+",
+                default=[],
+                metavar="DOMAIN",
+                help="DNS search domain. Repeat or pass multiple values.",
+            )
+            dns_set.add_argument(
+                "--option",
+                action="append",
+                nargs="+",
+                default=[],
+                metavar="OPTION",
+                help="Resolver option. Repeat or pass multiple values.",
+            )
+            self._add_timeout(
+                dns_set,
+                help="Maximum time in seconds for DNS profile convergence.",
+            )
+            self.terminal(
+                dns_set,
+                bertrand_cluster_network_dns_set,
+                cmd=("bertrand", "cluster", "network", "dns", "set"),
+                timeout_scope="cluster",
+                kwargs=(
+                    ("server", "server"),
+                    ("search", "search"),
+                    ("option", "option"),
+                    ("timeout", "timeout"),
+                ),
+            )
+
+            dns_clear = dns_commands.add_parser(
+                "clear",
+                help="Clear BuildKit/container DNS overrides and roll builders.",
+            )
+            self._add_timeout(
+                dns_clear,
+                help="Maximum time in seconds for DNS profile convergence.",
+            )
+            self.terminal(
+                dns_clear,
+                bertrand_cluster_network_dns_clear,
+                cmd=("bertrand", "cluster", "network", "dns", "clear"),
+                timeout_scope="cluster",
+                kwargs=(("timeout", "timeout"),),
+            )
 
         def node(self) -> None:
             """Add the 'node' command namespace to the parser."""
@@ -1224,10 +1048,11 @@ class External:
                 "node",
                 help="Inspect and mutate this host's Bertrand node state.",
             )
-            subcommands = self.subcommands(
-                command,
+            subcommands = command.add_subparsers(
                 dest="node_command",
                 title="node commands",
+                metavar="(command)",
+                required=True,
             )
             self.json_command(
                 subcommands,
@@ -1239,7 +1064,49 @@ class External:
                 cmd=("bertrand", "node", "status"),
                 timeout_scope="node",
             )
-            self.node_name(subcommands)
+            name = subcommands.add_parser(
+                "name",
+                help="Set or clear this host's optional Bertrand display name.",
+            )
+            name_subcommands = name.add_subparsers(
+                dest="node_name_command",
+                title="name commands",
+                metavar="(command)",
+                required=True,
+            )
+            name_set = name_subcommands.add_parser(
+                "set",
+                help="Set the local Bertrand node display name.",
+            )
+            name_set.add_argument("name", metavar="NAME")
+            self._add_timeout(
+                name_set,
+                help="Maximum time in seconds for node name convergence.",
+            )
+            self.terminal(
+                name_set,
+                bertrand_node_name_set,
+                cmd=("bertrand", "node", "name", "set"),
+                timeout_scope="node",
+                kwargs=(("display_name", "name"), ("timeout", "timeout")),
+            )
+
+            name_clear = name_subcommands.add_parser(
+                "clear",
+                help="Clear the local Bertrand node display name.",
+            )
+            self._add_timeout(
+                name_clear,
+                help="Maximum time in seconds for node name clearance convergence.",
+            )
+            self.terminal(
+                name_clear,
+                bertrand_node_name_set,
+                cmd=("bertrand", "node", "name", "clear"),
+                timeout_scope="node",
+                kwargs=(("timeout", "timeout"),),
+                fixed={"display_name": ""},
+            )
             self.storage_namespace(
                 subcommands,
                 dest="storage_command",
@@ -1266,7 +1133,82 @@ class External:
                 timeout_scope="node",
                 path_scoped=False,
             )
-            self.node_device(subcommands)
+            device = subcommands.add_parser(
+                "device",
+                help="Manage local node DRA device inventory.",
+            )
+            device_subcommands = device.add_subparsers(
+                dest="node_device_command",
+                title="device commands",
+                metavar="(command)",
+                required=True,
+            )
+            node_device_list = device_subcommands.add_parser(
+                "list",
+                help="List managed DRA device inventory on this node.",
+            )
+            self.device_list_options(node_device_list)
+            self.terminal(
+                node_device_list,
+                bertrand_node_device_list,
+                cmd=("bertrand", "node", "device", "list"),
+                timeout_scope="node",
+                kwargs=(("json_output", "json"), ("timeout", "timeout")),
+            )
+
+            node_device_add = device_subcommands.add_parser(
+                "add",
+                help="Add or update one local managed DRA device capability.",
+            )
+            node_device_add.add_argument("capability", metavar="CAPABILITY")
+            node_device_add.add_argument("--name", required=True, metavar="NAME")
+            node_device_add.add_argument("--cdi", required=True, metavar="SELECTOR")
+            node_device_add.add_argument(
+                "--attr",
+                action="append",
+                default=[],
+                metavar="KEY=VALUE",
+                help="Optional DRA device attribute. Repeat for several.",
+            )
+            self._add_timeout(
+                node_device_add,
+                help="Maximum time in seconds for node device convergence.",
+            )
+            self.terminal(
+                node_device_add,
+                bertrand_node_device_add,
+                cmd=("bertrand", "node", "device", "add"),
+                timeout_scope="node",
+                kwargs=(
+                    ("capability_id", "capability"),
+                    ("device_name", "name"),
+                    ("cdi_selector", "cdi"),
+                    ("attributes", "attr", parse_device_attrs),
+                    ("timeout", "timeout"),
+                ),
+            )
+
+            node_device_rm = device_subcommands.add_parser(
+                "rm",
+                help="Remove one local managed DRA device capability.",
+            )
+            node_device_rm.add_argument("capability", metavar="CAPABILITY")
+            node_device_rm.add_argument("--name", required=True, metavar="NAME")
+            self._add_timeout(
+                node_device_rm,
+                help="Maximum time in seconds for node device removal convergence.",
+            )
+            self.terminal(
+                node_device_rm,
+                bertrand_node_device_rm,
+                cmd=("bertrand", "node", "device", "rm"),
+                timeout_scope="node",
+                kwargs=(
+                    ("capability_id", "capability"),
+                    ("device_name", "name"),
+                    ("timeout", "timeout"),
+                ),
+            )
 
         def run(self) -> None:
             """Add the 'run' command to the parser."""
@@ -1275,7 +1217,7 @@ class External:
                 help="Build and schedule the configured Kubernetes workload for a "
                 "repository/worktree target.",
             )
-            self.project_path(command)
+            self._add_project_path(command)
             command.add_argument(
                 "--detach",
                 action="store_true",
@@ -1305,7 +1247,7 @@ class External:
                 "Pod for a project worktree. Use 'exit' to leave the shell and "
                 "return to the host system.",
             )
-            self.project_path(command)
+            self._add_project_path(command)
             command.add_argument(
                 "--shell",
                 default=None,
@@ -1314,7 +1256,7 @@ class External:
                 "Validation is performed at runtime by `bertrand_enter` against "
                 "the configured shell map.",
             )
-            self.handler(command, External.enter)
+            command.set_defaults(handler=External.enter)
 
         def code(self) -> None:
             """Add the 'code' command to the parser."""
@@ -1323,7 +1265,7 @@ class External:
                 help="Launch a host editor against a generated Kubernetes "
                 "dev-session Pod for a project worktree.",
             )
-            self.project_path(command)
+            self._add_project_path(command)
             command.add_argument(
                 "--editor",
                 default=None,
@@ -1332,7 +1274,7 @@ class External:
                 "Validation is performed at runtime by dev-session config "
                 "resolution.",
             )
-            self.handler(command, External.code)
+            command.set_defaults(handler=External.code)
 
         def scale(self) -> None:
             """Add the 'scale' command to the parser."""
@@ -1341,7 +1283,7 @@ class External:
                 help="Scale active Kubernetes workload execution for a "
                 "repository/worktree target.",
             )
-            self.project_path(command)
+            self._add_project_path(command)
             command.add_argument(
                 "-r",
                 "--replicas",
@@ -1359,14 +1301,14 @@ class External:
                 help="Kubernetes pod termination grace period in seconds when "
                 "scaling active execution down.",
             )
-            self.timeout(
+            self._add_timeout(
                 command,
-                help_text=(
+                help=(
                     "Maximum time in seconds for Kubernetes API convergence. Use "
                     "inf to wait indefinitely."
                 ),
             )
-            self.handler(command, External.scale)
+            command.set_defaults(handler=External.scale)
 
         def rm(self) -> None:
             """Add the 'rm' command to the parser."""
@@ -1375,7 +1317,7 @@ class External:
                 help="Remove managed Kubernetes workload topology for a "
                 "repository/worktree target and retire its internal image records.",
             )
-            self.project_path(command)
+            self._add_project_path(command)
             command.add_argument(
                 "-g",
                 "--grace",
@@ -1384,14 +1326,14 @@ class External:
                 help="Kubernetes pod termination grace period in seconds for active "
                 "execution objects removed with the topology.",
             )
-            self.timeout(
+            self._add_timeout(
                 command,
-                help_text=(
+                help=(
                     "Maximum time in seconds for Kubernetes API convergence. Use "
                     "inf to wait indefinitely."
                 ),
             )
-            self.handler(command, External.rm)
+            command.set_defaults(handler=External.rm)
 
         def dashboard(self) -> None:
             """Add the 'dashboard' command to the parser."""
@@ -1400,9 +1342,9 @@ class External:
                 help="Open the Bertrand Kubernetes dashboard through a local "
                 "Headlamp port-forward.",
             )
-            self.timeout(
+            self._add_timeout(
                 command,
-                help_text=(
+                help=(
                     "Maximum time in seconds for dashboard convergence and "
                     "port-forward readiness. Use inf to wait indefinitely."
                 ),
@@ -1428,7 +1370,7 @@ class External:
                 action="store_false",
                 help="Print the dashboard URL without opening a browser.",
             )
-            self.handler(command, External.dashboard)
+            command.set_defaults(handler=External.dashboard)
 
         def clean(self) -> None:
             """Add the 'clean' command to the parser."""
@@ -1453,14 +1395,14 @@ class External:
                 "warnings and attempting subsequent cleanup stages.  Strict "
                 "residual verification still fails if managed artifacts remain.",
             )
-            self.timeout(
+            self._add_timeout(
                 command,
-                help_text=(
+                help=(
                     "Maximum time in seconds for cleanup convergence.  Use inf to "
                     "wait indefinitely."
                 ),
             )
-            self.handler(command, External.clean)
+            command.set_defaults(handler=External.clean)
 
         def __call__(self) -> argparse.Namespace:
             """Run the command-line parser.
@@ -1494,7 +1436,7 @@ class External:
 
         Parameters
         ----------
-        _args : argparse.Namespace
+        _ : argparse.Namespace
             The parsed command-line arguments.
         """
         print(__version__)
@@ -1508,7 +1450,7 @@ class External:
         args : argparse.Namespace
             The parsed command-line arguments.
         """
-        external_cli(
+        asyncio.run(cli(
             ExternalInit(
                 path=(
                     None if args.path is None
@@ -1519,7 +1461,7 @@ class External:
                 yes=args.yes
             ),
             timeout=args.timeout,
-        )
+        ))
 
     @staticmethod
     def build(args: argparse.Namespace) -> None:
@@ -1531,7 +1473,7 @@ class External:
             The parsed command-line arguments.
         """
         worktree = Path(args.path).expanduser().resolve()
-        external_cli(
+        asyncio.run(cli(
             bertrand_build,
             timeout=math.inf,
             path=worktree,
@@ -1539,7 +1481,7 @@ class External:
             auth=args.auth,
             quiet=False,
             detach=args.detach,
-        )
+        ))
 
     @staticmethod
     def run(args: argparse.Namespace) -> None:

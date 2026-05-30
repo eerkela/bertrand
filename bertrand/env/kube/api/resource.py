@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
 
@@ -24,6 +25,14 @@ type ResourceScope = Literal["cluster", "namespaced"]
 type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 type _BuiltinOperation = Literal["read", "list", "create", "patch", "delete"]
 RESOURCE_WAIT_POLL_INTERVAL_SECONDS = 0.5
+
+
+# TODO: I really want the resource model to be clearer and easier to understand, rather
+# than committing to class variables that increase indirection in a non-intuitive,
+# opaque way.  Mixins are good for centralizing boilerplate, but I hate the callback
+# model and resource configuration as a class variable.  The only clean approaches I
+# think we should entertain are inheritance and/or class decorators, if those would
+# prove to be useful.
 
 
 def _label_selector(labels: Mapping[str, str] | None) -> str | None:
@@ -70,35 +79,6 @@ def _validate_delete_status(payload: object, *, label: str) -> None:
         raise OSError(msg)
 
 
-async def _wait_until_deleted(
-    *,
-    label: str,
-    timeout: float,
-    refresh: Callable[[float], Awaitable[object | None]],
-) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message=f"{label} deletion timeout must be positive",
-    )
-    last_error: TimeoutError | None = None
-
-    while True:
-        remaining = deadline.remaining()
-        if remaining <= 0:
-            msg = f"timed out waiting for {label} deletion"
-            raise TimeoutError(msg) from last_error
-        try:
-            live = await refresh(remaining)
-        except TimeoutError as err:
-            last_error = err
-            await asyncio.sleep(deadline.bounded(RESOURCE_WAIT_POLL_INTERVAL_SECONDS))
-            continue
-        if live is None:
-            return
-        last_error = TimeoutError(f"{label} still exists")
-        await asyncio.sleep(deadline.bounded(RESOURCE_WAIT_POLL_INTERVAL_SECONDS))
-
-
 @dataclass(frozen=True)
 class BuiltinResource[PayloadT]:
     """Raw adapter for one generated Kubernetes resource API.
@@ -137,6 +117,18 @@ class BuiltinResource[PayloadT]:
     can_patch: bool = False
     can_delete: bool = False
     can_watch: bool = False
+
+    def _single_namespace(self, namespace: str | None, *, action: str) -> str | None:
+        namespace = namespace.strip() if namespace is not None else ""
+        if self.scope == "cluster":
+            if namespace:
+                msg = f"{self.kind} is cluster-scoped; cannot {action} in a namespace"
+                raise ValueError(msg)
+            return None
+        if not namespace:
+            msg = f"{self.kind} {action} requires a namespace"
+            raise ValueError(msg)
+        return namespace
 
     async def get(
         self,
@@ -435,8 +427,8 @@ class BuiltinResource[PayloadT]:
         self,
         *,
         label: str,
-        timeout: float,
-        refresh: Callable[[float], Awaitable[object | None]],
+        deadline: Deadline,
+        refresh: Callable[[Deadline], Awaitable[object | None]],
     ) -> None:
         """Wait for a resource to disappear.
 
@@ -444,12 +436,17 @@ class BuiltinResource[PayloadT]:
         ----------
         label : str
             Human-readable resource label.
-        timeout : float
-            Maximum wait budget in seconds.
-        refresh : Callable[[float], Awaitable[object | None]]
+        deadline : Deadline
+            Deadline for the resource to be deleted.
+        refresh : Callable[[Deadline], Awaitable[object | None]]
             Callback that returns the live object, or `None` when absent.
         """
-        await _wait_until_deleted(label=label, timeout=timeout, refresh=refresh)
+        await deadline.call(
+            refresh,
+            msg=f"timed out waiting for {label} deletion",
+            timeout=math.inf,
+            delay=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
+        )
 
     async def _run_request(
         self,
@@ -536,18 +533,6 @@ class BuiltinResource[PayloadT]:
                 )
             )
         )
-
-    def _single_namespace(self, namespace: str | None, *, action: str) -> str | None:
-        namespace = namespace.strip() if namespace is not None else ""
-        if self.scope == "cluster":
-            if namespace:
-                msg = f"{self.kind} is cluster-scoped; cannot {action} in a namespace"
-                raise ValueError(msg)
-            return None
-        if not namespace:
-            msg = f"{self.kind} {action} requires a namespace"
-            raise ValueError(msg)
-        return namespace
 
     def _watch_namespace(self, namespace: str | None) -> str | None:
         namespace = namespace.strip() if namespace is not None else ""

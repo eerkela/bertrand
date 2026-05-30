@@ -12,7 +12,7 @@ import json
 from pydantic import BaseModel
 
 from bertrand.env.git import (
-    CONTAINER_ARTIFACT_MOUNT,
+    CONTAINER_TMP,
     WORKTREE_MOUNT,
     atomic_write_text,
 )
@@ -35,15 +35,15 @@ from .core import (
     resource,
 )
 
-VSCODE_ARTIFACT_DIR = CONTAINER_ARTIFACT_MOUNT / ".vscode"
+VSCODE_ARTIFACT_DIR = CONTAINER_TMP / ".vscode"
 VSCODE_WORKSPACE_FILE = VSCODE_ARTIFACT_DIR / "workspace.code-workspace"
 VSCODE_MCP_FILE = VSCODE_ARTIFACT_DIR / "mcp.json"
-DEV_BIN_DIR = CONTAINER_ARTIFACT_MOUNT / "bin"
+DEV_BIN_DIR = CONTAINER_TMP / "bin"
 DEV_SHELL_ENTRYPOINT = DEV_BIN_DIR / "bertrand-dev-shell"
 
 
 def _workspace_config() -> dict[str, object]:
-    artifact_path = CONTAINER_ARTIFACT_MOUNT.as_posix()
+    artifact_path = CONTAINER_TMP.as_posix()
     workspace_path = WORKTREE_MOUNT.as_posix()
     return {
         "folders": [
@@ -100,7 +100,7 @@ def _mcp_config() -> dict[str, object]:
                 "args": list(MCP_ARGS),
                 "env": {
                     MCP_WORKSPACE_ENV: WORKTREE_MOUNT.as_posix(),
-                    MCP_ARTIFACTS_ENV: CONTAINER_ARTIFACT_MOUNT.as_posix(),
+                    MCP_ARTIFACTS_ENV: CONTAINER_TMP.as_posix(),
                     MCP_CACHE_ENV: CACHE_MOUNT.as_posix(),
                 },
             },

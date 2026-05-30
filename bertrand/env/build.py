@@ -16,9 +16,9 @@ from .build_args import (
     IMAGE_BUILD_ARGS_CONFIG_SETTING,
     decode_image_build_args,
 )
-from .git import CONTAINER_ARTIFACT_MOUNT, run
+from .git import CONTAINER_TMP, run
 
-ARTIFACT_ROOT = Path(CONTAINER_ARTIFACT_MOUNT)
+ARTIFACT_ROOT = Path(CONTAINER_TMP)
 CONANFILE = ARTIFACT_ROOT / "conanfile.py"
 CONAN_LOCK = ARTIFACT_ROOT / "conan.lock"
 CONAN_OUTPUT = ARTIFACT_ROOT / "conan"

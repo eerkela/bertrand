@@ -7,12 +7,9 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from bertrand.env.git import CommandError, Deadline, TimeoutExpired
-
-if TYPE_CHECKING:
-    from bertrand.env.kube.api.client import Kube
 
 
 def emit_json(payload: object) -> None:
@@ -29,19 +26,17 @@ def emit_json(payload: object) -> None:
 class CLICommand(Protocol):
     """A command closure that can be executed by the `cli()` helper method."""
 
-    async def run(self, kube: Kube, deadline: Deadline) -> None:
+    async def run(self, deadline: Deadline) -> None:
         """Run the command.
 
         Parameters
         ----------
-        kube : Kube
-            Kubernetes API client to use for command execution.
         deadline : Deadline
             Command execution deadline derived from the CLI timeout budget.
         """
 
 
-async def cli(op: CLICommand, *, kube: Kube, timeout: float) -> None:
+async def cli(op: CLICommand, *, timeout: float) -> None:
     """Run one async CLI command and optionally wrap timeout failures.
 
     Parameters
@@ -49,8 +44,6 @@ async def cli(op: CLICommand, *, kube: Kube, timeout: float) -> None:
     op : CLICommand
         Command closure to run, which must conform to the `CLICommand` protocol and
         capture any additional parameters it needs to run from the CLI argument parser.
-    kube : Kube
-        Kubernetes API client to inject into the command context.
     timeout : float
         CLI timeout used to set the `Deadline` for the command.
 
@@ -78,7 +71,7 @@ async def cli(op: CLICommand, *, kube: Kube, timeout: float) -> None:
 
     started = time.time()
     try:
-        await op.run(kube, deadline=Deadline(started + timeout))
+        await op.run(Deadline(started + timeout))
     except (TimeoutError, TimeoutExpired) as err:
         start = datetime.fromtimestamp(started, UTC)
         stop = datetime.now(UTC)

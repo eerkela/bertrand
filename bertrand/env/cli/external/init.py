@@ -276,7 +276,7 @@ async def _install_prereqs(*, package_manager: str, yes: bool) -> None:
     await install_packages(
         package_manager=package_manager,
         packages=sorted(missing),
-        assume_yes=yes,
+        yes=yes,
         timeout=math.inf,
     )
 
@@ -972,13 +972,71 @@ class ExternalInit:
     disable: list[str]
     yes: bool
 
-    async def run(self, kube: Kube, deadline: Deadline) -> None:
+    async def _bootstrap_cluster(self, deadline: Deadline) -> None:
+        user, package_manager = _detect_host_runtime()
+        await _install_prereqs(package_manager=package_manager, yes=self.yes)
+        await ensure_host_state(
+            user=user,
+            assume_yes=self.yes,
+            timeout=deadline.remaining
+        )
+        await install_microk8s(
+            user=user,
+            package_manager=package_manager,
+            assume_yes=self.yes,
+        )
+        _validate_shared_runtime_groups(user=user)
+        await assert_microk8s_installed(user=user)
+        await start_microk8s(timeout=deadline.remaining)
+        await ensure_microk8s_kubeconfig(timeout=deadline.remaining)
+
+    async def _bootstrap_control_plane(self, kube: Kube, deadline: Deadline) -> None:
+        await ensure_local_bertrand_node(kube, timeout=deadline.remaining)
+        await ensure_rook_ceph_base(kube, timeout=deadline.remaining)
+        await Namespace.upsert(
+            kube,
+            name=BERTRAND_NAMESPACE,
+            timeout=deadline.remaining,
+        )
+        await ensure_image_repository(kube, timeout=deadline.remaining)
+        await ensure_image_repository_node_trust(kube=kube, deadline=deadline)
+        # TODO: the assertion should be built into
+        # `ensure_image_repository_node_trust` rather than repeated here  It may
+        # also be beneficial to centralize it in a single `ensure_image_repository`
+        # and then `ensure_buildkit`, etc.
+        await assert_image_repository_node_trust(kube, timeout=deadline.remaining)
+        await ensure_buildkit_pool(
+            kube,
+            timeout=deadline.remaining,
+            config_hash=await current_buildkit_config_hash(
+                kube,
+                timeout=deadline.remaining,
+            ),
+        )
+        await ensure_buildkit_build_controller(
+            kube,
+            image=control_plane_image(),
+            timeout=deadline.remaining,
+        )
+        await ensure_dra_backend(
+            kube,
+            image=control_plane_image(),
+            timeout=deadline.remaining,
+        )
+        await ensure_dev_backend(kube, timeout=deadline.remaining)
+        await ensure_network_backend(kube, timeout=deadline.remaining)
+        await ensure_ceph_storage_controller(
+            kube,
+            image=control_plane_image(),
+            timeout=deadline.remaining,
+        )
+        await wait_rook_ceph_ready(kube, timeout=deadline.remaining)
+
+    async def run(self, deadline: Deadline) -> None:
         """Run the command.
 
         Parameters
         ----------
-        kube : Kube
-            Kubernetes client instance for this command.
         deadline : Deadline
             Deadline for the entire init operation, including host bootstrapping and
             repository convergence.
@@ -999,96 +1057,58 @@ class ExternalInit:
             )
             raise OSError(msg)
 
-        # idempotently bootstrap host cluster
-        async with HostLock(
-            INIT_LOCK,
-            timeout=deadline.remaining,
-            privileges=INIT_LOCK_MODE,
-        ):
-            user, package_manager = _detect_host_runtime()
-            await _install_prereqs(package_manager=package_manager, yes=self.yes)
-            await ensure_host_state(
-                user=user,
-                assume_yes=self.yes,
-                timeout=deadline.remaining
-            )
-            await install_microk8s(
-                user=user,
-                package_manager=package_manager,
-                assume_yes=self.yes,
-            )
-            _validate_shared_runtime_groups(user=user)
-            await assert_microk8s_installed(user=user)
-            await start_microk8s(timeout=deadline.remaining)
-            await ensure_microk8s_kubeconfig(timeout=deadline.remaining)
-            await ensure_local_bertrand_node(kube, timeout=deadline.remaining)
-            await ensure_rook_ceph_base(kube, timeout=deadline.remaining)
-            await Namespace.upsert(
-                kube,
-                name=BERTRAND_NAMESPACE,
-                timeout=deadline.remaining,
-            )
-            await ensure_image_repository(kube, timeout=deadline.remaining)
-            await ensure_image_repository_node_trust(kube=kube, deadline=deadline)
-            # TODO: the assertion should be built into
-            # `ensure_image_repository_node_trust` rather than repeated here  It may
-            # also be beneficial to centralize it in a single `ensure_image_repository`
-            # and then `ensure_buildkit`, etc.
-            await assert_image_repository_node_trust(kube, timeout=deadline.remaining)
-            await ensure_buildkit_pool(
-                kube,
-                timeout=deadline.remaining,
-                config_hash=await current_buildkit_config_hash(
-                    kube,
-                    timeout=deadline.remaining,
-                ),
-            )
-            await ensure_buildkit_build_controller(
-                kube,
-                image=control_plane_image(),
-                timeout=deadline.remaining,
-            )
-            await ensure_dra_backend(
-                kube,
-                image=control_plane_image(),
-                timeout=deadline.remaining,
-            )
-            await ensure_dev_backend(kube, timeout=deadline.remaining)
-            await ensure_network_backend(kube, timeout=deadline.remaining)
-            await ensure_ceph_storage_controller(
-                kube,
-                image=control_plane_image(),
-                timeout=deadline.remaining,
-            )
-            await wait_rook_ceph_ready(kube, timeout=deadline.remaining)
-
-        # if no project root is provided, then we're done
-        if self.path is None:
-            return
-
-        # fail fast if required tools are missing, and validate convergence input
+        # idempotently bootstrap host cluster infrastructure
+        init_lock = HostLock(INIT_LOCK, privileges=INIT_LOCK_MODE)
+        await init_lock.lock(deadline=deadline)
         try:
-            enabled, disabled = _parse_repo_resource_plan(
-                enable=self.enable,
-                disable=self.disable,
-            )
-        except ValueError as err:
-            raise ValueError(*err.args) from None
-        _ensure_git_available()
+            await self._bootstrap_cluster(deadline=deadline)
+            kube = await Kube.external()
+        except:
+            await init_lock.unlock(ignore_errors=True)
+            raise
 
-        repo, worktree, target, recovered_repo_id = await _resolve_repo_target(
-            kube,
-            self.path,
-            deadline=deadline,
-        )
-        await _converge_repository(
-            kube,
-            repo=repo,
-            worktree=worktree,
-            target=target,
-            recovered_repo_id=recovered_repo_id,
-            enable=enabled,
-            disable=disabled,
-            deadline=deadline,
-            yes=self.yes,
-        )
+        # finish bootstrapping cluster control plane, then converge repository volume
+        # under a separate lock to reduce contention
+        try:
+            try:
+                await self._bootstrap_control_plane(kube=kube, deadline=deadline)
+            except:
+                await init_lock.unlock(ignore_errors=True)
+                raise
+            else:
+                await init_lock.unlock()
+
+            # if no repository root is provided, then we're done
+            if self.path is None:
+                return
+
+            # TODO: continue init refactor from here
+
+            # fail fast if required tools are missing, and validate convergence input
+            try:
+                enabled, disabled = _parse_repo_resource_plan(
+                    enable=self.enable,
+                    disable=self.disable,
+                )
+            except ValueError as err:
+                raise ValueError(*err.args) from None
+            _ensure_git_available()
+
+            repo, worktree, target, recovered_repo_id = await _resolve_repo_target(
+                kube,
+                self.path,
+                deadline=deadline,
+            )
+            await _converge_repository(
+                kube,
+                repo=repo,
+                worktree=worktree,
+                target=target,
+                recovered_repo_id=recovered_repo_id,
+                enable=enabled,
+                disable=disabled,
+                deadline=deadline,
+                yes=self.yes,
+            )
+        finally:
+            kube.client.close()

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # bertrand-managed: reference_transaction.py
-"""A git reference-transaction hook that tracks changes to branches and mirrors them
-in the project directory, so that Bertrand can avoid any manual branch management and
-treat git as the sole source of truth for its isolated worktree model.
+"""A git reference-transaction hook that automatically synchronizes branch worktrees.
+
+This hook tracks changes to branches and mirrors them in the project directory, so that
+Bertrand can avoid any manual branch management and treat git as the sole source of
+truth for its isolated worktree model.
 """
 from __future__ import annotations
 
@@ -34,12 +36,15 @@ async def main() -> None:
     """
     argv = list(sys.argv[1:])
     if len(argv) != 1:
-        raise TypeError(f"expected exactly one state argument in {sorted(GIT_REF_STATES)}")
+        msg = f"expected exactly one state argument in {sorted(GIT_REF_STATES)}"
+        raise TypeError(msg)
     state = argv[0].strip()
     if state not in GIT_REF_STATES:
-        raise TypeError(
-            f"invalid state argument: {state!r} (expected one of: {sorted(GIT_REF_STATES)})"
+        msg = (
+            f"invalid state argument: {state!r} (expected one of: "
+            f"{sorted(GIT_REF_STATES)})"
         )
+        raise TypeError(msg)
     if state != "committed":
         return  # no-op outside committed phase
 

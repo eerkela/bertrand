@@ -41,6 +41,12 @@ from bertrand.env.host.snap import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+# TODO: this should all be updated to target k3s and guarantee an isolated install using
+# its own systemd service, kubeconfig, ports, etc.  That should significantly simplify
+# the `bertrand clean` command as well, and ensure that Bertrand isn't competing with
+# any other clusters that might be running on the host.
+
+
 KUBE_CONFIG_FILE = STATE_DIR / "kubeconfig"
 MICROK8S_KUBECONFIG_CONTEXT = "microk8s"
 MICROK8S_CHANNEL = "1.33/stable"

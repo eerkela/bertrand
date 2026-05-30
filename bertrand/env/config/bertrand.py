@@ -2144,7 +2144,7 @@ class Bertrand(Resource[BertrandModel]):
         if config.kube is not None:
             await ensure_repository_worktree_record(
                 config.kube,
-                repo_id=config.repo.repo_id,
+                repo_id=config.repo.id,
                 worktree_id=worktree_id,
                 worktree=worktree_identity(config.worktree),
                 timeout=config.timeout,

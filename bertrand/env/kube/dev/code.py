@@ -16,9 +16,8 @@ from bertrand.env.config.vscode import (
     VSCodeWorkspace,
 )
 from bertrand.env.git import (
-    PROJECT_MOUNT,
     REPO_ID_ENV,
-    WORKTREE_ENV,
+    REPO_MOUNT,
     WORKTREE_MOUNT,
     GitRepository,
     inside_container,
@@ -105,7 +104,6 @@ async def _request_spec(
     session_id = _required_env(DEV_SESSION_ENV)
     host_id = _required_env(DEV_HOST_ID_ENV)
     repo_id = _required_env(REPO_ID_ENV)
-    worktree = _required_env(WORKTREE_ENV)
     pod_name = _required_env(DEV_POD_NAME_ENV)
     primary_container = _required_env(DEV_PRIMARY_CONTAINER_ENV)
 
@@ -113,7 +111,7 @@ async def _request_spec(
         async with await Config.load(
             WORKTREE_MOUNT,
             kube=kube,
-            repo=GitRepository(git_dir=PROJECT_MOUNT / ".git"),
+            repo=GitRepository(git_dir=REPO_MOUNT / ".git"),
         ) as config:
             config.resources[VSCodeWorkspace.name] = None
             await config.sync(image_build=True)

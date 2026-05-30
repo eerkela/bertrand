@@ -27,7 +27,6 @@ from bertrand.env.git import (
     BERTRAND_ENV,
     BERTRAND_NAMESPACE,
     REPO_ID_ENV,
-    WORKTREE_ENV,
     WORKTREE_ID_ENV,
     Deadline,
 )
@@ -235,7 +234,6 @@ class BuildKitBuildSpec(BaseModel):
         return {
             BERTRAND_ENV: "1",
             REPO_ID_ENV: self.repo_id,
-            WORKTREE_ENV: self.worktree,
             WORKTREE_ID_ENV: self.worktree_id,
             PROJECT_IMAGE_CONFIG_ID: self.config_id,
         }

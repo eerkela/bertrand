@@ -21,6 +21,9 @@ from bertrand.env.git import (
 )
 
 
+# TODO: this whole module should be deletable after moving to a k3s-based runtime
+
+
 async def snap_ready() -> bool:
     """Return whether the host snap command is available and usable.
 

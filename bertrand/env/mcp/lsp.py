@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import unquote, urlparse
 
-from bertrand.env.git import CONTAINER_ARTIFACT_MOUNT, WORKTREE_MOUNT
+from bertrand.env.git import CONTAINER_TMP, WORKTREE_MOUNT
 
 from .constants import LSP_SOCKET_PATH, MCP_ARTIFACTS_ENV, MCP_WORKSPACE_ENV
 from .jsonrpc import (
@@ -387,7 +387,7 @@ class LSPManager:
         """
         workspace = Path(os.environ.get(MCP_WORKSPACE_ENV, WORKTREE_MOUNT.as_posix()))
         artifacts = Path(
-            os.environ.get(MCP_ARTIFACTS_ENV, CONTAINER_ARTIFACT_MOUNT.as_posix())
+            os.environ.get(MCP_ARTIFACTS_ENV, CONTAINER_TMP.as_posix())
         )
         return cls(workspace=workspace, artifacts=artifacts)
 
@@ -987,7 +987,7 @@ def daemon_main(argv: list[str] | None = None) -> None:
     manager = LSPManager(
         workspace=Path(os.environ.get(MCP_WORKSPACE_ENV, WORKTREE_MOUNT.as_posix())),
         artifacts=Path(
-            os.environ.get(MCP_ARTIFACTS_ENV, CONTAINER_ARTIFACT_MOUNT.as_posix())
+            os.environ.get(MCP_ARTIFACTS_ENV, CONTAINER_TMP.as_posix())
         ),
     )
     stop = asyncio.Event()

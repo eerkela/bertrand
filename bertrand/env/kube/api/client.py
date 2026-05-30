@@ -162,8 +162,15 @@ class Kube:
                 self.client.close()
             raise
 
+    # TODO: `external()` is called from outside the cluster to implement the external
+    # CLI.  `internal()` is called within the cluster to service the internal CLI.
+    # `host()` or `control_plane()` should be called within a cluster control plane
+    # context to get a client with permissions out to the host node???  Ideally, we
+    # would collapse to just `external()` and `internal()`, but I'm not sure if that's
+    # possible.  It might also be affected by 
+
     @classmethod
-    def outside_cluster(
+    def external(
         cls,
         *,
         namespace: str = BERTRAND_NAMESPACE,
@@ -199,6 +206,44 @@ class Kube:
             )
             raise OSError(msg)
         return cls(namespace=namespace, client=_client_from_config(config_file))
+
+    @classmethod
+    async def internal(
+        cls,
+        *,
+        namespace: str | None = None,
+    ) -> Self:
+        """Build an in-cluster API client from projected ServiceAccount credentials.
+
+        Parameters
+        ----------
+        namespace : str | None, optional
+            Default namespace for namespaced operations.  If omitted, this is read
+            from the projected ServiceAccount namespace file.
+
+        Returns
+        -------
+        Kube
+            Configured in-cluster Kubernetes API wrapper.
+        """
+        configuration = _incluster_configuration()
+        resolved_namespace = namespace
+        if resolved_namespace is None:
+            namespace_path = Path(
+                "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+            )
+            resolved_namespace = (
+                namespace_path.read_text(encoding="utf-8").strip()
+                if namespace_path.is_file()
+                else ""
+            )
+        if not resolved_namespace:
+            resolved_namespace = BERTRAND_NAMESPACE
+
+        return cls(
+            namespace=str(resolved_namespace),
+            client=kubernetes.client.ApiClient(configuration=configuration),
+        )
 
     @classmethod
     async def host(
@@ -259,47 +304,13 @@ class Kube:
 
         return cls(namespace=namespace, client=_client_from_config(config_file))
 
-    # TODO: getting an internal kubernetes client should be simpler, and should also be
-    # async, similar to getting one from the host.  I'm also not totally sure if
-    # `outside_cluster` is actually useful.
+    def close(self) -> None:
+        """Close the Kubernetes API transport.
 
-    @classmethod
-    async def inside_cluster(
-        cls,
-        *,
-        namespace: str | None = None,
-    ) -> Self:
-        """Build an in-cluster API client from projected ServiceAccount credentials.
-
-        Parameters
-        ----------
-        namespace : str | None, optional
-            Default namespace for namespaced operations.  If omitted, this is read
-            from the projected ServiceAccount namespace file.
-
-        Returns
-        -------
-        Kube
-            Configured in-cluster Kubernetes API wrapper.
+        This method is identical to the context manager exit handler, for cases when
+        explicit context management is not possible due to logical constraints.
         """
-        configuration = _incluster_configuration()
-        resolved_namespace = namespace
-        if resolved_namespace is None:
-            namespace_path = Path(
-                "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
-            )
-            resolved_namespace = (
-                namespace_path.read_text(encoding="utf-8").strip()
-                if namespace_path.is_file()
-                else ""
-            )
-        if not resolved_namespace:
-            resolved_namespace = BERTRAND_NAMESPACE
-
-        return cls(
-            namespace=str(resolved_namespace),
-            client=kubernetes.client.ApiClient(configuration=configuration),
-        )
+        self.client.close()
 
     def __enter__(self) -> Self:
         """Enter the Kubernetes client context manager.
@@ -307,13 +318,23 @@ class Kube:
         Returns
         -------
         Kube
-            This Kubernetes API wrapper.
+            This Kubernetes client instance.
         """
         return self
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        """Close the Kubernetes API transport when leaving the context manager."""
-        self.client.close()
+    def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+        """Close the Kubernetes API transport when leaving the context manager.
+
+        Parameters
+        ----------
+        exc_type : object
+            Exception type if raised within the context, else `None`.
+        exc : object
+            Exception instance if raised within the context, else `None`.
+        exc_tb : object
+            Exception traceback if raised within the context, else `None`.
+        """
+        self.close()
 
     async def run[T](
         self,

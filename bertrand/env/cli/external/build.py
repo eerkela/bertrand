@@ -117,7 +117,7 @@ async def bertrand_build(
         config,
     ):
         publish_repo = await _publish_repository(config.repo, publish)
-        repo_id = config.repo.repo_id
+        repo_id = config.repo.id
         if detach:
             await _assert_build_runtime(kube, timeout=math.inf)
             spec = project_image_spec(config, repo_id=repo_id)

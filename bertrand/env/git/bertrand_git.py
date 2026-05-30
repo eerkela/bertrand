@@ -77,31 +77,31 @@ LOCK_GUARD = threading.RLock()
 HOST_LOCKS: dict[tuple[str, int], HostLock] = {}
 
 
-# TODO: CONTAINER_TMP_MOUNT and CONTAINER_ARTIFACT_MOUNT are outdated, and should be
-# reviewed in light of the true image build requirements.
-
 # In-container path definitions for metadata and runtime control.
 METADATA_DIR: PosixPath = PosixPath(".bertrand")
 METADATA_ID: PosixPath = METADATA_DIR / "id"
 WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
-PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")  # TODO: rename to REPO_MOUNT?
-CONTAINER_TMP_MOUNT: PosixPath = PosixPath("/tmp/bertrand")
-CONTAINER_ARTIFACT_MOUNT: PosixPath = CONTAINER_TMP_MOUNT / "artifacts"
+REPO_MOUNT: PosixPath = PosixPath("/.bertrand")
+CONTAINER_TMP: PosixPath = PosixPath("/tmp/bertrand")
 
 
 # TODO: these _ENV globals can probably also be trimmed down or eliminated with some
 # better engineering.
 
+# -> To differentiate between in-container and in-image contexts, I should just set
+# different "image" vs "container" value for the `BERTRAND_ENV` environment variable
+# within the build context vs the container context
+
+# TODO: The image/container watermark is the only environment variable I actually
+# need, since REPO_ID, and WORKTREE_ID can be read from the mounted ID files directly
+
+
 # In-container environment variables for relevant configuration, which are set either
 # at build time or upon starting the container context, and used to control the
 # behavior of the bertrand CLI both inside and outside the container.
-BERTRAND_ENV: str = "BERTRAND"  # "1" to mark as a Bertrand context
+BERTRAND_ENV: str = "BERTRAND"  # "image" | "container", depending on context
 REPO_ID_ENV: str = "BERTRAND_REPO_ID"  # unique repository UUID
 WORKTREE_ID_ENV: str = "BERTRAND_WORKTREE_ID"  # unique worktree UUID
-IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"  # unique OCI image ID
-CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"  # unique OCI container ID
-PROJECT_ENV: str = "BERTRAND_PROJECT"  # host path to mounted project root
-WORKTREE_ENV: str = "BERTRAND_WORKTREE"  # relative path to mounted worktree
 
 
 # TODO: same with the state directory layout, which can be better reviewed after the
@@ -146,7 +146,8 @@ def inside_image() -> bool:
     command takes advantage of this to differentiate between normal (in-image) and
     editable (in-container) installs, for example.
     """
-    return os.environ.get(BERTRAND_ENV, "") == "1"
+    value = os.environ.get(BERTRAND_ENV, "")
+    return value == "image" or value == "container"
 
 
 def inside_container() -> bool:
@@ -157,9 +158,7 @@ def inside_container() -> bool:
     bool
         True if we're running inside a container process, False otherwise.
     """
-    return all(
-        key in os.environ for key in (CONTAINER_ID_ENV, IMAGE_ID_ENV, WORKTREE_ID_ENV)
-    )
+    return os.environ.get(BERTRAND_ENV, "") == "container"
 
 
 @dataclass(frozen=True)
@@ -1194,6 +1193,9 @@ def atomic_write_text(
 # use o660 for the lock file, which would extend rw access to the `bertrand` user group,
 # as long as I then create all lock files under that group.
 
+# -> Use `os.fchown` and always create the lock file under the `bertrand` group, if it
+# exists, or possibly just allow everyone rwx access by default?
+
 
 class HostLock:
     """A re-entrant, OS-level, asynchronous file lock."""
@@ -1591,7 +1593,7 @@ class GitRefUpdate:
 
 @dataclass(frozen=True)
 class GitRepository:
-    """Wrap a Git repository.
+    """An object-oriented wrapper around a Git repository.
 
     Attributes
     ----------

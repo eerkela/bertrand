@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import Config, _check_uuid
 from bertrand.env.git import (
-    PROJECT_MOUNT,
     REPO_ID_ENV,
+    REPO_MOUNT,
     WORKTREE_MOUNT,
     GitRepository,
     inside_container,
@@ -56,7 +56,7 @@ async def live_project_context(
         async with await Config.load(
             WORKTREE_MOUNT,
             kube=kube,
-            repo=GitRepository(git_dir=PROJECT_MOUNT / ".git"),
+            repo=GitRepository(git_dir=REPO_MOUNT / ".git"),
             timeout=timeout,
         ) as config:
             yield kube, config, repo_id
