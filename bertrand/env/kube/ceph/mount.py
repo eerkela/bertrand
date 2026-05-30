@@ -14,7 +14,7 @@ from bertrand.env.config.core import UUIDHex, _check_uuid
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     HOST_MOUNTS,
-    METADATA_REPO_ID,
+    METADATA_ID,
     CommandError,
     Deadline,
     HostLock,
@@ -787,7 +787,7 @@ async def ensure_repository_mount(
         aliases.link(alias)
 
     atomic_write_text(
-        hidden_mount / METADATA_REPO_ID,
+        hidden_mount / METADATA_ID,
         repo_id,
         encoding="utf-8",
     )
@@ -1059,7 +1059,7 @@ async def _mount_repository_volume(
         timeout=deadline.remaining(),
     )
     atomic_write_text(
-        REPO_DIR / repo_id / REPO_MOUNT_EXT / METADATA_REPO_ID,
+        REPO_DIR / repo_id / REPO_MOUNT_EXT / METADATA_ID,
         repo_id,
         encoding="utf-8",
     )

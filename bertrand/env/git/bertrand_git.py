@@ -32,7 +32,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
-from typing import Any, Literal, Self, TextIO, cast
+from typing import Any, Literal, NoReturn, Self, TextIO, cast
 
 if os.name == "nt":
     import msvcrt
@@ -55,6 +55,7 @@ else:
 
 
 # generic utils
+SHORT_DELAY = 0.1
 ROOT_DIR = Path(Path(sys.executable).anchor)
 HOST_MOUNTS = ROOT_DIR / "proc" / "self" / "mountinfo"
 NORMALIZE_ARCH = {
@@ -71,25 +72,25 @@ GIT_REQUIRE_RELATIVE_PATHS = (
     "move operations.  Please upgrade git to a version that supports this feature "
     "(git 2.52+)."
 )
-LOCK_POLL_SECONDS = 0.1
 LOCK_DEFAULT_PRIVILEGES = 0o600
 LOCK_GUARD = threading.RLock()
 HOST_LOCKS: dict[tuple[str, int], HostLock] = {}
 
 
+# TODO: CONTAINER_TMP_MOUNT and CONTAINER_ARTIFACT_MOUNT are outdated, and should be
+# reviewed in light of the true image build requirements.
+
 # In-container path definitions for metadata and runtime control.
 METADATA_DIR: PosixPath = PosixPath(".bertrand")
-METADATA_FILE: PosixPath = METADATA_DIR / "env.json"
-METADATA_LOCK: PosixPath = METADATA_DIR / ".lock"
-METADATA_REPO_ID: PosixPath = METADATA_DIR / "repo_id"
-METADATA_WORKTREE_ID: PosixPath = METADATA_DIR / "worktree_id"
-METADATA_TMP: PosixPath = METADATA_DIR / "tmp"
+METADATA_ID: PosixPath = METADATA_DIR / "id"
 WORKTREE_MOUNT: PosixPath = PosixPath("/bertrand")
-PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")
-CONTAINER_RUNTIME_MOUNT: PosixPath = PosixPath("/run/bertrand")
+PROJECT_MOUNT: PosixPath = PosixPath("/.bertrand")  # TODO: rename to REPO_MOUNT?
 CONTAINER_TMP_MOUNT: PosixPath = PosixPath("/tmp/bertrand")
 CONTAINER_ARTIFACT_MOUNT: PosixPath = CONTAINER_TMP_MOUNT / "artifacts"
 
+
+# TODO: these _ENV globals can probably also be trimmed down or eliminated with some
+# better engineering.
 
 # In-container environment variables for relevant configuration, which are set either
 # at build time or upon starting the container context, and used to control the
@@ -101,9 +102,10 @@ IMAGE_ID_ENV: str = "BERTRAND_IMAGE_ID"  # unique OCI image ID
 CONTAINER_ID_ENV: str = "BERTRAND_CONTAINER_ID"  # unique OCI container ID
 PROJECT_ENV: str = "BERTRAND_PROJECT"  # host path to mounted project root
 WORKTREE_ENV: str = "BERTRAND_WORKTREE"  # relative path to mounted worktree
-# relative path to worktree's artifact directory
-CONTAINER_RUNTIME_ENV: str = "BERTRAND_RUNTIME"
 
+
+# TODO: same with the state directory layout, which can be better reviewed after the
+# rest of the framework is in place.
 
 # Shared runtime identifiers and host paths.  These intentionally stay in this
 # hook-safe module so installed Git hooks can use them without importing the rest of
@@ -617,7 +619,7 @@ async def run(
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> CompletedProcess:
-    """Run a subprocess asynchronously with text-mode error formatting.
+    """Run an async subprocess wrapper with enhanced timeout and error ergonomics.
 
     Parameters
     ----------
@@ -649,7 +651,8 @@ async def run(
         of times in total.
     delay : float, optional
         The delay in seconds to wait between retries when `attempts` is greater than 1.
-        Default is 0.1 seconds.  Must be non-negative.
+        Default is zero, which yields to the event loop before retrying.  Must be
+        non-negative.
     cwd : Path | None, optional
         An optional working directory to run the command in.  If None (the default),
         then the current working directory will be used.
@@ -1187,6 +1190,11 @@ def atomic_write_text(
     tmp.replace(path)
 
 
+# TODO: try to delete the privileges field for the lock file.  I could maybe just
+# use o660 for the lock file, which would extend rw access to the `bertrand` user group,
+# as long as I then create all lock files under that group.
+
+
 class HostLock:
     """A re-entrant, OS-level, asynchronous file lock."""
 
@@ -1303,7 +1311,7 @@ class HostLock:
             remaining = deadline.remaining
             if remaining <= 0:
                 return False
-            await asyncio.sleep(min(LOCK_POLL_SECONDS, remaining))
+            await asyncio.sleep(min(SHORT_DELAY, remaining))
         return True
 
     async def _release_file(self) -> None:
@@ -1364,7 +1372,7 @@ class HostLock:
                     "seconds"
                 )
                 raise TimeoutError(msg)
-            await asyncio.sleep(min(deadline.remaining, LOCK_POLL_SECONDS))
+            await asyncio.sleep(min(deadline.remaining, SHORT_DELAY))
 
         # slow path: acquire via backend
         try:
@@ -1581,60 +1589,6 @@ class GitRefUpdate:
         return updates
 
 
-# TODO: this should be refactored to be a method on GitRepository itself, and then
-# we'll make sure that a GitRepository instance is always injected from the top-level
-# `cli()` helper, or None if the command is run outside of one.
-
-
-def ensure_worktree_id(worktree: Path) -> str:
-    """Ensure a checked-out worktree has a stable Bertrand UUID.
-
-    Parameters
-    ----------
-    worktree : Path
-        Worktree root that should contain Bertrand metadata.
-
-    Returns
-    -------
-    str
-        Existing or newly generated UUID hex string.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the worktree path does not exist.
-    NotADirectoryError
-        If the worktree path is not a directory.
-    OSError
-        If the worktree ID file exists, but is not a UTF-8 text file containing a valid
-        UUID hex.
-    """
-    if not worktree.exists():
-        msg = f"worktree path does not exist: {worktree}"
-        raise FileNotFoundError(msg)
-    if not worktree.is_dir():
-        msg = f"worktree path is not a directory: {worktree}"
-        raise NotADirectoryError(msg)
-
-    # read an existing worktree ID if possible
-    path = worktree / METADATA_WORKTREE_ID
-    if path.exists():
-        if not path.is_file():
-            msg = f"Bertrand worktree identity path is not a file: {path}"
-            raise OSError(msg)
-        text = path.read_text(encoding="utf-8").strip()
-        return uuid.UUID(text).hex
-
-    # generate a new worktree ID and write it atomically
-    worktree_id = uuid.uuid4().hex
-    atomic_write_text(path, f"{worktree_id}\n", encoding="utf-8")
-    return worktree_id
-
-
-# TODO: the timeout -> deadline refactor should also apply to all GitRepository
-# commands, since we need to expand coverage over this part of the interface anyways.
-
-
 @dataclass(frozen=True)
 class GitRepository:
     """Wrap a Git repository.
@@ -1646,6 +1600,216 @@ class GitRepository:
         be by running `git rev-parse --git-common-dir` in the current working
         directory.
     """
+
+    @dataclass(frozen=True)
+    class Worktree:
+        """A parsed entry from `git worktree list --porcelain`.
+
+        Attributes
+        ----------
+        path : Path
+            The absolute path to the worktree checkout.
+        branch : str | None
+            The short branch name if this worktree is attached to `refs/heads/*`,
+            otherwise None.
+        """
+
+        repo: GitRepository
+        path: Path
+        branch: str | None = None
+
+        @property
+        def id(self) -> str:
+            """Ensure a checked-out worktree has a stable Bertrand UUID.
+
+            Returns
+            -------
+            str
+                Existing or newly generated UUID hex string.
+
+            Raises
+            ------
+            FileNotFoundError
+                If the worktree path does not exist.
+            NotADirectoryError
+                If the worktree path is not a directory.
+            OSError
+                If the worktree ID file exists, but is not a UTF-8 text file containing
+                a valid UUID hex.
+            """
+            if not self.path.exists():
+                msg = f"worktree path does not exist: {self.path}"
+                raise FileNotFoundError(msg)
+            if not self.path.is_dir():
+                msg = f"worktree path is not a directory: {self.path}"
+                raise NotADirectoryError(msg)
+
+            # read an existing worktree ID if possible
+            path = self.path / METADATA_ID
+            if path.exists():
+                if not path.is_file():
+                    msg = f"Bertrand worktree identity path is not a file: {path}"
+                    raise OSError(msg)
+                text = path.read_text(encoding="utf-8").strip()
+                return uuid.UUID(text).hex
+
+            # generate a new worktree ID and write it atomically
+            worktree_id = uuid.uuid4().hex
+            atomic_write_text(path, f"{worktree_id}\n", encoding="utf-8")
+            return worktree_id
+
+        def __post_init__(self) -> None:
+            """Canonicalize the worktree path and validate it exists as a directory.
+
+            Raises
+            ------
+            FileNotFoundError
+                If the worktree path does not exist.
+            NotADirectoryError
+                If the worktree path is not a directory.
+            """
+            object.__setattr__(self, "path", self.path.expanduser().resolve())
+            if not self.path.exists():
+                msg = f"worktree path does not exist: {self.path}"
+                raise FileNotFoundError(msg)
+            if not self.path.is_dir():
+                msg = f"worktree path is not a directory: {self.path}"
+                raise NotADirectoryError(msg)
+
+        def _clean_worktree_parents(self) -> None:
+            # clean up now-empty parent directories up to project root to account for
+            # branch names that contain path separators
+            cursor = self.path.parent
+            while cursor != self.repo.root:
+                try:
+                    if any(cursor.iterdir()):
+                        break
+                    cursor.rmdir()
+                except OSError:
+                    break
+                cursor = cursor.parent
+
+        async def _worktree_belongs_to_repo(
+            self,
+            *,
+            env: dict[str, str],
+            deadline: Deadline
+        ) -> bool:
+            result = await run(
+                ["git", "-C", str(self.path), "rev-parse", "--git-common-dir"],
+                check=False,
+                capture_output=True,
+                env=env,
+                deadline=deadline
+            )
+            if result.returncode != 0:
+                return False
+            owner = Path(result.stdout.strip()).expanduser()
+            if not owner.is_absolute():
+                owner = self.path / owner
+            return self.repo.git_dir == owner.expanduser().resolve()
+
+        async def move(
+            self,
+            target: Path | None = None,
+            *,
+            deadline: Deadline = NO_DEADLINE,
+        ) -> None:
+            """Move this worktree to a different location.
+
+            Parameters
+            ----------
+            target : Path | None, optional
+                The destination path for the worktree.  If None, the worktree will be
+                moved to its default location based on the branch name, if it is not
+                already there.  Defaults to None.
+            deadline : Deadline, optional
+                An overall deadline by which the move must complete before raising a
+                `TimeoutError`.  Defaults to an infinite deadline, which causes the
+                command to block indefinitely until completion.  If the deadline is
+                earlier than the time this method is called, a `TimeoutError` will be
+                raised immediately.
+
+            Raises
+            ------
+            ValueError
+                If the target path cannot be determined for a branchless worktree, or
+                if the target path is the same as the current path.
+            FileExistsError
+                If the target path already exists, and is not the same as the source
+                path.
+            """
+            if target is None:
+                if self.branch is None:
+                    msg = (
+                        "cannot determine default worktree target path for branchless "
+                        "worktree; specify an explicit target path to move this "
+                        "worktree"
+                    )
+                    raise ValueError(msg)
+                target = self.repo.root / self.branch
+            if target == self.path:
+                return
+            if target.exists():
+                msg = f"target path already exists: {target}"
+                raise FileExistsError(msg)
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await self.repo.run(
+                ["worktree", "move", "--relative-paths", str(self.path), str(target)],
+                capture_output=True,
+                deadline=deadline,
+            )
+            self._clean_worktree_parents()
+            object.__setattr__(self, "path", target)
+
+        async def destroy(self, *, deadline: Deadline = NO_DEADLINE) -> bool:
+            """Destroy this worktree if it exists and is clean.
+
+            Parameters
+            ----------
+            deadline : Deadline, optional
+                An overall deadline by which the destruction must complete before
+                raising a `TimeoutError`.  Defaults to an infinite deadline, which
+                causes the command to block indefinitely until completion.  If the
+                deadline is earlier than the time this method is called, a
+                `TimeoutError` will be raised immediately.
+
+            Returns
+            -------
+            bool
+                True if the worktree was successfully destroyed or did not exist, false
+                if the worktree exists but could not be destroyed due to dirty state.
+
+            Raises
+            ------
+            RuntimeError
+                If the target path does not belong to this repository.
+            """
+            # verify that the worktree is clean and objectively belongs to this
+            # repository before attempting deletion
+            env = await self.repo._strip_env(deadline=deadline)
+            if not await self._worktree_belongs_to_repo(env=env, deadline=deadline):
+                msg = f"worktree path does not belong to this repository: {self.path}"
+                raise RuntimeError(msg)
+            clean = await run(
+                ["git", "-C", str(self.path), "status", "--porcelain"],
+                capture_output=True,
+                env=env,
+                deadline=deadline,
+            )
+            if clean.stdout.strip():
+                return False
+
+            # remove the worktree using git, which will also properly clean up the
+            # associated gitdir and any linked metadata
+            await self.repo.run(
+                ["worktree", "remove", str(self.path)],
+                capture_output=True,
+                deadline=deadline,
+            )
+            self._clean_worktree_parents()
+            return True
 
     git_dir: Path
 
@@ -1662,7 +1826,7 @@ class GitRepository:
         return self.git_dir.parent
 
     @property
-    def repo_id(self) -> str:
+    def id(self) -> str:
         """Return the stable Bertrand repository identity.
 
         Returns
@@ -1683,10 +1847,10 @@ class GitRepository:
         root path so uninitialized repositories can still address cluster resources
         consistently without colliding with matching paths on other hosts.
         """
-        repo_id_file = self.root / METADATA_REPO_ID
-        if repo_id_file.is_file():
+        id_file = self.root / METADATA_ID
+        if id_file.is_file():
             try:
-                return uuid.UUID(repo_id_file.read_text(encoding="utf-8").strip()).hex
+                return uuid.UUID(id_file.read_text(encoding="utf-8").strip()).hex
             except (OSError, ValueError):
                 pass
         try:
@@ -1699,7 +1863,8 @@ class GitRepository:
             raise OSError(msg) from err
         return uuid.uuid5(host_id, self.root.as_posix()).hex
 
-    def __post_init__(self) -> None:  # noqa: D105
+    def __post_init__(self) -> None:
+        """Automatically canonicalize the git_dir path."""
         object.__setattr__(self, "git_dir", self.git_dir.expanduser().resolve())
 
     @classmethod
@@ -1789,13 +1954,15 @@ class GitRepository:
             return repo, Path()
 
         # existing bare repository
-        if await repo.is_bare():
+        if await repo.bare():
             if not await cls.supports_relative_paths(deadline=deadline):
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
             worktree = path.relative_to(repo.root)
             if not worktree.parts:
                 return repo, Path()
-            if not any(wt.path == path for wt in await repo.worktrees()):
+            if not any(
+                wt.path == path for wt in await repo.worktrees(deadline=deadline)
+            ):
                 msg = (
                     f"worktree at {worktree} is not registered as a git worktree of "
                     f"bare repository: {repo.root}"
@@ -1805,7 +1972,9 @@ class GitRepository:
 
         # existing non-bare repository
         worktree = path.relative_to(repo.root)
-        if worktree.parts and not any(wt.path == path for wt in await repo.worktrees()):
+        if worktree.parts and not any(
+            wt.path == path for wt in await repo.worktrees(deadline=deadline)
+        ):
             msg = (
                 f"nested worktree at {worktree} is not registered as a git worktree "
                 f"of non-bare repository: {repo.root}"
@@ -1813,11 +1982,69 @@ class GitRepository:
             raise OSError(msg)
         return repo, worktree
 
-    # TODO: remove __bool__ in exchange for an explicit .valid(deadline=...) method
-    # instead.
+    # TODO: remove `__bool__` once the deprecation cut-over is complete
 
-    def __bool__(self) -> bool:
+    def __bool__(self) -> NoReturn:
+        """Deprecate old-style truthiness checks on GitRepository instances."""
+        msg = "use explicit `GitRepository.exists()` instead of a truth check"
+        raise NotImplementedError(msg)
+
+    def __hash__(self) -> int:
+        """Allow GitRepositories to be hashed according to their logical identity.
+
+        Returns
+        -------
+        int
+            A hash derived from the repository's `id`, which will be regenerated if it
+            is missing.
+        """
+        return hash(self.id)
+
+    def __eq__(self, other: object) -> bool:
+        """Compare GitRepositories based on their logical identity.
+
+        Returns
+        -------
+        bool | NotImplemented
+            True if `other` is a GitRepository with the same `id` as this one, or
+            NotImplemented if `other` is not a GitRepository.  If either repository's
+            `id` is missing, it will be regenerated.
+        """
+        if isinstance(other, GitRepository):
+            return self.id == other.id
+        return NotImplemented
+
+    async def _strip_env(self, *, deadline: Deadline) -> dict[str, str]:
+        env = os.environ.copy()
+        local = await self.run(
+            ["rev-parse", "--local-env-vars"],
+            check=False,
+            capture_output=True,
+            env=env,
+            deadline=deadline,
+        )
+        if local.returncode == 0:
+            keys = [key.strip() for key in local.stdout.splitlines() if key.strip()]
+        else:
+            keys = [
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_COMMON_DIR",
+            ]  # best-effort fallback
+        for key in keys:
+            env.pop(key, None)
+        return env
+
+    async def exists(self, *, deadline: Deadline = NO_DEADLINE) -> bool:
         """Return whether this repository is a valid, initialized repository.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An overall deadline by which the validation must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
 
         Returns
         -------
@@ -1827,23 +2054,13 @@ class GitRepository:
         return (
             self.git_dir.exists()
             and self.git_dir.is_dir()
-            and subprocess.run(
-                ["git", "--git-dir", str(self.git_dir), "rev-parse", "--git-dir"],
+            and (await self.run(
+                ["rev-parse", "--git-dir"],
                 check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            ).returncode == 0
+                capture_output=True,
+                deadline=deadline,
+            )).returncode == 0
         )
-
-    # TODO: add docstrings to these methods
-
-    def __hash__(self) -> int:  # noqa: D105
-        return hash(self.git_dir)
-
-    def __eq__(self, other: object) -> bool:  # noqa: D105
-        if isinstance(other, GitRepository):
-            return self.git_dir == other.git_dir
-        return NotImplemented
 
     async def init(
         self,
@@ -1883,7 +2100,7 @@ class GitRepository:
         self,
         source: GitRepository,
         *,
-        timeout: float,
+        deadline: Deadline = NO_DEADLINE,
     ) -> None:
         """Converge this repository from a source using mirror semantics.
 
@@ -1895,29 +2112,26 @@ class GitRepository:
         ----------
         source : GitRepository
             Source repository whose refs/object graph should be mirrored.
-        timeout : float
-            Maximum runtime command timeout in seconds.  If infinite, wait
-            indefinitely.
+        deadline : Deadline, optional
+            An overall deadline by which the operation must complete before raising
+            a `TimeoutError`.  Defaults to an infinite deadline, which causes the
+            command to block indefinitely until completion.  If the deadline is earlier
+            than the time this method is called, a `TimeoutError` will be raised
+            immediately.
 
         Raises
         ------
-        TimeoutError
-            If `timeout` is negative.
         OSError
             If the source repository has not been initialized.
         """
-        if timeout <= 0:
-            msg = "timeout must be non-negative"
-            raise TimeoutError(msg)
-        if not source:
+        if not await source.exists():
             msg = (
                 f"cannot mirror from uninitialized source repository: {source.git_dir}"
             )
             raise OSError(msg)
-        deadline = Deadline(timeout)
 
         # if this is a fresh repository, just clone directly to initialize it
-        if not self:
+        if not await self.exists():
             await run(
                 [
                     "git",
@@ -1927,23 +2141,20 @@ class GitRepository:
                     str(self.git_dir),
                 ],
                 capture_output=True,
-                timeout=deadline.remaining,
+                deadline=deadline,
             )
 
         # otherwise, fetch and mirror all refs to converge with the source repository
         else:
-            await run(
+            await self.run(
                 [
-                    "git",
-                    "--git-dir",
-                    str(self.git_dir),
                     "fetch",
                     "--prune",
                     str(source.root),
                     "+refs/*:refs/*",
                 ],
                 capture_output=True,
-                timeout=deadline.remaining,
+                deadline=deadline,
             )
 
     async def run(
@@ -1952,14 +2163,14 @@ class GitRepository:
         *,
         check: bool = True,
         capture_output: bool | None = False,
-        stdin: str | None = None,
-        timeout: float = math.inf,
+        input: str | None = None,  # noqa: A002
+        deadline: Deadline = NO_DEADLINE,
         attempts: int = 1,
-        delay: float = 0.1,
+        delay: float = 0.0,
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
     ) -> CompletedProcess:
-        """Run a git command as an asynchronous subprocess wrapper.
+        """Run a asynchronous git command against this repository.
 
         Parameters
         ----------
@@ -1977,22 +2188,23 @@ class GitRepository:
             the console and the returned objects simultaneously.  Note that teeing
             output in this way may break TTY behavior for some commands, and is not
             recommended for interactive use.
-        stdin : str | None, optional
+        input : str | None, optional
             Input to send to the command's stdin (default is None).
-        timeout : float, optional
-            An optional timeout in seconds to wait for the command to complete before
-            raising a `TimeoutExpired` exception.  Default is infinite, which means to
-            wait indefinitely.  If zero or negative, a `TimeoutExpired` exception will
-            be raised immediately.  Note that this does not reset between `attempts`,
-            so only the overall time spent on retries counts against the timeout.
+        deadline : Deadline, optional
+            An overall deadline by which the command must complete before raising a
+            `TimeoutExpired` exception.  Defaults to an infinite deadline, which causes
+            the command to block indefinitely until completion.  If the deadline is
+            earlier than the time this method is called, then a `TimeoutExpired`
+            exception will be raised immediately.
         attempts : int, optional
             The total number of times to attempt the command.  Defaults to 1, which
             means no retries.  If greater than 1, then any command that exits with a
             nonzero exit code will be re-run after a short delay, up to the specified
             number of times in total.
         delay : float, optional
-            The delay in seconds to wait between retries when `attempts` is greater
-            than 1.  Default is 0.1 seconds.  Must be non-negative.
+            The delay in seconds to wait between retries when `attempts` is greater than
+            1.  Default is zero, which yields to the event loop before retrying.  Must
+            be non-negative.
         cwd : Path | None, optional
             An optional working directory to run the command in.  If None (the default),
             then the current working directory will be used.
@@ -2004,22 +2216,29 @@ class GitRepository:
         -------
         CompletedProcess
             The completed process result.
-
         """
         return await run(
             ["git", "--git-dir", str(self.git_dir), *argv],
             check=check,
             capture_output=capture_output,
-            stdin=stdin,
-            timeout=timeout,
+            input=input,
+            deadline=deadline,
             attempts=attempts,
             delay=delay,
             cwd=cwd,
             env=env,
         )
 
-    async def dirty(self) -> bool:
+    async def dirty(self, *, deadline: Deadline = NO_DEADLINE) -> bool:
         """Check whether this repository has uncommitted changes.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An overall deadline by which the check must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
 
         Returns
         -------
@@ -2030,28 +2249,36 @@ class GitRepository:
             worktree. Bare repositories with zero worktrees are considered clean.
 
         """
-        if not await self.is_bare():
+        if not await self.bare():
             result = await self.run(
                 ["status", "--porcelain"],
                 capture_output=True,
                 cwd=self.root,
+                deadline=deadline,
             )
             return bool(result.stdout.strip())
 
         # Bare repositories do not have their own worktree; check each attached
         # worktree under a sanitized git environment instead.
-        env = await self._strip_env()
+        env = await self._strip_env(deadline=deadline)
         for wt in await self.worktrees():
             result = await run(
                 ["git", "-C", str(wt.path), "status", "--porcelain"],
                 capture_output=True,
                 env=env,
+                deadline=deadline,
             )
             if result.stdout.strip():
                 return True
         return False
 
-    async def git_path(self, path: Path, *, cwd: Path | None = None) -> Path:
+    async def git_path(
+        self,
+        path: Path,
+        *,
+        cwd: Path | None = None,
+        deadline: Deadline = NO_DEADLINE,
+    ) -> Path:
         """Resolve a git-path using `git rev-parse --git-path`.
 
         Parameters
@@ -2060,6 +2287,11 @@ class GitRepository:
             The git-path expression to resolve (e.g. `hooks/pre-commit`).
         cwd : Path | None, optional
             Optional working directory for relative path resolution semantics.
+        deadline : Deadline
+            An overall deadline by which the resolution must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
 
         Returns
         -------
@@ -2076,6 +2308,7 @@ class GitRepository:
             ["rev-parse", "--path-format=absolute", "--git-path", path_str],
             capture_output=True,
             cwd=cwd,
+            deadline=deadline,
         )
         text = result.stdout.strip()
         if not text:
@@ -2089,14 +2322,113 @@ class GitRepository:
             resolved = resolved.resolve()
         return resolved
 
-    def _parse_bool(self, stdout: str) -> bool:
-        value = stdout.strip().lower()
-        if value == "true":
-            return True
-        if value == "false":
-            return False
-        msg = f"invalid git boolean output: {stdout!r}"
-        raise ValueError(msg)
+    async def branches(self, *, deadline: Deadline = NO_DEADLINE) -> frozenset[str]:
+        """Return repository branch names.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An optional deadline by which this check must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
+
+        Returns
+        -------
+        frozenset[str]
+            A set of all (short) branch names in the repository.  Note that this only
+            includes branches under `refs/heads/`, and not other refs like tags or
+            remotes.
+
+        """
+        result = await self.run(
+            ["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+            capture_output=True,
+            deadline=deadline,
+        )
+        out = {line.strip() for line in result.stdout.splitlines()}
+        out.discard("")  # remove empty lines if any
+        return frozenset(out)
+
+    @staticmethod
+    async def default_branch(*, deadline: Deadline = NO_DEADLINE) -> str:
+        """Return the default Git branch name.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An optional deadline by which this check must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
+
+        Returns
+        -------
+        str
+            The default branch name configured for this git installation.
+
+        Raises
+        ------
+        ValueError
+            If the default branch could not be determined from git output.
+        """
+        branch = await run(
+            ["git", "var", "GIT_DEFAULT_BRANCH"],
+            capture_output=True,
+            deadline=deadline,
+        )
+        result = branch.stdout.strip()
+        if not result:
+            msg = "default Git branch name could not be determined"
+            raise ValueError(msg)
+        return result
+
+    async def head_branch(self, *, deadline: Deadline = NO_DEADLINE) -> str | None:
+        """Return the current HEAD branch.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An optional deadline by which this check must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
+
+        Returns
+        -------
+        str | None
+            The short branch name of the current HEAD, or None if HEAD is detached.
+
+        Raises
+        ------
+        CommandError
+            If Git returns an unexpected symbolic-ref failure.
+        ValueError
+            If we failed to parse the output or got an empty branch name.
+        """
+        # attached HEAD: try to read symbolic ref directly
+        result = await self.run(
+            ["symbolic-ref", "--quiet", "--short", "HEAD"],
+            check=False,
+            capture_output=True,
+            deadline=deadline,
+        )
+        if result.returncode == 0:
+            text = result.stdout.strip()
+            if not text:
+                msg = "empty symbolic-ref output for HEAD"
+                raise ValueError(msg)
+            return text
+        if result.returncode != 1:
+            raise CommandError(
+                returncode=result.returncode,
+                cmd=result.args,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+
+        # detached HEAD: let caller decide what to do
+        return None
 
     @staticmethod
     async def supports_relative_paths(*, deadline: Deadline = NO_DEADLINE) -> bool:
@@ -2134,119 +2466,16 @@ class GitRepository:
         move_text = f"{move_help.stdout}\n{move_help.stderr}".lower()
         return move_help.returncode == 0 and "--relative-paths" in move_text
 
-    @dataclass(frozen=True)
-    class Worktree:
-        """A parsed entry from `git worktree list --porcelain`.
-
-        Attributes
-        ----------
-        path : Path
-            The absolute path to the worktree checkout.
-        branch : str | None
-            The short branch name if this worktree is attached to `refs/heads/*`,
-            otherwise None.
-        """
-
-        path: Path
-        branch: str | None = None
-
-        def __post_init__(self) -> None:  # noqa: D105
-            object.__setattr__(self, "path", self.path.expanduser().resolve())
-            if not self.path.exists():
-                msg = f"worktree path does not exist: {self.path}"
-                raise FileNotFoundError(msg)
-            if not self.path.is_dir():
-                msg = f"invalid worktree path: {self.path}"
-                raise NotADirectoryError(msg)
-
-    @staticmethod
-    async def default_branch() -> str:
-        """Return the default Git branch name.
-
-        Returns
-        -------
-        str
-            The default branch name configured for this git installation.
-
-        Raises
-        ------
-        ValueError
-            If the default branch could not be determined from git output.
-        """
-        branch = await run(["git", "var", "GIT_DEFAULT_BRANCH"], capture_output=True)
-        result = branch.stdout.strip()
-        if not result:
-            msg = "default Git branch name could not be determined"
-            raise ValueError(msg)
-        return result
-
-    async def head_branch(self) -> str | None:
-        """Return the current HEAD branch.
-
-        Returns
-        -------
-        str | None
-            The short branch name of the current HEAD, or None if HEAD is detached.
-
-        Raises
-        ------
-        CommandError
-            If Git returns an unexpected symbolic-ref failure.
-        ValueError
-            If we failed to parse the output or got an empty branch name.
-        """
-        # attached HEAD: try to read symbolic ref directly
-        result = await self.run(
-            ["symbolic-ref", "--quiet", "--short", "HEAD"],
-            check=False,
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            text = result.stdout.strip()
-            if not text:
-                msg = "empty symbolic-ref output for HEAD"
-                raise ValueError(msg)
-            return text
-        if result.returncode != 1:
-            raise CommandError(
-                result.returncode, result.args, result.stdout, result.stderr
-            )
-
-        # detached HEAD: let caller decide what to do
-        return None
-
-    async def head_worktree(self) -> GitRepository.Worktree | None:
-        """Return the in-repository worktree attached to HEAD.
-
-        Returns
-        -------
-        GitRepository.Worktree | None
-            The worktree registered for the current HEAD branch, or None if HEAD is
-            detached, unattached, or attached only to an out-of-repository worktree.
-
-        Raises
-        ------
-        FileExistsError
-            If multiple registered worktrees claim the current HEAD branch.
-        """
-        branch = await self.head_branch()
-        if branch is None:
-            return None
-        matches = [
-            worktree
-            for worktree in await self.worktrees()
-            if worktree.branch == branch and worktree.path.is_relative_to(self.root)
-        ]
-        if not matches:
-            return None
-        if len(matches) > 1:
-            paths = ", ".join(str(worktree.path) for worktree in matches)
-            msg = f"multiple worktrees are attached to HEAD branch {branch!r}: {paths}"
-            raise FileExistsError(msg)
-        return matches[0]
-
-    async def is_bare(self) -> bool:
+    async def bare(self, *, deadline: Deadline = NO_DEADLINE) -> bool:
         """Return whether this repository is bare.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An optional deadline by which this check must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
 
         Returns
         -------
@@ -2261,6 +2490,7 @@ class GitRepository:
         result = await self.run(
             ["rev-parse", "--is-bare-repository"],
             capture_output=True,
+            deadline=deadline,
         )
         value = result.stdout.strip().lower()
         if value == "true":
@@ -2270,27 +2500,20 @@ class GitRepository:
         msg = f"invalid --is-bare-repository output: {result.stdout!r}"
         raise ValueError(msg)
 
-    async def branches(self) -> frozenset[str]:
-        """Return repository branch names.
-
-        Returns
-        -------
-        frozenset[str]
-            A set of all (short) branch names in the repository.  Note that this only
-            includes branches under `refs/heads/`, and not other refs like tags or
-            remotes.
-
-        """
-        result = await self.run(
-            ["for-each-ref", "--format=%(refname:short)", "refs/heads"],
-            capture_output=True,
-        )
-        out = {line.strip() for line in result.stdout.splitlines()}
-        out.discard("")  # remove empty lines if any
-        return frozenset(out)
-
-    async def worktrees(self) -> tuple[GitRepository.Worktree, ...]:
+    async def worktrees(
+        self,
+        *,
+        deadline: Deadline = NO_DEADLINE
+    ) -> tuple[GitRepository.Worktree, ...]:
         """List all local worktrees for the given Git directory.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An overall deadline by which the listing must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
 
         Returns
         -------
@@ -2305,12 +2528,13 @@ class GitRepository:
         result = await self.run(
             ["worktree", "list", "--porcelain"],
             capture_output=True,
+            deadline=deadline,
         )
         for raw in result.stdout.splitlines():
             line = raw.strip()
             if not line:
                 if path is not None:
-                    out.append(self.Worktree(path=path, branch=branch))
+                    out.append(self.Worktree(repo=self, path=path, branch=branch))
                 path = None
                 branch = None
                 continue
@@ -2320,31 +2544,151 @@ class GitRepository:
             if line.startswith(f"branch {GIT_REF_HEADS_PREFIX}"):
                 branch = line[len("branch ") + len(GIT_REF_HEADS_PREFIX) :]
         if path is not None:
-            out.append(self.Worktree(path=path, branch=branch))
+            out.append(self.Worktree(repo=self, path=path, branch=branch))
         return tuple(out)
 
-    async def _current_worktree_state(self) -> dict[str, Path]:
+    async def get_worktree(
+        self,
+        branch: str,
+        *,
+        deadline: Deadline = NO_DEADLINE
+    ) -> GitRepository.Worktree | None:
+        """Return the worktree attached to the given branch, if any.
+
+        Parameters
+        ----------
+        branch : str
+            The short branch name to find a worktree for.
+        deadline : Deadline, optional
+            An overall deadline by which this check must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
+
+        Returns
+        -------
+        GitRepository.Worktree | None
+            The worktree registered for the given branch, or None if no worktree is
+            attached to that branch or if the attached worktree is out-of-repository.
+
+        Raises
+        ------
+        OSError
+            If multiple registered worktrees claim the given branch.
+        """
+        matches = [
+            worktree
+            for worktree in await self.worktrees(deadline=deadline)
+            if worktree.branch == branch
+        ]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            paths = ", ".join(str(worktree.path) for worktree in matches)
+            msg = f"multiple worktrees are attached to branch {branch!r}: {paths}"
+            raise OSError(msg)
+        return matches[0]
+
+    async def head_worktree(
+        self,
+        *,
+        deadline: Deadline = NO_DEADLINE
+    ) -> GitRepository.Worktree | None:
+        """Return the in-repository worktree attached to HEAD.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An overall deadline by which this check must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
+
+        Returns
+        -------
+        GitRepository.Worktree | None
+            The worktree registered for the current HEAD branch, or None if HEAD is
+            detached, unattached, or attached only to an out-of-repository worktree.
+        """
+        branch = await self.head_branch(deadline=deadline)
+        if branch is None:
+            return None
+        return await self.get_worktree(branch, deadline=deadline)
+
+    async def create_worktree(
+        self,
+        branch: str,
+        target: Path | None = None,
+        *,
+        create_branch: bool = True,
+        quiet: bool = False,
+        deadline: Deadline = NO_DEADLINE,
+    ) -> GitRepository.Worktree:
+        """Create a new worktree for the given branch at the specified target path.
+
+        Parameters
+        ----------
+        branch : str
+            The short branch name to create a worktree for.
+        target : Path | None, optional
+            The target path to create the worktree at.  Must not already exist.
+        create_branch : bool, optional
+            If True (the default), then the branch will be created if it does not
+            already exist.  If False, then the branch must already exist in the
+            repository.
+        quiet : bool, optional
+            If True, then suppress any non-error output from the git command.  Default
+            is False.
+        deadline : Deadline, optional
+            An overall deadline by which the creation must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
+
+        Returns
+        -------
+        GitRepository.Worktree
+            A `Worktree` object representing the newly created worktree.
+
+        Raises
+        ------
+        FileExistsError
+            If the target path already exists.
+        """
+        if target is None:
+            target = self.root / branch
+        if target.exists():
+            msg = "path already exists"
+            raise FileExistsError(msg)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cmd = ["worktree", "add", "--relative-paths"]
+        if create_branch:
+            if branch not in await self.branches(deadline=deadline):
+                cmd.extend(["-b", branch, str(target)])
+            else:
+                cmd.extend([str(target), branch])
+        else:
+            cmd.extend([str(target), branch])
+        await self.run(cmd, capture_output=quiet, deadline=deadline)
+        return GitRepository.Worktree(repo=self, path=target, branch=branch)
+
+    async def _current_worktree_state(self, *, deadline: Deadline) -> dict[str, Path]:
         current: dict[str, Path] = {}
-        for wt in await self.worktrees():
+        for wt in await self.worktrees(deadline=deadline):
             if wt.branch is None:
                 continue
             existing = current.setdefault(wt.branch, wt.path)
             if existing != wt.path:
                 msg = (
-                    f"multiple worktrees mapped to branch '{wt.branch}': "
-                    f"{existing} and {wt.path}"
+                    f"multiple worktrees mapped to branch '{wt.branch}': {existing} "
+                    f"and {wt.path}"
                 )
                 raise FileExistsError(msg)
         return current
 
-    async def _worktree_path(self, branch: str) -> Path | None:
-        for wt in await self.worktrees():
-            if wt.branch == branch:
-                return wt.path
-        return None
-
     def _intended_worktree_changes(
         self,
+        *,
         updates: Sequence[GitRefUpdate],
     ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
         # get creation/destruction intent from transaction updates
@@ -2376,6 +2720,7 @@ class GitRepository:
 
     def _filter_worktree_conflicts(
         self,
+        *,
         desired: dict[str, Path],
         current: dict[str, Path],
         created: list[str],
@@ -2413,245 +2758,21 @@ class GitRepository:
 
         return {branch: desired[branch] for branch in winners}
 
-    def _clean_worktree_parents(self, path: Path) -> None:
-        # clean up now-empty parent directories up to project root to account for
-        # branch names that contain path separators
-        cursor = path.parent
-        while cursor != self.root:
-            try:
-                if any(cursor.iterdir()):
-                    break
-                cursor.rmdir()
-            except OSError:
-                break
-            cursor = cursor.parent
-
-    async def _worktree_belongs_to_repo(self, path: Path, env: dict[str, str]) -> bool:
-        result = await run(
-            ["git", "-C", str(path), "rev-parse", "--git-common-dir"],
-            check=False,
-            capture_output=True,
-            env=env,
-        )
-        if result.returncode != 0:
-            return False
-        owner = Path(result.stdout.strip()).expanduser()
-        if not owner.is_absolute():
-            owner = path / owner
-        return self.git_dir == owner.expanduser().resolve()
-
-    async def _strip_env(self, env: dict[str, str] | None = None) -> dict[str, str]:
-        """Remove repo-local git environment variables.
-
-        Parameters
-        ----------
-        env : dict[str, str] | None, optional
-            The environment mapping to strip git variables from.  If None, the current
-            process environment will be used.  Defaults to None.
-
-        Returns
-        -------
-        dict[str, str]
-            The filtered environment variables with repo-local keys removed.
-        """
-        env = dict(os.environ if env is None else env)
-        local = await self.run(
-            ["rev-parse", "--local-env-vars"], check=False, capture_output=True, env=env
-        )
-        if local.returncode == 0:
-            keys = [key.strip() for key in local.stdout.splitlines() if key.strip()]
-        else:
-            keys = [
-                "GIT_DIR",
-                "GIT_WORK_TREE",
-                "GIT_COMMON_DIR",
-            ]  # best-effort fallback
-        for key in keys:
-            env.pop(key, None)
-        return env
-
-    async def create_worktree(
-        self,
-        branch: str,
-        *,
-        target: Path | None = None,
-        create_branch: bool = True,
-        quiet: bool = False,
-    ) -> None:
-        """Create a new worktree for the given branch at the specified target path.
-
-        Parameters
-        ----------
-        branch : str
-            The short branch name to create a worktree for.
-        target : Path | None, optional
-            The target path to create the worktree at.  Must not already exist.
-        create_branch : bool, optional
-            If True (the default), then the branch will be created if it does not
-            already exist.  If False, then the branch must already exist in the
-            repository.
-        quiet : bool, optional
-            If True, then suppress any non-error output from the git command.  Default
-            is False.
-
-        Raises
-        ------
-        FileExistsError
-            If the target path already exists.
-        """
-        if target is None:
-            target = self.root / branch
-        if target.exists():
-            msg = "path already exists"
-            raise FileExistsError(msg)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        cmd = ["worktree", "add", "--relative-paths"]
-        if create_branch:
-            if branch not in await self.branches():
-                cmd.extend(["-b", branch, str(target)])
-            else:
-                cmd.extend([str(target), branch])
-        else:
-            cmd.extend([str(target), branch])
-        await self.run(cmd, capture_output=quiet)
-        ensure_worktree_id(target)
-
-    async def move_worktree(
-        self,
-        branch: str,
-        *,
-        source: Path | None = None,
-        target: Path | None = None,
-    ) -> None:
-        """Move the worktree for a branch.
-
-        Parameters
-        ----------
-        branch : str
-            The short branch name to move the worktree for.
-        source : Path | None, optional
-            The current path of the worktree to move.  If None, the path will be derived
-            from the current worktree state for the given branch.  Defaults to None.
-        target : Path | None, optional
-            The destination path for the worktree.  If None, the worktree will be moved
-            to its default location based on the branch name, if it is not already
-            there.  Defaults to None.
-
-        Raises
-        ------
-        FileNotFoundError
-            If the source path does not exist or could not be derived from the current
-            worktree state.
-        NotADirectoryError
-            If the source path or target path exists but is not a directory.
-        FileExistsError
-            If the target path already exists, and is not the same as the source path.
-        """
-        if source is None:
-            source = await self._worktree_path(branch)
-            if source is None:
-                msg = f"no worktree found for branch '{branch}'"
-                raise FileNotFoundError(msg)
-        if not source.exists():
-            msg = f"worktree path does not exist: {source}"
-            raise FileNotFoundError(msg)
-        if not source.is_dir():
-            msg = f"worktree is not a directory: {source}"
-            raise NotADirectoryError(msg)
-
-        if target is None:
-            target = self.root / branch
-        if target == source:
-            return
-        if target.exists():
-            msg = f"target path already exists: {target}"
-            raise FileExistsError(msg)
-
-        target.parent.mkdir(parents=True, exist_ok=True)
-        await self.run(
-            ["worktree", "move", "--relative-paths", str(source), str(target)],
-            capture_output=True,
-        )
-        self._clean_worktree_parents(source)
-
-    async def destroy_worktree(
-        self,
-        branch: str,
-        *,
-        target: Path | None = None,
-    ) -> bool:
-        """Destroy the worktree for the given branch, if it exists and is clean.
-
-        Parameters
-        ----------
-        branch : str
-            The short branch name to destroy the worktree for.
-        target : Path | None, optional
-            An optional path to the worktree to destroy.  If None (the default), then
-            the path will be derived from the current worktree state for the given
-            branch.
-
-        Returns
-        -------
-        bool
-            True if the worktree was successfully destroyed or did not exist, false if
-            the worktree exists but could not be destroyed due to dirty state.
-
-        Raises
-        ------
-        FileNotFoundError
-            If the target path does not exist or could not be derived from the current
-            worktree state.
-        NotADirectoryError
-            If the target path exists but is not a directory.
-        RuntimeError
-            If the target path does not belong to this repository.
-        """
-        if target is None:
-            target = await self._worktree_path(branch)
-            if target is None:
-                msg = f"no worktree found for branch '{branch}'"
-                raise FileNotFoundError(msg)
-        if not target.exists():
-            msg = f"worktree path does not exist: {target}"
-            raise FileNotFoundError(msg)
-        if not target.is_dir():
-            msg = f"worktree is not a directory: {target}"
-            raise NotADirectoryError(msg)
-
-        # verify that the worktree is clean and objectively belongs to this repository
-        # before attempting deletion
-        env = await self._strip_env()
-        if not await self._worktree_belongs_to_repo(target, env):
-            msg = f"worktree path does not belong to this repository: {target}"
-            raise RuntimeError(msg)
-        clean = await run(
-            ["git", "-C", str(target), "status", "--porcelain"],
-            capture_output=True,
-            env=env,
-        )
-        if clean.stdout.strip():
-            return False
-
-        # remove the worktree using git, which will also properly clean up the
-        # associated gitdir and any linked metadata
-        await self.run(["worktree", "remove", str(target)], capture_output=True)
-        self._clean_worktree_parents(target)
-        return True
-
     async def _sync_create_worktree(
         self,
+        *,
         current: dict[str, Path],
         branch: str,
         target: Path,
-        *,
         create_branch: bool,
+        deadline: Deadline,
     ) -> None:
         try:
             await self.create_worktree(
                 branch,
                 target=target,
                 create_branch=create_branch,
+                deadline=deadline,
             )
             current[branch] = target
         except _HOOK_OPERATION_ERRORS as err:
@@ -2661,15 +2782,17 @@ class GitRepository:
 
     async def _sync_move_worktree(
         self,
+        *,
         current: dict[str, Path],
         branch: str,
-        *,
         source: Path,
         target: Path,
         old_branch: str | None = None,
+        deadline: Deadline,
     ) -> None:
         try:
-            await self.move_worktree(branch, source=source, target=target)
+            worktree = GitRepository.Worktree(repo=self, path=source, branch=branch)
+            await worktree.move(target=target, deadline=deadline)
             if old_branch is not None:
                 current.pop(old_branch, None)
             current[branch] = target
@@ -2681,17 +2804,25 @@ class GitRepository:
 
     async def _sync_destroy_worktree(
         self,
+        *,
         current: dict[str, Path],
         branch: str,
         path: Path,
+        deadline: Deadline,
     ) -> None:
         try:
-            if await self.destroy_worktree(branch, target=path):
+            worktree = GitRepository.Worktree(repo=self, path=path, branch=branch)
+            if await worktree.destroy(deadline=deadline):
                 current.pop(branch, None)
         except _HOOK_OPERATION_ERRORS as err:
             warn(f"failed to destroy worktree for branch '{branch}' at {path}:\n{err}")
 
-    async def sync_worktrees(self, updates: Sequence[GitRefUpdate] = ()) -> None:
+    async def sync_worktrees(
+        self,
+        updates: Sequence[GitRefUpdate] = (),
+        *,
+        deadline: Deadline = NO_DEADLINE,
+    ) -> None:
         """Converge worktrees to the authoritative branch set.
 
         Parameters
@@ -2703,18 +2834,27 @@ class GitRepository:
             on the same object.  If omitted, then convergence will transform directly
             from the current state to the desired state without any intent-based
             guidance.
+        deadline : Deadline, optional
+            An overall deadline by which the convergence must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
         """
         # non-bare repositories are treated as single-worktree mode
-        if not await self.is_bare():
+        if not await self.bare():
             return
 
         # derive current and desired branch-to-path mappings
-        current = await self._current_worktree_state()
+        current = await self._current_worktree_state(deadline=deadline)
         desired = {branch: (self.root / branch) for branch in await self.branches()}
 
         # derive explicit intent from transaction updates, preserving order
-        created, destroyed, renamed = self._intended_worktree_changes(updates)
-        desired = self._filter_worktree_conflicts(desired, current, created)
+        created, destroyed, renamed = self._intended_worktree_changes(updates=updates)
+        desired = self._filter_worktree_conflicts(
+            desired=desired,
+            current=current,
+            created=created,
+        )
 
         # apply rename hints first (when they map cleanly to current state)
         for old_branch, new_branch in renamed:
@@ -2725,11 +2865,12 @@ class GitRepository:
             if target is None or new_branch in current:
                 continue
             await self._sync_move_worktree(
-                current,
-                new_branch,
+                current=current,
+                branch=new_branch,
                 source=source,
                 target=target,
                 old_branch=old_branch,
+                deadline=deadline,
             )
 
         # apply explicit destroys for branches still present in current state
@@ -2737,7 +2878,12 @@ class GitRepository:
             path = current.get(branch)
             if path is None or branch in desired:
                 continue
-            await self._sync_destroy_worktree(current, branch, path)
+            await self._sync_destroy_worktree(
+                current=current,
+                branch=branch,
+                path=path,
+                deadline=deadline,
+            )
 
         # apply explicit creates for branches that are still missing
         for branch in created:
@@ -2745,17 +2891,23 @@ class GitRepository:
                 continue
             target = desired[branch]
             await self._sync_create_worktree(
-                current,
-                branch,
-                target,
+                current=current,
+                branch=branch,
+                target=target,
                 create_branch=True,
+                deadline=deadline,
             )
 
         # remove branches no longer present in the repository
         stale = set(current) - set(desired)
         for branch in sorted(stale):
             path = current[branch]
-            await self._sync_destroy_worktree(current, branch, path)
+            await self._sync_destroy_worktree(
+                current=current,
+                branch=branch,
+                path=path,
+                deadline=deadline
+            )
 
         # move branches that are present but located at non-canonical paths
         shared = set(current) & set(desired)
@@ -2765,10 +2917,11 @@ class GitRepository:
             if source == target:
                 continue
             await self._sync_move_worktree(
-                current,
-                branch,
+                current=current,
+                branch=branch,
                 source=source,
                 target=target,
+                deadline=deadline,
             )
 
         # create worktrees for branches that don't yet have one
@@ -2776,8 +2929,9 @@ class GitRepository:
         for branch in sorted(missing):
             target = desired[branch]
             await self._sync_create_worktree(
-                current,
-                branch,
-                target,
+                current=current,
+                branch=branch,
+                target=target,
                 create_branch=False,
+                deadline=deadline,
             )
