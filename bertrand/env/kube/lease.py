@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -91,7 +93,7 @@ class Lease(
         name: str,
         holder_identity: str,
         lease_duration_seconds: int,
-        timeout: float,
+        deadline: Deadline,
         acquire_time: datetime | None = None,
         renew_time: datetime | None = None,
         labels: Mapping[str, str] | None = None,
@@ -111,7 +113,7 @@ class Lease(
             Identity string for the current lease holder.
         lease_duration_seconds : int
             Lease duration in seconds.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         acquire_time : datetime | None, optional
             Time when the lease was first acquired.
@@ -158,7 +160,7 @@ class Lease(
                 ),
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to create Lease {namespace}/{name}",
             missing_ok=False,
         )
@@ -179,7 +181,7 @@ class Lease(
         holder_identity: str | None,
         lease_duration_seconds: int,
         resource_version: str,
-        timeout: float,
+        deadline: Deadline,
         acquire_time: datetime | None = None,
         renew_time: datetime | None = None,
         labels: Mapping[str, str] | None = None,
@@ -202,7 +204,7 @@ class Lease(
             Lease duration in seconds.
         resource_version : str
             Kubernetes resource version required for optimistic concurrency.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         acquire_time : datetime | None, optional
             Time when the lease was first acquired.
@@ -257,7 +259,7 @@ class Lease(
                 ),
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to replace Lease {namespace}/{name}",
             missing_ok=False,
         )
@@ -277,7 +279,7 @@ class Lease(
         name: str,
         holder_identity: str,
         lease_duration_seconds: int,
-        timeout: float,
+        deadline: Deadline,
         acquire_time: datetime | None = None,
         renew_time: datetime | None = None,
         labels: Mapping[str, str] | None = None,
@@ -297,7 +299,7 @@ class Lease(
             Identity string for the current lease holder.
         lease_duration_seconds : int
             Lease duration in seconds.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         acquire_time : datetime | None, optional
             Time when the lease was first acquired.
@@ -344,7 +346,7 @@ class Lease(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 

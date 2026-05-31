@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 import kubernetes
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -110,7 +112,7 @@ class Deployment(
         labels: Mapping[str, str],
         selector: Mapping[str, str],
         pod_template: PodTemplateSpec,
-        timeout: float,
+        deadline: Deadline,
         replicas: int = 1,
         annotations: Mapping[str, str] | None = None,
         strategy: DeploymentStrategyManifest | None = None,
@@ -135,7 +137,7 @@ class Deployment(
             Immutable pod selector labels for the Deployment.
         pod_template : PodTemplateSpec
             Pod template to render into the Deployment.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         replicas : int, optional
             Desired replica count.
@@ -202,7 +204,7 @@ class Deployment(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 
@@ -413,7 +415,7 @@ class Deployment(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         minimum: int = 1,
     ) -> Self:
         """Wait until this Deployment has at least `minimum` available replicas.
@@ -422,7 +424,7 @@ class Deployment(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum wait time in seconds. Must be positive.
         minimum : int, optional
             Minimum acceptable `status.availableReplicas` value.
@@ -445,9 +447,8 @@ class Deployment(
         )
         return await self._wait_until(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             predicate=lambda live: live.available_replicas >= minimum,
-            action=f"waiting for Deployment {namespace}/{name} availability",
             pending_message=f"Deployment {namespace}/{name} is not available yet",
             missing_message=(
                 f"Deployment {namespace}/{name} disappeared while waiting for "
@@ -462,7 +463,7 @@ class Deployment(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         minimum: int = 1,
     ) -> Self:
         """Wait until this Deployment rolls out at least `minimum` replicas.
@@ -471,7 +472,7 @@ class Deployment(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum wait time in seconds. Must be positive.
         minimum : int, optional
             Minimum acceptable updated and available replica count.
@@ -494,7 +495,7 @@ class Deployment(
         target_generation = self.generation
         return await self._wait_until(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             predicate=lambda live: (
                 (
                     target_generation <= 0
@@ -503,7 +504,6 @@ class Deployment(
                 and live.updated_replicas >= minimum
                 and live.available_replicas >= minimum
             ),
-            action=f"waiting for Deployment {namespace}/{name} rollout",
             pending_message=(
                 f"Deployment {namespace}/{name} rollout is not complete yet"
             ),
@@ -515,7 +515,7 @@ class Deployment(
             ),
         )
 
-    async def scale(self, kube: Kube, *, replicas: int, timeout: float) -> Self:
+    async def scale(self, kube: Kube, *, replicas: int, deadline: Deadline) -> Self:
         """Patch this Deployment's desired replica count.
 
         Parameters
@@ -524,7 +524,7 @@ class Deployment(
             Active Kubernetes API context.
         replicas : int
             Desired replica count. Must be non-negative.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
@@ -550,7 +550,7 @@ class Deployment(
                 body={"spec": {"replicas": replicas}},
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to scale Deployment {namespace}/{name}",
         )
         if payload is None:
@@ -559,7 +559,7 @@ class Deployment(
         live = await type(self).get(
             kube,
             namespace=namespace,
-            timeout=timeout,
+            deadline=deadline,
             name=name,
         )
         if live is None:

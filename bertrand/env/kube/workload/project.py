@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.config.bertrand import Bertrand, BertrandModel
 from bertrand.env.config.core import Config, _check_uuid
-from bertrand.env.git import Deadline, ensure_worktree_id
+from bertrand.env.git import Deadline, GitRepository
 from bertrand.env.kube.build.project import project_image_spec
 from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
 from bertrand.env.kube.build.request import (
@@ -43,7 +43,7 @@ async def ensure_project_workload_controller(
     config: Config,
     repo_id: str,
     node: str | None = None,
-    timeout: float,
+    deadline: Deadline,
     image_ref: str | None = None,
     primary_args: Sequence[str] | None = None,
     interactive: bool = False,
@@ -60,7 +60,7 @@ async def ensure_project_workload_controller(
         Stable repository UUID used for workload and image identity.
     node : str | None, optional
         Optional Kubernetes node name used for node-scoped capability resolution.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
     image_ref : str | None, optional
         Optional digest-pinned project image reference from a just-completed build.
@@ -85,7 +85,7 @@ async def ensure_project_workload_controller(
             kube,
             config=bertrand,
             workload=identity,
-            timeout=timeout,
+            deadline=deadline,
             primary_args=primary_args,
             interactive=interactive,
         )
@@ -94,15 +94,11 @@ async def ensure_project_workload_controller(
             kube,
             config=bertrand,
             workload=identity,
-            timeout=timeout,
+            deadline=deadline,
             primary_args=primary_args,
             interactive=interactive,
         )
 
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="project workload controller convergence timeout must be positive",
-    )
     workload = await _materialize_project_workload_pod(
         kube,
         config=config,
@@ -116,7 +112,7 @@ async def ensure_project_workload_controller(
         kube,
         config=bertrand,
         workload=workload,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         primary_args=primary_args,
         interactive=interactive,
     )
@@ -128,7 +124,7 @@ async def create_project_workload_job_run(
     config: Config,
     repo_id: str,
     node: str | None = None,
-    timeout: float,
+    deadline: Deadline,
     image_ref: str | None = None,
     primary_args: Sequence[str] | None = None,
     interactive: bool = False,
@@ -145,7 +141,7 @@ async def create_project_workload_job_run(
         Stable repository UUID used for workload and image identity.
     node : str | None, optional
         Optional Kubernetes node name used for node-scoped capability resolution.
-    timeout : float
+    deadline : Deadline
         Maximum creation budget in seconds. If infinite, wait indefinitely.
     image_ref : str | None, optional
         Optional digest-pinned project image reference from a just-completed build.
@@ -175,10 +171,6 @@ async def create_project_workload_job_run(
         msg = "project workload Job runs require Job topology"
         raise ValueError(msg)
 
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="project workload Job run creation timeout must be positive",
-    )
     workload = await _materialize_project_workload_pod(
         kube,
         config=config,
@@ -192,7 +184,7 @@ async def create_project_workload_job_run(
         kube,
         config=bertrand,
         workload=workload,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         primary_args=primary_args,
         interactive=interactive,
     )
@@ -205,7 +197,7 @@ async def scale_project_workload(
     repo_id: str,
     replicas: int,
     grace_period_seconds: int,
-    timeout: float,
+    deadline: Deadline,
 ) -> WorkloadScaleResult:
     """Scale native workload execution for one project worktree.
 
@@ -221,7 +213,7 @@ async def scale_project_workload(
         Requested logical workload replica count.
     grace_period_seconds : int
         Kubernetes pod termination grace period.
-    timeout : float
+    deadline : Deadline
         Maximum API-operation budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -237,7 +229,7 @@ async def scale_project_workload(
         identity=_project_workload_identity(config, repo_id=repo_id),
         replicas=replicas,
         grace_period_seconds=grace_period_seconds,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -247,7 +239,7 @@ async def remove_project_workload(
     config: Config,
     repo_id: str,
     grace_period_seconds: int,
-    timeout: float,
+    deadline: Deadline,
 ) -> WorkloadRemoveResult:
     """Remove native workload topology and retire worktree image records.
 
@@ -261,7 +253,7 @@ async def remove_project_workload(
         Stable repository UUID used for workload and image identity.
     grace_period_seconds : int
         Kubernetes pod termination grace period.
-    timeout : float
+    deadline : Deadline
         Maximum API-operation budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -271,22 +263,18 @@ async def remove_project_workload(
 
     """
     _require_active_config(config)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="project workload removal timeout must be positive",
-    )
     identity = _project_workload_identity(config, repo_id=repo_id)
     result = await remove_workload(
         kube,
         identity=identity,
         grace_period_seconds=grace_period_seconds,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     retired = await retire_project_images(
         kube,
         repo_id=identity.repo_id,
         worktree_id=identity.worktree_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return replace(result, images_retired=tuple(record.name for record in retired))
 
@@ -295,7 +283,7 @@ def _project_workload_identity(config: Config, *, repo_id: str) -> WorkloadIdent
     repo_id = _check_uuid(repo_id)
     return WorkloadIdentity(
         repo_id=repo_id,
-        worktree_id=ensure_worktree_id(config.root),
+        worktree_id=GitRepository.Worktree(repo=config.repo, path=config.root).id,
         worktree=worktree_identity(config.worktree),
     )
 
@@ -319,7 +307,7 @@ async def _materialize_project_workload_pod(
         kube,
         spec=image_spec,
         image_ref=image_ref,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return await _render_project_workload_pod(
         kube,
@@ -344,7 +332,7 @@ async def _render_project_workload_pod(
         kube,
         config=workload_config,
         node=node,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     workload = await workload_pod_from_config(
         kube,
@@ -354,7 +342,7 @@ async def _render_project_workload_pod(
         worktree_id=image_spec.worktree_id,
         image=image,
         host_id=host_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if workload is None:
         msg = "project workload materialization requires configured containers"
@@ -367,12 +355,12 @@ async def _project_workload_host_id(
     *,
     config: BertrandModel,
     node: str | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> str | None:
     node_name = (node or config.node or "").strip()
     if not node_name:
         return None
-    return await resolve_host_id_for_node(kube, node_name=node_name, timeout=timeout)
+    return await resolve_host_id_for_node(kube, node_name=node_name, deadline=deadline)
 
 
 async def _project_workload_image_ref(
@@ -380,14 +368,14 @@ async def _project_workload_image_ref(
     *,
     spec: BuildKitBuildSpec,
     image_ref: str | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> str:
     if image_ref is not None:
         return _validate_project_workload_image_ref(image_ref, spec=spec)
     record = await require_active_project_image(
         kube,
         spec=spec,
-        timeout=timeout,
+        deadline=deadline,
     )
     return record.digest_ref
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import os
 import platform
 import sys
@@ -11,7 +10,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, Deadline
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.ceph.api import (
     PreparedOSD,
@@ -103,7 +102,7 @@ class CephStorageAgent:
                 async for event in action_client.watch(
                     kube,
                     namespace=BERTRAND_NAMESPACE,
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                     emit_initial=True,
                 ):
                     action = event.object
@@ -113,9 +112,10 @@ class CephStorageAgent:
                     ):
                         wake.set()
                 wake.set()
-                await asyncio.sleep(
-                    deadline.bounded(STORAGE_WATCH_RESTART_DELAY_SECONDS)
-                )
+                remaining = deadline.remaining
+                if remaining <= 0:
+                    return
+                await deadline.sleep(STORAGE_WATCH_RESTART_DELAY_SECONDS)
             except asyncio.CancelledError:
                 raise
             except (OSError, RuntimeError, ValueError) as err:
@@ -125,14 +125,15 @@ class CephStorageAgent:
                     file=sys.stderr,
                 )
                 wake.set()
-                await asyncio.sleep(
-                    deadline.bounded(STORAGE_WATCH_RESTART_DELAY_SECONDS)
-                )
+                remaining = deadline.remaining
+                if remaining <= 0:
+                    return
+                await deadline.sleep(STORAGE_WATCH_RESTART_DELAY_SECONDS)
 
     async def _upsert_node_report(self, kube: Kube, *, deadline: Deadline) -> None:
         """Report current host free capacity for this node."""
         try:
-            status = await host_capacity_snapshot(timeout=deadline.remaining())
+            status = await host_capacity_snapshot(deadline=deadline)
         except OSError as err:
             status = {
                 "free_bytes": 0,
@@ -149,12 +150,12 @@ class CephStorageAgent:
             node_name=self.node_name,
             host_id=self.host_id,
             status=status,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     async def _recover_loop_devices(self, kube: Kube, *, deadline: Deadline) -> None:
         """Best-effort recreation of this node's loop fallback device."""
-        storage = await read_storage_state(kube, timeout=deadline.remaining())
+        storage = await read_storage_state(kube, deadline=deadline)
         records = sorted(storage.status.osds.values(), key=lambda item: item.name)
         for record in records:
             if (
@@ -168,7 +169,7 @@ class CephStorageAgent:
                 await prepare_loop_fallback_osd(
                     name=record.name,
                     target_bytes=record.target_bytes,
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
             except (OSError, TimeoutError, ValueError) as err:
                 await patch_storage_osd_status(
@@ -178,7 +179,7 @@ class CephStorageAgent:
                         "phase": "Failed",
                         "last_error": str(err),
                     },
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
 
     async def _recover_missing_osd_records(
@@ -188,9 +189,9 @@ class CephStorageAgent:
         deadline: Deadline,
     ) -> None:
         """Reconstruct OSD records from live Bertrand host substrates."""
-        storage = await read_storage_state(kube, timeout=deadline.remaining())
+        storage = await read_storage_state(kube, deadline=deadline)
         existing = {record.name: record for record in storage.status.osds.values()}
-        for name, prepared in await discover_lvm_osds(timeout=deadline.remaining()):
+        for name, prepared in await discover_lvm_osds(deadline=deadline):
             if name in existing:
                 continue
             spec = storage_osd_spec(
@@ -206,14 +207,14 @@ class CephStorageAgent:
                 name=name,
                 spec=spec,
                 phase="HostPrepared",
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         loop_name = storage_loop_osd_name(self.host_id)
         if loop_name in existing:
             return
         prepared = await discover_loop_fallback_osd(
             name=loop_name,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         if prepared is None:
             return
@@ -230,7 +231,7 @@ class CephStorageAgent:
             name=loop_name,
             spec=spec,
             phase="HostPrepared",
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     async def _pending_actions(
@@ -248,7 +249,7 @@ class CephStorageAgent:
             for action in await pending_storage_actions(
                 kube,
                 node_name=self.node_name,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             if action.spec.host_id == self.host_id
         ]
@@ -299,7 +300,7 @@ class CephStorageAgent:
                 "worker_node": self.node_name,
                 "started_at": datetime.now(UTC).isoformat(),
             },
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     async def _succeed_action(
@@ -319,7 +320,7 @@ class CephStorageAgent:
                 **dict(status),
                 "finished_at": datetime.now(UTC).isoformat(),
             },
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     async def _fail_action(
@@ -340,7 +341,7 @@ class CephStorageAgent:
                 "worker_node": self.node_name,
                 "finished_at": datetime.now(UTC).isoformat(),
             },
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     async def _osd_by_name(
@@ -350,7 +351,7 @@ class CephStorageAgent:
         name: str,
         deadline: Deadline,
     ) -> CephStorageOSD | None:
-        storage = await read_storage_state(kube, timeout=deadline.remaining())
+        storage = await read_storage_state(kube, deadline=deadline)
         return storage.status.osds.get(name)
 
     async def _lvm_osd_by_name(
@@ -360,7 +361,7 @@ class CephStorageAgent:
         name: str,
         deadline: Deadline,
     ) -> CephStorageOSD | None:
-        storage = await read_storage_state(kube, timeout=deadline.remaining())
+        storage = await read_storage_state(kube, deadline=deadline)
         osd = storage.status.osds.get(name)
         if osd is not None and osd.origin == "lvm-pv" and osd.host_id == self.host_id:
             return osd
@@ -373,7 +374,7 @@ class CephStorageAgent:
         osd_id: int,
         deadline: Deadline,
     ) -> CephStorageOSD | None:
-        storage = await read_storage_state(kube, timeout=deadline.remaining())
+        storage = await read_storage_state(kube, deadline=deadline)
         return next(
             (
                 item
@@ -389,12 +390,12 @@ class CephStorageAgent:
         *,
         deadline: Deadline,
     ) -> None:
-        storage = await read_storage_state(kube, timeout=deadline.remaining())
+        storage = await read_storage_state(kube, deadline=deadline)
         records = sorted(storage.status.osds.values(), key=lambda item: item.name)
         await patch_rook_device_sets(
             kube,
             records=records,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     async def _admit_prepared_osd(
@@ -422,19 +423,19 @@ class CephStorageAgent:
             name=name,
             spec=spec,
             phase=phase,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await self._patch_rook_current_osds(kube, deadline=deadline)
         if resize_claim:
             await resize_osd_claim(
                 kube,
                 record=record,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         observed_id, ready = await observe_rook_osd(
             kube,
             record=record,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await patch_storage_osd_status(
             kube,
@@ -445,7 +446,7 @@ class CephStorageAgent:
                 "ceph_osd_id": observed_id,
                 "last_error": "",
             },
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         return record, observed_id, ready
 
@@ -470,7 +471,7 @@ class CephStorageAgent:
                 "phase": "Failed",
                 "last_error": str(error),
             },
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     async def _execute_expand_lvm(
@@ -489,7 +490,7 @@ class CephStorageAgent:
             target_bytes=target_bytes,
             pv_name=pv_name,
             lv_name=action.spec.lv_name,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         phase: StorageOSDPhase = "Expanding" if existing is not None else "HostPrepared"
         _, observed_id, ready = await self._admit_prepared_osd(
@@ -534,7 +535,7 @@ class CephStorageAgent:
         prepared = await prepare_loop_fallback_osd(
             name=name,
             target_bytes=target_bytes,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         phase: StorageOSDPhase = "Expanding" if existing is not None else "HostPrepared"
         _, observed_id, ready = await self._admit_prepared_osd(
@@ -597,37 +598,37 @@ class CephStorageAgent:
                 "phase": "Shrinking",
                 "last_error": "",
             },
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await self._patch_rook_current_osds(kube, deadline=deadline)
-        await drain_ceph_osd(old_osd_id, timeout=deadline.remaining())
+        await drain_ceph_osd(old_osd_id, deadline=deadline)
         await wait_osd_workloads_gone(
             kube,
             record=record,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
-        await purge_ceph_osd(old_osd_id, timeout=deadline.remaining())
+        await purge_ceph_osd(old_osd_id, deadline=deadline)
         await delete_osd_claims(
             kube,
             record=record,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await wait_osd_claims_gone(
             kube,
             record=record,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await delete_lvm_osd_substrate(
             lv_name=record.lv_name,
             block_path=record.block_path,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         prepared = await prepare_lvm_osd(
             name=name,
             target_bytes=target_bytes,
             pv_name=record.pv_name,
             lv_name=record.lv_name,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         record, observed_id, ready = await self._admit_prepared_osd(
             kube,
@@ -678,26 +679,26 @@ class CephStorageAgent:
                 "phase": "Retiring",
                 "last_error": "",
             },
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
-        await drain_ceph_osd(osd_id, timeout=deadline.remaining())
+        await drain_ceph_osd(osd_id, deadline=deadline)
         await self._patch_rook_current_osds(kube, deadline=deadline)
         await wait_osd_workloads_gone(
             kube,
             record=record,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
-        await purge_ceph_osd(osd_id, timeout=deadline.remaining())
+        await purge_ceph_osd(osd_id, deadline=deadline)
         await delete_osd_claims(
             kube,
             record=record,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await delete_loop_fallback_substrate(
             loop_file=record.loop_file,
             loop_device=record.loop_device,
             block_path=record.block_path,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await patch_storage_osd_status(
             kube,
@@ -707,7 +708,7 @@ class CephStorageAgent:
                 "retired_at": datetime.now(UTC).isoformat(),
                 "last_error": "",
             },
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await self._succeed_action(
             kube,
@@ -788,30 +789,29 @@ class CephStorageAgent:
         for action in await self._pending_actions(kube, deadline=deadline):
             await self._execute_action(kube, action=action, deadline=deadline)
 
-    async def run(self, *, timeout: float = math.inf) -> None:
+    async def run(self, *, deadline: Deadline = NO_DEADLINE) -> None:
         """Run the node agent loop until cancelled or timed out.
 
         Parameters
         ----------
-        timeout : float, default=math.inf
+        deadline : Deadline
             Maximum agent runtime in seconds.
 
         """
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="agent timeout must be positive",
-        )
         wake = asyncio.Event()
         wake.set()
-        with Kube.inside_cluster() as kube:
+        with await Kube.internal(namespace=BERTRAND_NAMESPACE) as kube:
             async with asyncio.TaskGroup() as group:
                 group.create_task(
                     self._watch_actions(kube, wake=wake, deadline=deadline)
                 )
                 while True:
                     if not wake.is_set():
-                        wait_timeout = deadline.bounded(
-                            STORAGE_AGENT_SYNC_INTERVAL_SECONDS
+                        remaining = deadline.remaining
+                        if remaining <= 0:
+                            return
+                        wait_timeout = min(
+                            STORAGE_AGENT_SYNC_INTERVAL_SECONDS, remaining
                         )
                         with suppress(TimeoutError):
                             await asyncio.wait_for(

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.bertrand import EDITORS, Editor
-from bertrand.env.git import CommandError, run
+from bertrand.env.git import CommandError, Deadline, run
 from bertrand.env.kube.dev.mailbox import (
     CODE_OPEN_RESOURCE,
     CodeOpenRecord,
@@ -94,7 +94,7 @@ async def _run_bridge(
             records = await CODE_OPEN_RESOURCE.list(
                 kube,
                 labels=labels,
-                timeout=BRIDGE_API_TIMEOUT_SECONDS,
+                deadline=Deadline(BRIDGE_API_TIMEOUT_SECONDS),
             )
         except (OSError, RuntimeError, TimeoutError, ValueError) as err:
             print(
@@ -131,7 +131,7 @@ async def _handle_bridge_record(
                 phase="Expired",
                 host_id=host_id,
                 message="request deadline expired before host bridge accepted it",
-                timeout=BRIDGE_API_TIMEOUT_SECONDS,
+                deadline=Deadline(BRIDGE_API_TIMEOUT_SECONDS),
             )
             return
         record = await patch_code_open_request_status(
@@ -140,7 +140,7 @@ async def _handle_bridge_record(
             phase="Accepted",
             host_id=host_id,
             message="host editor bridge accepted the request",
-            timeout=BRIDGE_API_TIMEOUT_SECONDS,
+            deadline=Deadline(BRIDGE_API_TIMEOUT_SECONDS),
         )
         await _open_editor(record)
     except (OSError, RuntimeError, TimeoutError, ValueError) as err:
@@ -152,7 +152,7 @@ async def _handle_bridge_record(
                 phase="Failed",
                 host_id=host_id,
                 message=message,
-                timeout=BRIDGE_API_TIMEOUT_SECONDS,
+                deadline=Deadline(BRIDGE_API_TIMEOUT_SECONDS),
             )
         return
     with contextlib.suppress(*_BRIDGE_STATUS_PATCH_ERRORS):
@@ -162,7 +162,7 @@ async def _handle_bridge_record(
             phase="Succeeded",
             host_id=host_id,
             message="editor request completed",
-            timeout=BRIDGE_API_TIMEOUT_SECONDS,
+            deadline=Deadline(BRIDGE_API_TIMEOUT_SECONDS),
         )
 
 
@@ -212,7 +212,7 @@ async def _validate_vscode_extensions(editor_bin: Path) -> None:
         result = await run(
             [str(editor_bin), "--list-extensions"],
             capture_output=True,
-            timeout=30,
+            deadline=Deadline(30),
         )
     except CommandError as err:
         msg = f"failed to list VS Code extensions with {editor_bin}: {err}"

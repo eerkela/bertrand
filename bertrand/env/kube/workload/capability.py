@@ -81,7 +81,7 @@ async def resolve_workload_capabilities(
     claim_owner: str,
     host_id: str | None = None,
     node_name: str | None = None,
-    timeout: float,
+    deadline: Deadline,
 ) -> WorkloadCapabilities:
     """Resolve runtime Secret, SSH, and device capabilities for one workload.
 
@@ -101,7 +101,7 @@ async def resolve_workload_capabilities(
         Bertrand host UUID used for node-scoped Secret and SSH lookup.
     node_name : str | None, optional
         Kubernetes node name used to constrain DRA inventory.
-    timeout : float
+    deadline : Deadline
         Maximum resolution budget in seconds.
 
     Returns
@@ -110,10 +110,6 @@ async def resolve_workload_capabilities(
         Resolved workload capability intent.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="workload capability resolution timeout must be positive",
-    )
     volumes: dict[str, VolumeSpec] = {}
     mounts_by_container: dict[str, list[Mapping[str, object]]] = {
         _check_kube_name(container.name): [] for container in containers
@@ -138,7 +134,7 @@ async def resolve_workload_capabilities(
                 repo_id=repo_id,
                 host_id=host_id,
                 required=request.required,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             if secret is None:
                 continue
@@ -168,7 +164,7 @@ async def resolve_workload_capabilities(
                 repo_id=repo_id,
                 host_id=host_id,
                 required=request.required,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             if secret is None:
                 continue
@@ -196,7 +192,7 @@ async def resolve_workload_capabilities(
             },
             host_ids=(host_id,) if host_id is not None else None,
             node_names=(node_name,) if node_name is not None else None,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         for capability_id in capability_ids:
             resource_claims.append(

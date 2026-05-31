@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import math
 import re
 import sys
 from typing import TYPE_CHECKING
@@ -58,7 +57,6 @@ _BUILD_LOG_TAIL_LINES = 240
 
 async def bertrand_build(
     *,
-    kube: Kube,
     deadline: Deadline,
     path: Path,
     publish: str | None = None,
@@ -70,8 +68,6 @@ async def bertrand_build(
 
     Parameters
     ----------
-    kube : Kube
-        Kubernetes client instance.
     deadline : Deadline
         Deadline for the build operation.
     path : Path
@@ -110,7 +106,7 @@ async def bertrand_build(
 
     result: BuildKitBuildRecord | None = None
     request_name: str | None = None
-    async with _project_command_context(path, timeout=math.inf) as (
+    async with _project_command_context(path, deadline=deadline) as (
         kube,
         _repo,
         _worktree,
@@ -119,7 +115,7 @@ async def bertrand_build(
         publish_repo = await _publish_repository(config.repo, publish)
         repo_id = config.repo.id
         if detach:
-            await _assert_build_runtime(kube, timeout=math.inf)
+            await _assert_build_runtime(kube, deadline=deadline)
             spec = project_image_spec(config, repo_id=repo_id)
             external_image = (
                 _external_image(publish_repo, spec.image)
@@ -127,11 +123,11 @@ async def bertrand_build(
                 else None
             )
             spec = _publication_spec(spec, external_image=external_image, auth_id=auth)
-            await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=math.inf)
+            await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, deadline=deadline)
             request = await submit_buildkit_build(
                 kube,
                 spec=spec,
-                timeout=math.inf,
+                deadline=deadline,
             )
             request_name = request.name
         else:
@@ -139,7 +135,7 @@ async def bertrand_build(
                 kube,
                 config=config,
                 repo_id=repo_id,
-                timeout=math.inf,
+                deadline=deadline,
                 external_repository=publish_repo,
                 auth_id=auth,
                 quiet=quiet,
@@ -260,17 +256,13 @@ async def _publish_project_image(
     *,
     config: Config,
     repo_id: str,
-    timeout: float,
+    deadline: Deadline,
     external_repository: str | None = None,
     auth_id: str | None = None,
     quiet: bool = False,
     ensure_crds: bool = True,
 ) -> BuildKitBuildRecord:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="project image publication timeout must be positive",
-    )
-    await _assert_build_runtime(kube, timeout=deadline.remaining())
+    await _assert_build_runtime(kube, deadline=deadline)
     spec = project_image_spec(config, repo_id=repo_id)
     external_image = (
         _external_image(external_repository, spec.image)
@@ -305,12 +297,12 @@ async def _publish_project_image(
                     kube,
                     namespace=BERTRAND_NAMESPACE,
                     name=name,
-                    timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
+                    deadline=Deadline(_BUILD_LOG_READ_TIMEOUT_SECONDS),
                 )
                 if job is not None:
                     logs = await job.logs(
                         kube,
-                        timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
+                        deadline=Deadline(_BUILD_LOG_READ_TIMEOUT_SECONDS),
                         tail_lines=_BUILD_LOG_TAIL_LINES,
                         failure_label="build Job logs",
                         include_headers=True,
@@ -337,7 +329,7 @@ async def _publish_project_image(
         try:
             status = await image_repository_maintenance_status(
                 kube,
-                timeout=_BUILD_LOG_READ_TIMEOUT_SECONDS,
+                deadline=Deadline(_BUILD_LOG_READ_TIMEOUT_SECONDS),
             )
         except (OSError, TimeoutError, ValueError):
             return
@@ -359,17 +351,17 @@ async def _publish_project_image(
         if ensure_crds:
             await BUILDKIT_BUILD_RESOURCE.ensure_crd(
                 kube,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         request = await submit_buildkit_build(
             kube,
             spec=spec,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         result = await wait_buildkit_build(
             kube,
             name=request.name,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             on_update=None if quiet else update_logs,
         )
         return _require_successful_build(result)
@@ -413,25 +405,21 @@ def _print_request(name: str) -> None:
     print(f"build: {name}")
 
 
-async def _assert_build_runtime(kube: Kube, *, timeout: float) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image build runtime readiness timeout must be positive",
-    )
-    registry = await image_repository_status(kube, timeout=deadline.remaining())
+async def _assert_build_runtime(kube: Kube, *, deadline: Deadline) -> None:
+    registry = await image_repository_status(kube, deadline=deadline)
     buildkit = await buildkit_pool_status(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         config_hash=await current_buildkit_config_hash(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
     controller = await Deployment.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=BUILDKIT_BUILD_CONTROLLER,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     failures = [*registry.failures, *buildkit.failures]
     if controller is None:

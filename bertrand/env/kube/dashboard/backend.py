@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    BERTRAND_NAMESPACE,
+    Deadline,
+)
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.rbac import (
@@ -33,7 +38,7 @@ DASHBOARD_LABEL = "bertrand.dev/dashboard"
 DASHBOARD_LABEL_VALUE = "headlamp"
 DASHBOARD_LABELS = MappingProxyType(
     {
-        BERTRAND_ENV: "1",
+        BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
         "app.kubernetes.io/name": DASHBOARD_NAME,
         "app.kubernetes.io/part-of": "bertrand",
         "app.kubernetes.io/component": "dashboard",
@@ -42,7 +47,7 @@ DASHBOARD_LABELS = MappingProxyType(
 )
 DASHBOARD_SELECTOR = MappingProxyType(
     {
-        BERTRAND_ENV: "1",
+        BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
         DASHBOARD_LABEL: DASHBOARD_LABEL_VALUE,
     }
 )
@@ -50,14 +55,14 @@ _DASHBOARD_PORT_NAME = "http"
 _WAIT_MINIMUM_REPLICAS = 1
 
 
-async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
+async def ensure_dashboard_backend(kube: Kube, *, deadline: Deadline) -> Deployment:
     """Install or update the Bertrand Headlamp dashboard backend.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -65,10 +70,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
     Deployment
         Available Headlamp Deployment.
     """
-    msg = "dashboard convergence timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=msg)
-
-    await _assert_existing_resources(kube, timeout=deadline.remaining())
+    await _assert_existing_resources(kube, deadline=deadline)
 
     await asyncio.gather(
         ServiceAccount.upsert(
@@ -76,7 +78,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
             labels=DASHBOARD_LABELS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         ROLE_RESOURCE.upsert(
             kube,
@@ -89,7 +91,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
                 rules=_namespace_rules(),
                 labels=DASHBOARD_LABELS,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         CLUSTER_ROLE_RESOURCE.upsert(
             kube,
@@ -101,7 +103,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
                 rules=_cluster_read_rules(),
                 labels=DASHBOARD_LABELS,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
     await asyncio.gather(
@@ -119,7 +121,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
                 service_account_namespace=BERTRAND_NAMESPACE,
                 labels=DASHBOARD_LABELS,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         CLUSTER_ROLE_BINDING_RESOURCE.upsert(
             kube,
@@ -134,7 +136,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
                 service_account_namespace=BERTRAND_NAMESPACE,
                 labels=DASHBOARD_LABELS,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
 
@@ -147,7 +149,7 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
             selector=DASHBOARD_SELECTOR,
             pod_template=_pod_template(),
             replicas=1,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         Service.upsert(
             kube,
@@ -163,69 +165,66 @@ async def ensure_dashboard_backend(kube: Kube, *, timeout: float) -> Deployment:
                 ),
             ),
             labels=DASHBOARD_LABELS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
     return await deployment.wait_available(
         kube,
         minimum=_WAIT_MINIMUM_REPLICAS,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
-async def delete_dashboard_backend(kube: Kube, *, timeout: float) -> None:
+async def delete_dashboard_backend(kube: Kube, *, deadline: Deadline) -> None:
     """Delete Bertrand-managed Headlamp dashboard resources.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum cleanup budget in seconds. If infinite, wait indefinitely.
     """
-    msg = "dashboard cleanup timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=msg)
-
     resources = await asyncio.gather(
         Deployment.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         Service.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         ROLE_BINDING_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         ROLE_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         ServiceAccount.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         CLUSTER_ROLE_BINDING_RESOURCE.get(
             kube,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         CLUSTER_ROLE_RESOURCE.get(
             kube,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
     deployment = cast("Deployment | None", resources[0])
@@ -248,80 +247,80 @@ async def delete_dashboard_backend(kube: Kube, *, timeout: float) -> None:
             _assert_managed(resource, kind=kind)
 
     if deployment is not None:
-        await deployment.delete(kube, timeout=deadline.remaining())
+        await deployment.delete(kube, deadline=deadline)
     if service is not None:
-        await service.delete(kube, timeout=deadline.remaining())
+        await service.delete(kube, deadline=deadline)
     if role_binding is not None:
         await ROLE_BINDING_RESOURCE.delete_by_name(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     if role is not None:
         await ROLE_RESOURCE.delete_by_name(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     if service_account is not None:
-        await service_account.delete(kube, timeout=deadline.remaining())
+        await service_account.delete(kube, deadline=deadline)
     if cluster_role_binding is not None:
         await CLUSTER_ROLE_BINDING_RESOURCE.delete_by_name(
             kube,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     if cluster_role is not None:
         await CLUSTER_ROLE_RESOURCE.delete_by_name(
             kube,
             name=DASHBOARD_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
 
-async def _assert_existing_resources(kube: Kube, *, timeout: float) -> None:
+async def _assert_existing_resources(kube: Kube, *, deadline: Deadline) -> None:
     resources = await asyncio.gather(
         ServiceAccount.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=timeout,
+            deadline=deadline,
         ),
         ROLE_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=timeout,
+            deadline=deadline,
         ),
         ROLE_BINDING_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=timeout,
+            deadline=deadline,
         ),
         CLUSTER_ROLE_RESOURCE.get(
             kube,
             name=DASHBOARD_NAME,
-            timeout=timeout,
+            deadline=deadline,
         ),
         CLUSTER_ROLE_BINDING_RESOURCE.get(
             kube,
             name=DASHBOARD_NAME,
-            timeout=timeout,
+            deadline=deadline,
         ),
         Deployment.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=timeout,
+            deadline=deadline,
         ),
         Service.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
-            timeout=timeout,
+            deadline=deadline,
         ),
     )
     for kind, resource in zip(

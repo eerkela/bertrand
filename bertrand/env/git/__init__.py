@@ -1,4 +1,3 @@
-# ruff: noqa: F401
 """Git hook-safe utilities shared by Bertrand's runtime.
 
 Note that the structure of this subpackage is a bit odd, since it also houses Git
@@ -7,8 +6,12 @@ to prevent Git from breaking when `bertrand` is not installed in the current
 environment.
 """
 
+# ruff: noqa: F401
 from .bertrand_git import (
-    BERTRAND_ENV,
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_CONTAINER,
+    BERTRAND_LABEL_IMAGE,
+    BERTRAND_LABEL_MANAGED,
     BERTRAND_NAMESPACE,
     CONTAINER_TMP,
     HOST_MOUNTS,
@@ -16,10 +19,10 @@ from .bertrand_git import (
     METADATA_ID,
     NO_DEADLINE,
     NORMALIZE_ARCH,
-    REPO_ID_ENV,
+    REPO_ID_LABEL,
     REPO_MOUNT,
     ROOT_DIR,
-    WORKTREE_ID_ENV,
+    WORKTREE_ID_LABEL,
     WORKTREE_MOUNT,
     CommandError,
     CompletedProcess,
@@ -43,4 +46,5 @@ from .bertrand_git import (
     run,
     sudo,
     symlink_points_to,
+    until,
 )

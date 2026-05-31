@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import math
-import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from bertrand.env.config.core import Config, _check_uuid
+from bertrand.env.config.core import Config
 from bertrand.env.git import (
-    REPO_ID_ENV,
     REPO_MOUNT,
     WORKTREE_MOUNT,
+    Deadline,
     GitRepository,
     inside_container,
     inside_image,
@@ -26,7 +24,7 @@ if TYPE_CHECKING:
 async def live_project_context(
     command: str,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline,
 ) -> AsyncIterator[tuple[Kube, Config, str]]:
     """Open the current dev Pod's project config using in-cluster credentials.
 
@@ -34,8 +32,8 @@ async def live_project_context(
     ----------
     command : str
         User-facing command name used in diagnostics.
-    timeout : float, optional
-        Maximum config lock budget in seconds. If infinite, wait indefinitely.
+    deadline : Deadline
+        Operation deadline for config metadata locking.
 
     Yields
     ------
@@ -51,14 +49,16 @@ async def live_project_context(
         msg = f"`bertrand {command}` requires a live Bertrand dev Pod context"
         raise RuntimeError(msg)
 
-    repo_id = current_repo_id(command)
-    with Kube.inside_cluster() as kube:
-        async with await Config.load(
+    repo = GitRepository(git_dir=REPO_MOUNT / ".git")
+    repo_id = repo.id
+    with await Kube.internal() as kube:
+        config = await Config.load(
             WORKTREE_MOUNT,
             kube=kube,
-            repo=GitRepository(git_dir=REPO_MOUNT / ".git"),
-            timeout=timeout,
-        ) as config:
+            repo=repo,
+            deadline=deadline,
+        )
+        async with config.activate(deadline=deadline):
             yield kube, config, repo_id
 
 
@@ -66,7 +66,7 @@ async def live_project_context(
 async def image_build_context(
     command: str,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline,
 ) -> AsyncIterator[Config]:
     """Open a standalone image-build config.
 
@@ -74,8 +74,8 @@ async def image_build_context(
     ----------
     command : str
         User-facing command name used in diagnostics.
-    timeout : float, optional
-        Stored operation budget for artifact rendering.
+    deadline : Deadline
+        Operation deadline for config parsing and artifact rendering.
 
     Yields
     ------
@@ -91,30 +91,6 @@ async def image_build_context(
         msg = f"`bertrand {command}` requires a Bertrand image-build context"
         raise RuntimeError(msg)
 
-    async with await Config.load(WORKTREE_MOUNT, kube=None, timeout=timeout) as config:
+    config = await Config.load(WORKTREE_MOUNT, kube=None, deadline=deadline)
+    async with config.activate(deadline=deadline):
         yield config
-
-
-def current_repo_id(command: str) -> str:
-    """Return the repository UUID injected into the current dev Pod.
-
-    Parameters
-    ----------
-    command : str
-        User-facing command name used in diagnostics.
-
-    Returns
-    -------
-    str
-        Normalized repository UUID hex string.
-
-    Raises
-    ------
-    RuntimeError
-        If the environment does not identify the current repository.
-    """
-    raw = os.environ.get(REPO_ID_ENV, "").strip()
-    if not raw:
-        msg = f"`bertrand {command}` requires {REPO_ID_ENV} in the dev Pod environment"
-        raise RuntimeError(msg)
-    return _check_uuid(raw)

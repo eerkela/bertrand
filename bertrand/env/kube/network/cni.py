@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+from bertrand.env.git import Deadline
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.node import Node
 
@@ -24,14 +25,14 @@ CNI_NAMESPACES = frozenset(
 NETWORK_POLICY_CNI = frozenset({"calico", "cilium", "kube-ovn"})
 
 
-async def inspect_cni(kube: Kube, *, timeout: float) -> dict[str, object]:
+async def inspect_cni(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
     """Inspect the cluster CNI without mutating it.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -39,7 +40,9 @@ async def inspect_cni(kube: Kube, *, timeout: float) -> dict[str, object]:
     dict[str, object]
         Passive CNI diagnostic payload for status and doctor commands.
     """
-    daemonsets = await DaemonSet.list(kube, timeout=timeout, namespaces=CNI_NAMESPACES)
+    daemonsets = await DaemonSet.list(
+        kube, deadline=deadline, namespaces=CNI_NAMESPACES
+    )
     names = tuple(
         sorted(
             f"{daemonset.namespace}/{daemonset.name}"
@@ -48,8 +51,8 @@ async def inspect_cni(kube: Kube, *, timeout: float) -> dict[str, object]:
         )
     )
     cni, confidence = _detect_cni(names)
-    pod_cidrs = await _pod_cidrs(kube, timeout=timeout)
-    service_cidrs = await _service_cidrs(kube, timeout=timeout)
+    pod_cidrs = await _pod_cidrs(kube, deadline=deadline)
+    service_cidrs = await _service_cidrs(kube, deadline=deadline)
     warnings: list[str] = []
     if cni == "unknown":
         warnings.append(
@@ -85,16 +88,16 @@ def _detect_cni(daemonsets: tuple[str, ...]) -> tuple[str, str]:
     return ("unknown", "none")
 
 
-async def _pod_cidrs(kube: Kube, *, timeout: float) -> tuple[str, ...]:
+async def _pod_cidrs(kube: Kube, *, deadline: Deadline) -> tuple[str, ...]:
     cidrs: list[str] = []
-    for node in await Node.list(kube, timeout=timeout):
+    for node in await Node.list(kube, deadline=deadline):
         for cidr in node.pod_cidrs:
             if cidr not in cidrs:
                 cidrs.append(cidr)
     return tuple(cidrs)
 
 
-async def _service_cidrs(kube: Kube, *, timeout: float) -> tuple[str, ...]:
+async def _service_cidrs(kube: Kube, *, deadline: Deadline) -> tuple[str, ...]:
     try:
         payload = await kube.run(
             lambda request_timeout: kube.client.call_api(
@@ -103,7 +106,7 @@ async def _service_cidrs(kube: Kube, *, timeout: float) -> tuple[str, ...]:
                 _return_http_data_only=True,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context="failed to list ServiceCIDRs",
         )
     except OSError:

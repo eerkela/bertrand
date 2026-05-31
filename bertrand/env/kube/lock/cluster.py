@@ -14,13 +14,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    BERTRAND_NAMESPACE,
+    Deadline,
+)
 from bertrand.env.kube.api.client import KubeApiError
 from bertrand.env.kube.lease import Lease
 
 if TYPE_CHECKING:
-    from types import TracebackType
-
     from bertrand.env.kube.api.client import Kube
 
 CLUSTER_LOCK_DURATION_SECONDS = 30
@@ -48,10 +51,6 @@ class ClusterLock:
     key : str
         Stable logical lock key. The key is hashed into a Kubernetes Lease name, so it
         does not need to be a valid Kubernetes resource name.
-    timeout : float
-        Maximum number of seconds to wait for lock acquisition. Non-positive timeouts
-        are permitted for opportunistic `try_lock()` calls, but blocking `lock()` calls
-        will reject them.
     namespace : str, optional
         Namespace that owns the Lease. Defaults to Bertrand's runtime namespace.
     lease_duration : int, optional
@@ -68,7 +67,6 @@ class ClusterLock:
 
     kube: Kube
     key: str
-    timeout: float
     namespace: str
     lease_duration: int
     name: str
@@ -93,7 +91,6 @@ class ClusterLock:
         kube: Kube,
         key: str,
         *,
-        timeout: float,
         namespace: str = BERTRAND_NAMESPACE,
         lease_duration: int = CLUSTER_LOCK_DURATION_SECONDS,
     ) -> Self:
@@ -120,7 +117,6 @@ class ClusterLock:
                     host = "host"
                 self.kube = kube
                 self.key = key
-                self.timeout = timeout
                 self.namespace = namespace
                 self.lease_duration = lease_duration
                 self.name = f"bertrand-lock-{key_hash[:CLUSTER_LOCK_NAME_HEX_LENGTH]}"
@@ -134,8 +130,6 @@ class ClusterLock:
                 self._renew_error = None
                 CLUSTER_LOCKS[registry_key] = self
             else:
-                if self.timeout < timeout:
-                    self.timeout = timeout
                 if self.lease_duration < lease_duration:
                     self.lease_duration = lease_duration
         return cast("Self", self)
@@ -178,7 +172,7 @@ class ClusterLock:
 
     def _labels(self) -> dict[str, str]:
         return {
-            BERTRAND_ENV: "1",
+            BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
             "bertrand.dev/cluster-lock": "true",
             "bertrand.dev/cluster-lock-key-hash": (
                 self.key_hash[:CLUSTER_LOCK_NAME_HEX_LENGTH]
@@ -190,12 +184,12 @@ class ClusterLock:
             "bertrand.dev/cluster-lock-key-sha256": self.key_hash,
         }
 
-    async def _get_lease(self, timeout: float) -> _LeaseState | None:
+    async def _get_lease(self, deadline: Deadline) -> _LeaseState | None:
         lease = await Lease.get(
             self.kube,
             namespace=self.namespace,
             name=self.name,
-            timeout=timeout,
+            deadline=deadline,
         )
         if lease is None:
             return None
@@ -219,7 +213,7 @@ class ClusterLock:
             duration_seconds=duration,
         )
 
-    async def _create_lease(self, now: datetime, timeout: float) -> bool:
+    async def _create_lease(self, now: datetime, deadline: Deadline) -> bool:
         try:
             await Lease.create(
                 self.kube,
@@ -227,7 +221,7 @@ class ClusterLock:
                 name=self.name,
                 holder_identity=self._holder,
                 lease_duration_seconds=self.lease_duration,
-                timeout=timeout,
+                deadline=deadline,
                 renew_time=now,
                 labels=self._labels(),
                 annotations=self._annotations(),
@@ -243,7 +237,7 @@ class ClusterLock:
         lease: _LeaseState,
         now: datetime,
         *,
-        timeout: float,
+        deadline: Deadline,
         holder_identity: str | None,
     ) -> bool:
         try:
@@ -254,7 +248,7 @@ class ClusterLock:
                 holder_identity=holder_identity,
                 lease_duration_seconds=self.lease_duration,
                 resource_version=lease.resource_version,
-                timeout=timeout,
+                deadline=deadline,
                 renew_time=now,
                 labels=self._labels(),
                 annotations=self._annotations(),
@@ -271,13 +265,11 @@ class ClusterLock:
         age = (now - lease.renew_time).total_seconds()
         return age > max(1, lease.duration_seconds)
 
-    async def _try_acquire_lease(self, timeout: float) -> bool:
-        if timeout <= 0:
-            return False
-        lease = await self._get_lease(timeout=timeout)
+    async def _try_acquire_lease(self, deadline: Deadline) -> bool:
+        lease = await self._get_lease(deadline=deadline)
         now = datetime.now(UTC)
         if lease is None:
-            created = await self._create_lease(now, timeout=timeout)
+            created = await self._create_lease(now, deadline=deadline)
             if created:
                 self._begin_renew_loop()
             return created
@@ -285,7 +277,7 @@ class ClusterLock:
             updated = await self._replace_lease(
                 lease,
                 now,
-                timeout=timeout,
+                deadline=deadline,
                 holder_identity=self._holder,
             )
             if updated:
@@ -294,20 +286,21 @@ class ClusterLock:
         return False
 
     async def _acquire_lease(self, deadline: Deadline) -> bool:
-        while deadline.remaining() > 0:
-            if await self._try_acquire_lease(deadline.remaining()):
+        while deadline.remaining > 0:
+            if await self._try_acquire_lease(deadline):
                 return True
-            await asyncio.sleep(deadline.bounded(CLUSTER_LOCK_POLL_SECONDS))
+            await deadline.sleep(CLUSTER_LOCK_POLL_SECONDS)
         return False
 
     async def _clear_lease(self) -> None:
-        lease = await self._get_lease(timeout=CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS)
+        deadline = Deadline(CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS)
+        lease = await self._get_lease(deadline=deadline)
         if lease is None or lease.holder != self._holder:
             return
         await self._replace_lease(
             lease,
             datetime.now(UTC),
-            timeout=CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS,
+            deadline=deadline,
             holder_identity=None,
         )
 
@@ -326,7 +319,7 @@ class ClusterLock:
 
             try:
                 lease = await self._get_lease(
-                    timeout=CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS
+                    deadline=Deadline(CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS)
                 )
                 if lease is None:
                     msg = f"cluster lock Lease {self.namespace}/{self.name} disappeared"
@@ -340,7 +333,7 @@ class ClusterLock:
                 renewed = await self._replace_lease(
                     lease,
                     datetime.now(UTC),
-                    timeout=CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS,
+                    deadline=Deadline(CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS),
                     holder_identity=self._holder,
                 )
                 if not renewed:
@@ -372,7 +365,7 @@ class ClusterLock:
         self._renew_stop = None
         self._renew_task = None
 
-    async def lock(self) -> Self:
+    async def lock(self, deadline: Deadline) -> Self:
         """Acquire this cluster lock, waiting for this lock's timeout if needed.
 
         Returns
@@ -389,10 +382,6 @@ class ClusterLock:
             acquisition.
         """
         owner = self._get_owner()
-        deadline = Deadline.from_timeout(
-            self.timeout,
-            message="cluster lock timeout must be positive",
-        )
         while True:
             with CLUSTER_LOCK_GUARD:
                 if self._owner is None:
@@ -402,14 +391,14 @@ class ClusterLock:
                 if self._owner == owner:
                     self._depth += 1
                     return self
-            if deadline.remaining() <= 0:
-                msg = f"could not acquire cluster lock within {self.timeout} seconds"
+            if deadline.remaining <= 0:
+                msg = "could not acquire cluster lock before deadline"
                 raise TimeoutError(msg)
-            await asyncio.sleep(deadline.bounded(CLUSTER_LOCK_POLL_SECONDS))
+            await deadline.sleep(CLUSTER_LOCK_POLL_SECONDS)
 
         try:
             if not await self._acquire_lease(deadline):
-                msg = f"could not acquire cluster lock within {self.timeout} seconds"
+                msg = "could not acquire cluster lock before deadline"
                 raise TimeoutError(msg)
             return self  # noqa: TRY300
         except OSError:
@@ -443,7 +432,9 @@ class ClusterLock:
             self._depth = 1
 
         try:
-            acquired = await self._try_acquire_lease(CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS)
+            acquired = await self._try_acquire_lease(
+                Deadline(CLUSTER_LOCK_QUERY_TIMEOUT_SECONDS)
+            )
         except OSError:
             with contextlib.suppress(*_CLUSTER_LOCK_ERRORS):
                 await self._stop_renew_loop()
@@ -495,17 +486,6 @@ class ClusterLock:
             self._renew_error = None
             raise error
 
-    async def __aenter__(self) -> Self:  # noqa: D105
-        return await self.lock()
-
-    async def __aexit__(  # noqa: D105
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.unlock(ignore_errors=exc_value is not None)
-
     def __bool__(self) -> bool:  # noqa: D105
         with CLUSTER_LOCK_GUARD:
             return self._depth > 0
@@ -513,5 +493,5 @@ class ClusterLock:
     def __repr__(self) -> str:  # noqa: D105
         return (
             f"ClusterLock(key={self.key!r}, namespace={self.namespace!r}, "
-            f"timeout={self.timeout})"
+            f"lease_duration={self.lease_duration})"
         )

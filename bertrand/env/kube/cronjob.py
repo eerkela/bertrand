@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 import kubernetes
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 from .job import JobCompletionMode, _job_spec_manifest, _validate_job_execution
@@ -129,7 +131,7 @@ class CronJob(
         labels: Mapping[str, str],
         pod_template: PodTemplateSpec,
         schedule: str,
-        timeout: float,
+        deadline: Deadline,
         annotations: Mapping[str, str] | None = None,
         backoff_limit: int = 0,
         ttl_seconds_after_finished: int | None = 3600,
@@ -160,7 +162,7 @@ class CronJob(
             Pod template to render into the CronJob's Job template.
         schedule : str
             Cron schedule string.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to the CronJob and Job template.
@@ -255,7 +257,7 @@ class CronJob(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 
@@ -307,7 +309,7 @@ class CronJob(
         status = self._obj.status
         return status.last_successful_time if status is not None else None
 
-    async def suspend(self, kube: Kube, *, suspend: bool, timeout: float) -> Self:
+    async def suspend(self, kube: Kube, *, suspend: bool, deadline: Deadline) -> Self:
         """Patch this CronJob's suspend state.
 
         Parameters
@@ -316,7 +318,7 @@ class CronJob(
             Active Kubernetes API context.
         suspend : bool
             Desired value for Kubernetes `spec.suspend`.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
@@ -338,7 +340,7 @@ class CronJob(
                 body={"spec": {"suspend": suspend}},
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to patch CronJob {namespace}/{name} suspend state",
         )
         if not isinstance(payload, kubernetes.client.V1CronJob):

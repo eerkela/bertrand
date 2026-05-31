@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import math
 import os
 import select
 import shutil
@@ -22,7 +21,7 @@ from bertrand.env.cli.external._helper import (
 )
 from bertrand.env.cli.external.build import _publish_project_image
 from bertrand.env.config.bertrand import Bertrand, BertrandModel
-from bertrand.env.git import BERTRAND_NAMESPACE
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.cronjob import CronJob
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.pod import Pod
@@ -58,7 +57,7 @@ _TTY_STREAM_ERRORS: tuple[type[Exception], ...] = (
 _RUN_LOG_ERRORS: tuple[type[Exception], ...] = (OSError, TimeoutError, ValueError)
 type _AttachMode = Literal["logs", "tty"]
 type _AttachPodResolver = Callable[[], Awaitable[Pod | None]]
-type _PodSource = Callable[[float], Awaitable[Sequence[Pod]]]
+type _PodSource = Callable[[Deadline], Awaitable[Sequence[Pod]]]
 
 
 async def bertrand_run(
@@ -67,6 +66,7 @@ async def bertrand_run(
     detach: bool,
     tty: bool | None,
     args: Sequence[str],
+    deadline: Deadline,
 ) -> None:
     """Build and run the configured Kubernetes workload for a project target.
 
@@ -83,6 +83,8 @@ async def bertrand_run(
         the caller has an interactive terminal.
     args : Sequence[str]
         Runtime arguments to append to the configured primary container command.
+    deadline : Deadline
+        Command execution deadline.
 
     Raises
     ------
@@ -95,7 +97,7 @@ async def bertrand_run(
             "attach"
         )
         raise ValueError(msg)
-    async with _project_command_context(target, timeout=math.inf) as (
+    async with _project_command_context(target, deadline=deadline) as (
         kube,
         _repo,
         _worktree,
@@ -104,11 +106,12 @@ async def bertrand_run(
         await run_configured_project(
             kube,
             config=config,
-            repo_id=config.repo.repo_id,
+            repo_id=config.repo.id,
             detach=detach,
             tty=tty,
             args=args,
             ensure_build_crds=True,
+            deadline=deadline,
         )
 
 
@@ -121,6 +124,7 @@ async def run_configured_project(
     tty: bool | None,
     args: Sequence[str],
     ensure_build_crds: bool,
+    deadline: Deadline,
 ) -> None:
     """Build and schedule the active project config on a Kubernetes cluster.
 
@@ -143,6 +147,8 @@ async def run_configured_project(
         Whether to converge BuildKit/image lifecycle CRDs before submitting the
         build request. Host-side commands should enable this; in-cluster dev commands
         should rely on `bertrand init` and avoid CRD-definition write privileges.
+    deadline : Deadline
+        Command execution deadline.
 
     Raises
     ------
@@ -181,7 +187,7 @@ async def run_configured_project(
         kube,
         config=config,
         repo_id=repo_id,
-        timeout=math.inf,
+        deadline=deadline,
         quiet=detach,
         ensure_crds=ensure_build_crds,
     )
@@ -193,7 +199,7 @@ async def run_configured_project(
             kube,
             config=config,
             repo_id=repo_id,
-            timeout=math.inf,
+            deadline=deadline,
             image_ref=image_ref,
             primary_args=runtime_args,
             interactive=interactive,
@@ -207,6 +213,7 @@ async def run_configured_project(
             primary_container=primary_container,
             attach_tty=interactive,
             explicit_tty=tty is True,
+            deadline=deadline,
         )
         return
 
@@ -214,7 +221,7 @@ async def run_configured_project(
         kube,
         config=config,
         repo_id=repo_id,
-        timeout=math.inf,
+        deadline=deadline,
         image_ref=image_ref,
         primary_args=runtime_args,
         interactive=interactive,
@@ -229,6 +236,7 @@ async def run_configured_project(
             primary_container=primary_container,
             attach_tty=interactive,
             explicit_tty=tty is True,
+            deadline=deadline,
         )
         return
     if isinstance(controller, CronJob):
@@ -322,6 +330,7 @@ async def _run_job_foreground(
     primary_container: str,
     attach_tty: bool,
     explicit_tty: bool,
+    deadline: Deadline,
 ) -> None:
     if attach_tty:
         attached = await _try_attach_foreground(
@@ -330,6 +339,7 @@ async def _run_job_foreground(
                 kube,
                 job,
                 primary_container=primary_container,
+                deadline=deadline,
             ),
             primary_container=primary_container,
             explicit_tty=explicit_tty,
@@ -338,30 +348,35 @@ async def _run_job_foreground(
             ),
         )
         if attached:
-            await _wait_foreground_job_complete(kube, job)
+            await _wait_foreground_job_complete(kube, job, deadline=deadline)
             return
     printed: dict[str, str] = {}
 
-    async def source(remaining: float) -> Sequence[Pod]:
-        return await job.pods(kube, timeout=remaining)
+    async def source(deadline: Deadline) -> Sequence[Pod]:
+        return await job.pods(kube, deadline=deadline)
 
     task = asyncio.create_task(
         _follow_workload_logs(kube, source=source, printed=printed)
     )
     try:
-        await _wait_foreground_job_complete(kube, job)
+        await _wait_foreground_job_complete(kube, job, deadline=deadline)
     finally:
         await _poll_workload_logs(kube, source=source, printed=printed)
         await _cancel_task(task)
 
 
-async def _wait_foreground_job_complete(kube: Kube, job: Job) -> None:
+async def _wait_foreground_job_complete(
+    kube: Kube,
+    job: Job,
+    *,
+    deadline: Deadline,
+) -> None:
     try:
-        await job.wait_complete(kube, timeout=math.inf)
+        await job.wait_complete(kube, deadline=deadline)
     except (OSError, TimeoutError) as err:
         diagnostics = await job.pod_diagnostics(
             kube,
-            timeout=_RUN_LOG_READ_TIMEOUT_SECONDS,
+            deadline=Deadline(_RUN_LOG_READ_TIMEOUT_SECONDS),
             failure_label="workload Job pod status diagnostics",
         )
         diagnostics = diagnostics.strip()
@@ -412,15 +427,18 @@ async def _wait_job_attach_pod(
     job: Job,
     *,
     primary_container: str,
+    deadline: Deadline,
 ) -> Pod | None:
     while True:
-        pods = await job.pods(kube, timeout=_RUN_LOG_READ_TIMEOUT_SECONDS)
+        pods = await job.pods(kube, deadline=Deadline(_RUN_LOG_READ_TIMEOUT_SECONDS))
         candidates = _attachable_pods(pods, primary_container=primary_container)
         if candidates:
             return candidates[0]
         if pods and all(pod.is_terminal for pod in pods):
             return None
-        await asyncio.sleep(_RUN_ATTACH_POLL_SECONDS)
+        if not await deadline.sleep(_RUN_ATTACH_POLL_SECONDS):
+            msg = f"timed out waiting for Job {job.name} attachable pod"
+            raise TimeoutError(msg)
 
 
 async def _run_deployment_foreground(
@@ -430,6 +448,7 @@ async def _run_deployment_foreground(
     primary_container: str,
     attach_tty: bool,
     explicit_tty: bool,
+    deadline: Deadline,
 ) -> None:
     replicas = deployment.replicas
     if replicas <= 0:
@@ -437,7 +456,7 @@ async def _run_deployment_foreground(
         return
     deployment = await deployment.wait_rollout(
         kube,
-        timeout=math.inf,
+        deadline=deadline,
         minimum=replicas,
     )
     if attach_tty:
@@ -459,12 +478,12 @@ async def _run_deployment_foreground(
             return
     printed: dict[str, str] = {}
 
-    async def source(remaining: float) -> Sequence[Pod]:
+    async def source(deadline: Deadline) -> Sequence[Pod]:
         return await Pod.list(
             kube,
             namespaces=(BERTRAND_NAMESPACE,),
             labels=deployment.selector,
-            timeout=remaining,
+            deadline=deadline,
         )
 
     task = asyncio.create_task(
@@ -472,7 +491,9 @@ async def _run_deployment_foreground(
     )
     try:
         while True:
-            await asyncio.sleep(_RUN_LOG_POLL_SECONDS)
+            if not await deadline.sleep(_RUN_LOG_POLL_SECONDS):
+                msg = f"timed out following Deployment {deployment.name} logs"
+                raise TimeoutError(msg)
     finally:
         await _cancel_task(task)
 
@@ -495,7 +516,7 @@ async def _poll_workload_logs(
     printed: dict[str, str],
 ) -> None:
     try:
-        pods = tuple(await source(_RUN_LOG_READ_TIMEOUT_SECONDS))
+        pods = tuple(await source(Deadline(_RUN_LOG_READ_TIMEOUT_SECONDS)))
     except _RUN_LOG_ERRORS:
         return
     include_headers = len(pods) > 1
@@ -503,7 +524,7 @@ async def _poll_workload_logs(
         *(
             pod.logs(
                 kube,
-                timeout=_RUN_LOG_READ_TIMEOUT_SECONDS,
+                deadline=Deadline(_RUN_LOG_READ_TIMEOUT_SECONDS),
                 tail_lines=_RUN_LOG_TAIL_LINES,
             )
             for pod in pods
@@ -565,7 +586,7 @@ async def _deployment_attach_pod(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=deployment.selector,
-        timeout=_RUN_LOG_READ_TIMEOUT_SECONDS,
+        deadline=Deadline(_RUN_LOG_READ_TIMEOUT_SECONDS),
     )
     candidates = tuple(
         pod
@@ -601,7 +622,7 @@ async def _attach_pod(
 ) -> None:
     stream = await pod.attach(
         kube,
-        timeout=_RUN_LOG_READ_TIMEOUT_SECONDS,
+        deadline=Deadline(_RUN_LOG_READ_TIMEOUT_SECONDS),
         container=primary_container,
         stdin=True,
         stdout=True,

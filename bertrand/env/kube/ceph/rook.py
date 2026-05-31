@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING
 
@@ -100,7 +99,7 @@ async def patch_rook_device_sets(
     kube: Kube,
     *,
     records: Collection[CephStorageOSD],
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Patch the Rook CephCluster device sets for active Bertrand OSD records.
 
@@ -112,7 +111,7 @@ async def patch_rook_device_sets(
     current = await ROOK_CEPH_CLUSTER_RESOURCE.get(
         kube,
         name=ROOK_CLUSTER_NAME,
-        timeout=timeout,
+        deadline=deadline,
         context="failed to inspect Rook CephCluster OSD device sets",
     )
     allowed_names = {record.device_set_name for record in records}
@@ -148,7 +147,7 @@ async def patch_rook_device_sets(
         kube,
         name=ROOK_CLUSTER_NAME,
         body={"spec": {"storage": {"storageClassDeviceSets": device_sets}}},
-        timeout=timeout,
+        deadline=deadline,
         context="failed to patch Rook CephCluster OSD device sets",
     )
 
@@ -157,12 +156,12 @@ async def resize_osd_claim(
     kube: Kube,
     *,
     record: CephStorageOSD,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Resize Rook PVCs that back one managed OSD record."""
     claims = await PersistentVolumeClaim.list(
         kube,
-        timeout=timeout,
+        deadline=deadline,
         namespaces=(ROOK_NAMESPACE,),
         labels={STORAGE_OSD_NAME_LABEL: record.name},
     )
@@ -193,30 +192,30 @@ async def resize_osd_claim(
 
         await kube.run(
             patch,
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to resize OSD PVC {claim_namespace}/{claim_name}",
         )
 
 
 async def delete_osd_claims(
-    kube: Kube, *, record: CephStorageOSD, timeout: float
+    kube: Kube, *, record: CephStorageOSD, deadline: Deadline
 ) -> None:
     """Delete Rook PVCs that back one managed OSD record."""
     claims = await PersistentVolumeClaim.list(
         kube,
-        timeout=timeout,
+        deadline=deadline,
         namespaces=(ROOK_NAMESPACE,),
         labels={STORAGE_OSD_NAME_LABEL: record.name},
     )
     for claim in claims:
-        await claim.delete(kube, timeout=timeout)
+        await claim.delete(kube, deadline=deadline)
 
 
 async def wait_osd_claims_gone(
     kube: Kube,
     *,
     record: CephStorageOSD,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Wait until Rook PVCs for one managed OSD record are gone.
 
@@ -226,17 +225,16 @@ async def wait_osd_claims_gone(
         If the PVCs still exist when the timeout expires.
     """
     msg = f"timed out waiting for OSD PVCs for {record.name!r} to delete"
-    deadline = Deadline.from_timeout(timeout, message=msg)
-    while deadline.remaining() > 0:
+    while deadline.remaining > 0:
         claims = await PersistentVolumeClaim.list(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),
             labels={STORAGE_OSD_NAME_LABEL: record.name},
         )
         if not claims:
             return
-        await asyncio.sleep(deadline.bounded(STORAGE_OSD_WAIT_POLL_SECONDS))
+        await deadline.sleep(STORAGE_OSD_WAIT_POLL_SECONDS)
     raise TimeoutError(msg)
 
 
@@ -244,7 +242,7 @@ async def wait_osd_workloads_gone(
     kube: Kube,
     *,
     record: CephStorageOSD,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Wait until Rook pods for one managed OSD record are gone.
 
@@ -254,20 +252,19 @@ async def wait_osd_workloads_gone(
         If active Rook pods still exist when the timeout expires.
     """
     msg = f"timed out waiting for Rook workloads for OSD {record.name!r} to stop"
-    deadline = Deadline.from_timeout(timeout, message=msg)
     claim_names = {
         claim.name
         for claim in await PersistentVolumeClaim.list(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),
             labels={STORAGE_OSD_NAME_LABEL: record.name},
         )
     }
-    while deadline.remaining() > 0:
+    while deadline.remaining > 0:
         pods = await Pod.list(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),
         )
         active = [
@@ -281,7 +278,7 @@ async def wait_osd_workloads_gone(
         ]
         if not active:
             return
-        await asyncio.sleep(deadline.bounded(STORAGE_OSD_WAIT_POLL_SECONDS))
+        await deadline.sleep(STORAGE_OSD_WAIT_POLL_SECONDS)
     raise TimeoutError(msg)
 
 
@@ -301,7 +298,7 @@ async def observe_rook_osd(
     kube: Kube,
     *,
     record: CephStorageOSD,
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[int | None, bool]:
     """Observe the live Ceph identity/readiness for one managed Rook OSD.
 
@@ -311,16 +308,12 @@ async def observe_rook_osd(
         Observed Ceph OSD ID and whether the OSD is up and in the cluster.
     """
     observed_id = record.ceph_osd_id
-    if timeout <= 0:
+    if deadline.remaining <= 0:
         return observed_id, False
-    deadline = Deadline.from_timeout(
-        timeout,
-        message=f"Rook OSD observation timeout for {record.name!r} must be positive",
-    )
-    while deadline.remaining() > 0:
+    while deadline.remaining > 0:
         claims = await PersistentVolumeClaim.list(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),
             labels={STORAGE_OSD_NAME_LABEL: record.name},
         )
@@ -333,7 +326,7 @@ async def observe_rook_osd(
                 observed_id = osd_id
         pods = await Pod.list(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),
         )
         for pod in pods:
@@ -347,13 +340,13 @@ async def observe_rook_osd(
             if osd_id is not None:
                 observed_id = osd_id
         try:
-            live = await ceph_osds(timeout=deadline.remaining())
+            live = await ceph_osds(deadline=deadline)
         except (OSError, TimeoutError):
-            await asyncio.sleep(deadline.bounded(STORAGE_OSD_WAIT_POLL_SECONDS))
+            await deadline.sleep(STORAGE_OSD_WAIT_POLL_SECONDS)
             continue
         if observed_id is not None:
             for osd in live:
                 if osd.osd_id == observed_id and osd.up and osd.in_cluster:
                     return observed_id, True
-        await asyncio.sleep(deadline.bounded(STORAGE_OSD_WAIT_POLL_SECONDS))
+        await deadline.sleep(STORAGE_OSD_WAIT_POLL_SECONDS)
     return observed_id, False

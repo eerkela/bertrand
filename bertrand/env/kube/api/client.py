@@ -167,7 +167,7 @@ class Kube:
     # `host()` or `control_plane()` should be called within a cluster control plane
     # context to get a client with permissions out to the host node???  Ideally, we
     # would collapse to just `external()` and `internal()`, but I'm not sure if that's
-    # possible.  It might also be affected by 
+    # possible.  It might also be affected by
 
     @classmethod
     def external(
@@ -249,15 +249,15 @@ class Kube:
     async def host(
         cls,
         *,
-        timeout: float,
+        deadline: Deadline,
         namespace: str = BERTRAND_NAMESPACE,
     ) -> Self:
         """Build a host-side Kubernetes client with strict local MicroK8s identity.
 
         Parameters
         ----------
-        timeout : float
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+        deadline : Deadline
+            Maximum runtime budget.  If infinite, wait indefinitely.
         namespace : str, optional
             Default namespace for namespaced operations.
 
@@ -272,20 +272,15 @@ class Kube:
             If managed kubeconfig convergence fails, identity proof fails, or API
             client initialization fails.
         """
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="kubernetes host-client timeout must be positive",
-        )
-
         # NOTE: we always converge from `microk8s config` first so the managed
         # kubeconfig cannot drift from the local control-plane identity.
-        config_file = await ensure_microk8s_kubeconfig(timeout=deadline.remaining())
+        config_file = await ensure_microk8s_kubeconfig(deadline=deadline)
         try:
             managed_payload = config_file.read_text(encoding="utf-8")
         except OSError as err:
             msg = f"failed to read managed kubeconfig at {config_file}: {err}"
             raise OSError(msg) from err
-        fresh_payload = await microk8s_config_payload(timeout=deadline.remaining())
+        fresh_payload = await microk8s_config_payload(deadline=deadline)
 
         managed_server, managed_ca = kubeconfig_identity(
             managed_payload,
@@ -340,7 +335,7 @@ class Kube:
         self,
         fn: Callable[[float | None], T],
         *,
-        timeout: float,
+        deadline: Deadline,
         context: str,
         missing_ok: bool = True,
     ) -> T | None:
@@ -351,8 +346,8 @@ class Kube:
         fn : Callable[[float | None], T]
             Callable that performs one Kubernetes API operation and accepts the
             normalized Kubernetes request timeout (`None` for infinite waits).
-        timeout : float
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+        deadline : Deadline
+            Maximum runtime budget.  If infinite, wait indefinitely.
         context : str
             Human-readable context for timeout and API error messages.
         missing_ok : bool, optional
@@ -368,21 +363,19 @@ class Kube:
         Raises
         ------
         TimeoutError
-            If the operation exceeds the timeout budget.
+            If the operation exceeds the deadline.
         KubeApiError
             If the API call fails with any non-404 error.
         """
-        if timeout <= 0:
-            msg = f"{context} timed out before request could start"
-            raise TimeoutError(msg)
-        request_timeout = None if math.isinf(timeout) else timeout
+        remaining = deadline.check(f"{context} timed out before request could start")
+        request_timeout = None if math.isinf(remaining) else remaining
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(fn, request_timeout),
                 timeout=request_timeout,
             )
         except TimeoutError as err:
-            msg = f"{context} timed out after {timeout} seconds"
+            msg = f"{context} timed out after {deadline.timeout} seconds"
             raise TimeoutError(msg) from err
         except ApiException as err:
             if err.status == 404 and missing_ok:

@@ -32,7 +32,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
-from typing import Any, Literal, NoReturn, Self, TextIO, cast
+from typing import Any, Literal, Self, TextIO, cast
 
 if os.name == "nt":
     import msvcrt
@@ -72,9 +72,9 @@ GIT_REQUIRE_RELATIVE_PATHS = (
     "move operations.  Please upgrade git to a version that supports this feature "
     "(git 2.52+)."
 )
-LOCK_DEFAULT_PRIVILEGES = 0o600
+LOCK_FILE_MODE = 0o660
 LOCK_GUARD = threading.RLock()
-HOST_LOCKS: dict[tuple[str, int], HostLock] = {}
+HOST_LOCKS: dict[str, HostLock] = {}
 
 
 # In-container path definitions for metadata and runtime control.
@@ -85,27 +85,15 @@ REPO_MOUNT: PosixPath = PosixPath("/.bertrand")
 CONTAINER_TMP: PosixPath = PosixPath("/tmp/bertrand")
 
 
-# TODO: these _ENV globals can probably also be trimmed down or eliminated with some
-# better engineering.
+# Shared label/environment keys.  `BERTRAND_LABEL` is also the only runtime
+# environment marker injected into image and container processes.
+BERTRAND_LABEL: str = "BERTRAND"
+BERTRAND_LABEL_MANAGED: str = "managed"
+BERTRAND_LABEL_IMAGE: str = "image"
+BERTRAND_LABEL_CONTAINER: str = "container"
+REPO_ID_LABEL: str = "BERTRAND_REPO_ID"
+WORKTREE_ID_LABEL: str = "BERTRAND_WORKTREE_ID"
 
-# -> To differentiate between in-container and in-image contexts, I should just set
-# different "image" vs "container" value for the `BERTRAND_ENV` environment variable
-# within the build context vs the container context
-
-# TODO: The image/container watermark is the only environment variable I actually
-# need, since REPO_ID, and WORKTREE_ID can be read from the mounted ID files directly
-
-
-# In-container environment variables for relevant configuration, which are set either
-# at build time or upon starting the container context, and used to control the
-# behavior of the bertrand CLI both inside and outside the container.
-BERTRAND_ENV: str = "BERTRAND"  # "image" | "container", depending on context
-REPO_ID_ENV: str = "BERTRAND_REPO_ID"  # unique repository UUID
-WORKTREE_ID_ENV: str = "BERTRAND_WORKTREE_ID"  # unique worktree UUID
-
-
-# TODO: same with the state directory layout, which can be better reviewed after the
-# rest of the framework is in place.
 
 # Shared runtime identifiers and host paths.  These intentionally stay in this
 # hook-safe module so installed Git hooks can use them without importing the rest of
@@ -117,10 +105,8 @@ HOST_ID_FILE = STATE_DIR / "host_id"
 REPO_DIR = STATE_DIR / "repositories"
 REPO_LOCK_EXT = Path("lock")
 REPO_MOUNT_EXT = Path("mount")
-BIN_DIR = STATE_DIR / "bin"
 CACHE_DIR = STATE_DIR / "cache"
 RUN_DIR = STATE_DIR / "run"
-TOOLS_DIR = STATE_DIR / "tools"
 
 
 # common type aliases for serialization
@@ -146,8 +132,8 @@ def inside_image() -> bool:
     command takes advantage of this to differentiate between normal (in-image) and
     editable (in-container) installs, for example.
     """
-    value = os.environ.get(BERTRAND_ENV, "")
-    return value == "image" or value == "container"
+    value = os.environ.get(BERTRAND_LABEL, "")
+    return value in {BERTRAND_LABEL_IMAGE, BERTRAND_LABEL_CONTAINER}
 
 
 def inside_container() -> bool:
@@ -158,7 +144,7 @@ def inside_container() -> bool:
     bool
         True if we're running inside a container process, False otherwise.
     """
-    return os.environ.get(BERTRAND_ENV, "") == "container"
+    return os.environ.get(BERTRAND_LABEL, "") == BERTRAND_LABEL_CONTAINER
 
 
 @dataclass(frozen=True)
@@ -167,15 +153,19 @@ class Deadline:
 
     Attributes
     ----------
-    start : float
-        Unix timestamp when the deadline was created.
     timeout : float
         Seconds until the deadline expires.  Must be positive (including infinity), but
         not NaN.
+    start : float
+        Unix timestamp when the deadline was created.
+    stop : float
+        Unix timestamp when the deadline expires.  This is derived from `start` and
+        `timeout`, and is not intended to be set directly.
     """
 
     timeout: float
     start: float = field(default_factory=time.time)
+    stop: float = field(init=False)
 
     def __post_init__(self) -> None:
         """Validate that the deadline has not already expired.
@@ -192,17 +182,7 @@ class Deadline:
             raise ValueError(msg)
         if self.timeout <= 0:
             raise TimeoutError
-
-    @property
-    def stop(self) -> float:
-        """Return the unix timestamp when the deadline expires.
-
-        Returns
-        -------
-        float
-            Unix timestamp when the deadline expires.
-        """
-        return self.start + self.timeout
+        object.__setattr__(self, "stop", self.start + self.timeout)
 
     @property
     def remaining(self) -> float:
@@ -243,69 +223,39 @@ class Deadline:
             raise TimeoutError(msg) from err
         return remaining
 
-    async def call[T](
-        self,
-        closure: Callable[[Deadline], Awaitable[T]],
-        *,
-        msg: str,
-        timeout: float = math.inf,
-        delay: float = 0.0,
-        catch: tuple[type[BaseException], ...] = (
-            TimeoutError,
-            subprocess.TimeoutExpired,
-        ),
-    ) -> T:
-        """Retry an async closure until it succeeds or the deadline expires.
+    async def sleep(self, delay: float) -> bool:
+        """Sleep for a polling interval capped by this deadline.
 
         Parameters
         ----------
-        closure : Callable[[Deadline], Awaitable[T]]
-            Async function to call with the remaining timeout budget for each attempt.
-            Any returned value, including None, is treated as success.
-        msg : str
-            Error message to raise if the overall deadline expires before `closure`
-            succeeds.
-        timeout : float
-            Maximum time to wait for `op` to succeed before giving up and retrying.
-            Must be positive (including infinity), but not NaN.  The actual timeout
-            used to run each attempt will be the minimum of this and the remaining time
-            until the overall deadline expires.
         delay : float
-            Number of seconds to wait between failed attempts.  A value of zero will
-            yield to the event loop before retrying.
-        catch : tuple[type[BaseException], ...], optional
-            Exceptions to catch and retry on.  Defaults to
-            `(TimeoutError, subprocess.TimeoutExpired)`.
+            Maximum polling delay in seconds.  Must be finite and non-negative.
 
         Returns
         -------
-        T
-            The value returned by `op`.
+        bool
+            True if the deadline still has budget after sleeping, or False if the
+            deadline had already elapsed or elapsed during the sleep.
 
         Raises
         ------
-        TimeoutError
-            If the overall deadline expires before `op` succeeds.
         ValueError
-            If `delay` is negative or infinite.
+            If `delay` is NaN, negative, or infinite.
+
+        Notes
+        -----
+        This is a cooperative polling helper.  External APIs and subprocesses should
+        continue to receive explicit relative timeout budgets derived from
+        :meth:`check` or :attr:`remaining`.
         """
-        if delay < 0 or math.isinf(delay):
+        if math.isnan(delay) or delay < 0 or math.isinf(delay):
             msg = f"delay must be non-negative and finite: {delay}"
             raise ValueError(msg)
-
-        last_error: BaseException | None = None
-        while True:
-            remaining = self.remaining
-            if remaining <= 0:
-                raise TimeoutError(msg) from last_error
-
-            try:
-                return await closure(Deadline(min(timeout, remaining)))
-            except catch as err:
-                last_error = err
-
-            remaining = self.remaining
-            await asyncio.sleep(min(delay, remaining))
+        remaining = self.remaining
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(delay if delay < remaining else remaining)
+        return self.remaining > 0
 
 
 class CompletedProcess(subprocess.CompletedProcess[str]):
@@ -596,13 +546,10 @@ async def _run_tee(
             args=argv,
             returncode=proc.returncode,
             stdout=stdout_text,
-            stderr=stderr_text
+            stderr=stderr_text,
         )
     return CommandError(
-        returncode=proc.returncode,
-        cmd=argv,
-        output=stdout_text,
-        stderr=stderr_text
+        returncode=proc.returncode, cmd=argv, output=stdout_text, stderr=stderr_text
     )
 
 
@@ -740,7 +687,6 @@ async def run(
                     output=result.stdout if result else None,
                     stderr=result.stderr if result else None,
                 ) from result
-            await asyncio.sleep(min(delay, remaining))
         elif result is not None:
             if check:
                 raise result
@@ -758,6 +704,8 @@ async def run(
             if check:
                 raise CommandError(returncode=-1, cmd=argv, output=None, stderr=err)
             return CompletedProcess(args=argv, returncode=-1, stdout="", stderr=err)
+
+        await deadline.sleep(delay)
 
 
 def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
@@ -798,6 +746,85 @@ def sudo(argv: list[str], *, non_interactive: bool = False) -> list[str]:
         out.append("-n")
     out.extend(argv)
     return out
+
+
+async def until[T](
+    closure: Callable[[Deadline], Awaitable[T]],
+    *,
+    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
+    attempts: int = 0,
+    delay: float = 0.0,
+    catch: tuple[type[BaseException], ...] = (
+        TimeoutError,
+        subprocess.TimeoutExpired,
+    ),
+) -> T:
+    """Retry an async closure until it succeeds or the deadline expires.
+
+    Parameters
+    ----------
+    closure : Callable[[Deadline], Awaitable[T]]
+        Async function to call with the remaining timeout budget for each attempt.
+        Any returned value, including None, is treated as success.
+    timeout : float
+        Maximum time to wait for one `closure` attempt before giving up and
+        retrying.  Must be positive (including infinity), but not NaN.  The
+        actual timeout used to run each attempt will be the minimum of this and
+        the remaining time until the overall deadline expires.
+    deadline : Deadline
+        Overall deadline by which `closure` must succeed before raising a TimeoutError.
+    attempts : int
+        Maximum number of attempts to make before giving up.  A value of zero means to
+        keep trying until the overall deadline expires, regardless of the number of
+        attempts.
+    delay : float
+        Number of seconds to wait between failed attempts.  A value of zero will
+        yield to the event loop before retrying.
+    catch : tuple[type[BaseException], ...], optional
+        Exceptions to catch and retry on.  Defaults to
+        `(TimeoutError, subprocess.TimeoutExpired)`.
+
+    Returns
+    -------
+    T
+        The value returned by `closure`.
+
+    Raises
+    ------
+    TimeoutError
+        If the overall deadline expires or a nonzero attempt count reaches zero
+        before `closure` succeeds.
+    ValueError
+        If `timeout` is NaN, negative, or zero, `attempts` is negative, or `delay`
+        is NaN, negative, or infinite.
+    """
+    if attempts < 0:
+        message = f"attempts must be non-negative: {attempts}"
+        raise ValueError(message)
+    if math.isnan(timeout) or timeout <= 0:
+        message = f"timeout must be positive or infinite: {timeout}"
+        raise ValueError(message)
+    if math.isnan(delay) or delay < 0 or math.isinf(delay):
+        message = f"delay must be non-negative and finite: {delay}"
+        raise ValueError(message)
+
+    last_error: BaseException | None = None
+    while True:
+        remaining = deadline.remaining
+        if remaining <= 0:
+            raise TimeoutError from last_error
+
+        try:
+            return await closure(Deadline(min(timeout, remaining)))
+        except catch as err:
+            last_error = err
+
+        attempts -= 1
+        if attempts == 0:
+            raise TimeoutError from last_error
+
+        await deadline.sleep(delay)
 
 
 @dataclass(frozen=True)
@@ -1189,45 +1216,29 @@ def atomic_write_text(
     tmp.replace(path)
 
 
-# TODO: try to delete the privileges field for the lock file.  I could maybe just
-# use o660 for the lock file, which would extend rw access to the `bertrand` user group,
-# as long as I then create all lock files under that group.
-
-# -> Use `os.fchown` and always create the lock file under the `bertrand` group, if it
-# exists, or possibly just allow everyone rwx access by default?
-
-
 class HostLock:
     """A re-entrant, OS-level, asynchronous file lock."""
 
     path: Path
-    privileges: int
-    _key: tuple[str, int]
+    _key: str
     _fd: int | None
     _owner: asyncio.Task[Any] | None
     _depth: int
 
-    def __new__(cls, path: Path, *, privileges: int = LOCK_DEFAULT_PRIVILEGES) -> Self:
+    def __new__(cls, path: Path) -> Self:
         """Construct or return a shared lock instance for the given path.
 
         Parameters
         ----------
         path : Path
             Local file path used for host-level locking.
-        privileges : int
-            The file mode to apply when creating the lock file. Defaults to `0o600`.
 
         Raises
         ------
-        ValueError
-            If `privileges` is not a valid file mode.
         OSError
             If the lock path is invalid.
         """
         path = path.expanduser().resolve()
-        if privileges < 0 or privileges > 0o777:
-            msg = f"invalid host lock file mode: {oct(privileges)}"
-            raise ValueError(msg)
         if path.exists() and path.is_dir():
             msg = (
                 f"host lock path must be a file, but a directory already exists: {path}"
@@ -1236,12 +1247,11 @@ class HostLock:
 
         # allow re-entrancy with unique lock instances per owning task
         with LOCK_GUARD:
-            key = (str(path), privileges)
+            key = str(path)
             self = HOST_LOCKS.get(key)
             if self is None:
                 self = super().__new__(cls)
                 self.path = path
-                self.privileges = privileges
                 self._key = key
                 self._fd = None
                 self._owner = None
@@ -1274,13 +1284,88 @@ class HostLock:
             if unregister:
                 HOST_LOCKS.pop(self._key, None)
 
+    @staticmethod
+    def _lock_group_gid() -> int:
+        try:
+            return grp.getgrnam(BERTRAND_GROUP).gr_gid
+        except KeyError as err:
+            msg = (
+                f"host locks require the shared {BERTRAND_GROUP!r} group.  "
+                "Run `bertrand init` to create it before using host locks."
+            )
+            raise OSError(msg) from err
+
+    @staticmethod
+    def _permissions_ready(stat_info: os.stat_result, group_gid: int) -> bool:
+        return (
+            stat_info.st_gid == group_gid
+            and (stat_info.st_mode & 0o777) == LOCK_FILE_MODE
+        )
+
+    def _normalize_permissions(self, fd: int, group_gid: int) -> None:
+        errors: list[OSError] = []
+        if hasattr(os, "fchown"):
+            try:
+                os.fchown(fd, -1, group_gid)
+            except OSError as err:
+                errors.append(err)
+        if hasattr(os, "fchmod"):
+            try:
+                os.fchmod(fd, LOCK_FILE_MODE)
+            except OSError as err:
+                errors.append(err)
+
+        stat_info = os.fstat(fd)
+        if self._permissions_ready(stat_info, group_gid):
+            return
+
+        detail = "; ".join(str(err) for err in errors)
+        msg = (
+            f"failed to secure host lock {self.path} for group {BERTRAND_GROUP!r} "
+            f"with mode {LOCK_FILE_MODE:o}"
+        )
+        if detail:
+            msg = f"{msg}: {detail}"
+        raise OSError(msg)
+
+    def _open_lock_file(self) -> int:
+        group_gid = self._lock_group_gid()
+        try:
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, LOCK_FILE_MODE)
+        except OSError as err:
+            if err.errno not in {errno.EACCES, errno.EPERM}:
+                raise
+            try:
+                stat_info = self.path.stat()
+            except OSError as stat_err:
+                msg = f"cannot open or inspect host lock {self.path}"
+                raise OSError(msg) from stat_err
+            if self._permissions_ready(stat_info, group_gid):
+                msg = (
+                    f"cannot open host lock {self.path} even though it is already "
+                    f"group-owned by {BERTRAND_GROUP!r} with mode {LOCK_FILE_MODE:o}"
+                )
+                raise OSError(msg) from err
+            msg = (
+                f"cannot open host lock {self.path}: existing lock file is not "
+                f"group-owned by {BERTRAND_GROUP!r} with mode {LOCK_FILE_MODE:o}.  "
+                "Remove the stale lock file or fix its ownership and permissions, "
+                "then retry."
+            )
+            raise OSError(msg) from err
+
+        try:
+            if os.name != "nt":
+                self._normalize_permissions(fd, group_gid)
+        except OSError:
+            os.close(fd)
+            raise
+        return fd
+
     async def _try_acquire_file(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self._fd is None:
-            self._fd = os.open(self.path, os.O_RDWR | os.O_CREAT, self.privileges)
-            if hasattr(os, "fchmod"):
-                with contextlib.suppress(OSError):
-                    os.fchmod(self._fd, self.privileges)
+            self._fd = self._open_lock_file()
 
         # Windows file lock on a 1-byte region
         if os.name == "nt":
@@ -1313,7 +1398,7 @@ class HostLock:
             remaining = deadline.remaining
             if remaining <= 0:
                 return False
-            await asyncio.sleep(min(SHORT_DELAY, remaining))
+            await deadline.sleep(SHORT_DELAY)
         return True
 
     async def _release_file(self) -> None:
@@ -1374,7 +1459,7 @@ class HostLock:
                     "seconds"
                 )
                 raise TimeoutError(msg)
-            await asyncio.sleep(min(deadline.remaining, SHORT_DELAY))
+            await deadline.sleep(SHORT_DELAY)
 
         # slow path: acquire via backend
         try:
@@ -1692,17 +1777,14 @@ class GitRepository:
                 cursor = cursor.parent
 
         async def _worktree_belongs_to_repo(
-            self,
-            *,
-            env: dict[str, str],
-            deadline: Deadline
+            self, *, env: dict[str, str], deadline: Deadline
         ) -> bool:
             result = await run(
                 ["git", "-C", str(self.path), "rev-parse", "--git-common-dir"],
                 check=False,
                 capture_output=True,
                 env=env,
-                deadline=deadline
+                deadline=deadline,
             )
             if result.returncode != 0:
                 return False
@@ -1910,8 +1992,8 @@ class GitRepository:
         cls,
         path: Path,
         *,
-        deadline: Deadline = NO_DEADLINE
-    ) -> tuple[GitRepository, Path]:
+        deadline: Deadline = NO_DEADLINE,
+    ) -> tuple[GitRepository, GitRepository.Worktree | None]:
         """Resolve a repository and worktree path.
 
         Parameters
@@ -1921,9 +2003,9 @@ class GitRepository:
             will be scanned to find the nearest git repository, and the remaining path
             components will be treated as a relative worktree path within the
             repository.  If no repository is found, then the input path will be
-            treated as an uninitialized repository, and the worktree will be "."
-            (repository-level targeting).  If the path leads to a bare repository,
-            then non-root targets must match a registered worktree root exactly.
+            treated as an uninitialized repository with repository-level scope.  If
+            the path leads to a bare repository, then non-root targets must match a
+            registered worktree root exactly.
         deadline : Deadline, optional
             An overall deadline by which the resolution must complete before raising a
             `TimeoutError`.  Defaults to an infinite deadline, which causes the command
@@ -1932,12 +2014,12 @@ class GitRepository:
 
         Returns
         -------
-        tuple[GitRepository, Path]
-            A tuple containing the resolved Git repository and the relative worktree
-            path within it.  The worktree path is "." for repository-level targets,
-            and a non-empty relative path only for explicit worktree targets.  Note
-            that the `GitRepository` may be uninitialized if no existing repository
-            was found during resolution.
+        tuple[GitRepository, GitRepository.Worktree | None]
+            A tuple containing the resolved Git repository and an explicit registered
+            worktree, if the input path targets one.  The worktree is None for
+            repository-level targets and uninitialized repositories.  Note that the
+            `GitRepository` may be uninitialized if no existing repository was found
+            during resolution.
 
         Raises
         ------
@@ -1953,7 +2035,7 @@ class GitRepository:
             if not await cls.supports_relative_paths(deadline=deadline):
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
             repo = cls(path / ".git")
-            return repo, Path()
+            return repo, None
 
         # existing bare repository
         if await repo.bare():
@@ -1961,35 +2043,38 @@ class GitRepository:
                 raise OSError(GIT_REQUIRE_RELATIVE_PATHS)
             worktree = path.relative_to(repo.root)
             if not worktree.parts:
-                return repo, Path()
-            if not any(
-                wt.path == path for wt in await repo.worktrees(deadline=deadline)
-            ):
+                return repo, None
+            match = next(
+                (
+                    wt
+                    for wt in await repo.worktrees(deadline=deadline)
+                    if wt.path == path
+                ),
+                None,
+            )
+            if match is None:
                 msg = (
                     f"worktree at {worktree} is not registered as a git worktree of "
                     f"bare repository: {repo.root}"
                 )
                 raise OSError(msg)
-            return repo, worktree
+            return repo, match
 
         # existing non-bare repository
         worktree = path.relative_to(repo.root)
-        if worktree.parts and not any(
-            wt.path == path for wt in await repo.worktrees(deadline=deadline)
-        ):
+        if not worktree.parts:
+            return repo, None
+        match = next(
+            (wt for wt in await repo.worktrees(deadline=deadline) if wt.path == path),
+            None,
+        )
+        if match is None:
             msg = (
                 f"nested worktree at {worktree} is not registered as a git worktree "
                 f"of non-bare repository: {repo.root}"
             )
             raise OSError(msg)
-        return repo, worktree
-
-    # TODO: remove `__bool__` once the deprecation cut-over is complete
-
-    def __bool__(self) -> NoReturn:
-        """Deprecate old-style truthiness checks on GitRepository instances."""
-        msg = "use explicit `GitRepository.exists()` instead of a truth check"
-        raise NotImplementedError(msg)
+        return repo, match
 
     def __hash__(self) -> int:
         """Allow GitRepositories to be hashed according to their logical identity.
@@ -2056,12 +2141,15 @@ class GitRepository:
         return (
             self.git_dir.exists()
             and self.git_dir.is_dir()
-            and (await self.run(
-                ["rev-parse", "--git-dir"],
-                check=False,
-                capture_output=True,
-                deadline=deadline,
-            )).returncode == 0
+            and (
+                await self.run(
+                    ["rev-parse", "--git-dir"],
+                    check=False,
+                    capture_output=True,
+                    deadline=deadline,
+                )
+            ).returncode
+            == 0
         )
 
     async def init(
@@ -2126,14 +2214,14 @@ class GitRepository:
         OSError
             If the source repository has not been initialized.
         """
-        if not await source.exists():
+        if not await source.exists(deadline=deadline):
             msg = (
                 f"cannot mirror from uninitialized source repository: {source.git_dir}"
             )
             raise OSError(msg)
 
         # if this is a fresh repository, just clone directly to initialize it
-        if not await self.exists():
+        if not await self.exists(deadline=deadline):
             await run(
                 [
                     "git",
@@ -2251,7 +2339,7 @@ class GitRepository:
             worktree. Bare repositories with zero worktrees are considered clean.
 
         """
-        if not await self.bare():
+        if not await self.bare(deadline=deadline):
             result = await self.run(
                 ["status", "--porcelain"],
                 capture_output=True,
@@ -2263,7 +2351,7 @@ class GitRepository:
         # Bare repositories do not have their own worktree; check each attached
         # worktree under a sanitized git environment instead.
         env = await self._strip_env(deadline=deadline)
-        for wt in await self.worktrees():
+        for wt in await self.worktrees(deadline=deadline):
             result = await run(
                 ["git", "-C", str(wt.path), "status", "--porcelain"],
                 capture_output=True,
@@ -2505,7 +2593,7 @@ class GitRepository:
     async def worktrees(
         self,
         *,
-        deadline: Deadline = NO_DEADLINE
+        deadline: Deadline = NO_DEADLINE,
     ) -> tuple[GitRepository.Worktree, ...]:
         """List all local worktrees for the given Git directory.
 
@@ -2549,11 +2637,37 @@ class GitRepository:
             out.append(self.Worktree(repo=self, path=path, branch=branch))
         return tuple(out)
 
+    async def head_worktree(
+        self,
+        *,
+        deadline: Deadline = NO_DEADLINE,
+    ) -> GitRepository.Worktree | None:
+        """Return the in-repository worktree attached to HEAD.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            An overall deadline by which this check must complete before raising a
+            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
+            to block indefinitely until completion.  If the deadline is earlier than the
+            time this method is called, a `TimeoutError` will be raised immediately.
+
+        Returns
+        -------
+        GitRepository.Worktree | None
+            The worktree registered for the current HEAD branch, or None if HEAD is
+            detached, unattached, or attached only to an out-of-repository worktree.
+        """
+        branch = await self.head_branch(deadline=deadline)
+        if branch is None:
+            return None
+        return await self.get_worktree(branch, deadline=deadline)
+
     async def get_worktree(
         self,
         branch: str,
         *,
-        deadline: Deadline = NO_DEADLINE
+        deadline: Deadline = NO_DEADLINE,
     ) -> GitRepository.Worktree | None:
         """Return the worktree attached to the given branch, if any.
 
@@ -2590,32 +2704,6 @@ class GitRepository:
             msg = f"multiple worktrees are attached to branch {branch!r}: {paths}"
             raise OSError(msg)
         return matches[0]
-
-    async def head_worktree(
-        self,
-        *,
-        deadline: Deadline = NO_DEADLINE
-    ) -> GitRepository.Worktree | None:
-        """Return the in-repository worktree attached to HEAD.
-
-        Parameters
-        ----------
-        deadline : Deadline, optional
-            An overall deadline by which this check must complete before raising a
-            `TimeoutError`.  Defaults to an infinite deadline, which causes the command
-            to block indefinitely until completion.  If the deadline is earlier than the
-            time this method is called, a `TimeoutError` will be raised immediately.
-
-        Returns
-        -------
-        GitRepository.Worktree | None
-            The worktree registered for the current HEAD branch, or None if HEAD is
-            detached, unattached, or attached only to an out-of-repository worktree.
-        """
-        branch = await self.head_branch(deadline=deadline)
-        if branch is None:
-            return None
-        return await self.get_worktree(branch, deadline=deadline)
 
     async def create_worktree(
         self,
@@ -2754,8 +2842,7 @@ class GitRepository:
                 winners.append(branch)
                 continue
             warn(
-                f"skipping branch '{branch}' due nested path conflict with "
-                f"'{conflict}'"
+                f"skipping branch '{branch}' due nested path conflict with '{conflict}'"
             )
 
         return {branch: desired[branch] for branch in winners}
@@ -2778,9 +2865,7 @@ class GitRepository:
             )
             current[branch] = target
         except _HOOK_OPERATION_ERRORS as err:
-            warn(
-                f"failed to create worktree for branch '{branch}' at {target}:\n{err}"
-            )
+            warn(f"failed to create worktree for branch '{branch}' at {target}:\n{err}")
 
     async def _sync_move_worktree(
         self,
@@ -2905,10 +2990,7 @@ class GitRepository:
         for branch in sorted(stale):
             path = current[branch]
             await self._sync_destroy_worktree(
-                current=current,
-                branch=branch,
-                path=path,
-                deadline=deadline
+                current=current, branch=branch, path=path, deadline=deadline
             )
 
         # move branches that are present but located at non-canonical paths

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 from bertrand.env.cli.external._helper import _project_command_context
+from bertrand.env.git import Deadline
 from bertrand.env.kube.workload.project import scale_project_workload
 
 if TYPE_CHECKING:
@@ -19,7 +19,7 @@ async def bertrand_scale(
     *,
     replicas: int,
     grace_period_seconds: int = 10,
-    timeout: float = math.inf,
+    deadline: Deadline,
 ) -> None:
     """Scale active Kubernetes workload execution for a project target.
 
@@ -33,7 +33,7 @@ async def bertrand_scale(
     grace_period_seconds : int, optional
         Kubernetes pod termination grace period when scale-to-zero deletes active
         execution objects.
-    timeout : float, optional
+    deadline : Deadline
         Maximum Kubernetes API/convergence budget.
 
     Raises
@@ -48,7 +48,7 @@ async def bertrand_scale(
         msg = "scale grace period cannot be negative"
         raise ValueError(msg)
 
-    async with _project_command_context(target, timeout=timeout) as (
+    async with _project_command_context(target, deadline=deadline) as (
         kube,
         _repo,
         _worktree,
@@ -57,10 +57,10 @@ async def bertrand_scale(
         result = await scale_project_workload(
             kube,
             config=config,
-            repo_id=config.repo.repo_id,
+            repo_id=config.repo.id,
             replicas=replicas,
             grace_period_seconds=grace_period_seconds,
-            timeout=timeout,
+            deadline=deadline,
         )
     _print_scale_result(result)
 

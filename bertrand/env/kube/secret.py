@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -55,7 +57,7 @@ class Secret(
         labels: Mapping[str, str] | None,
         annotations: Mapping[str, str] | None,
         payload: bytes,
-        timeout: float,
+        deadline: Deadline,
     ) -> Self:
         """Create or patch one Kubernetes Secret payload.
 
@@ -73,7 +75,7 @@ class Secret(
             Annotations to apply to `metadata.annotations`.
         payload : bytes
             Raw payload bytes to store at `data.value` (base64-encoded on write).
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
@@ -100,7 +102,7 @@ class Secret(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 

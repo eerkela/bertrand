@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import KubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -101,7 +103,7 @@ class CustomResourceDefinition(
         singular: str,
         kind: str,
         spec_schema: Mapping[str, object],
-        timeout: float,
+        deadline: Deadline,
         status_schema: Mapping[str, object] | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
@@ -126,7 +128,7 @@ class CustomResourceDefinition(
             Kubernetes kind name.
         spec_schema : Mapping[str, object]
             OpenAPI schema for the custom resource `spec` object.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds.
         status_schema : Mapping[str, object] | None, optional
             Optional OpenAPI schema for the custom resource `status` object. When
@@ -178,7 +180,7 @@ class CustomResourceDefinition(
                 kube,
                 name=name,
                 manifest=body,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 
@@ -197,14 +199,14 @@ class CustomResourceDefinition(
                 return True
         return False
 
-    async def wait_established(self, kube: Kube, *, timeout: float) -> Self:
+    async def wait_established(self, kube: Kube, *, deadline: Deadline) -> Self:
         """Wait until this CRD reports `Established=True`.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum wait budget in seconds. If infinite, wait indefinitely.
 
         Returns
@@ -215,9 +217,8 @@ class CustomResourceDefinition(
         name = self.name
         return await self._wait_until(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             predicate=lambda live: live.is_established,
-            action=f"waiting for CRD {name!r} establishment",
             pending_message=f"CRD {name!r} is not established yet",
             missing_message=f"CRD {name!r} disappeared",
             timeout_message=f"timed out waiting for CRD {name!r} establishment",

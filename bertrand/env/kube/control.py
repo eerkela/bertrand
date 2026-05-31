@@ -47,7 +47,7 @@ class MaintenanceClock:
         now: datetime,
         *,
         deadline: Deadline,
-        timeout: float,
+        budget: float,
     ) -> Deadline | None:
         """Return a bounded deadline when maintenance is due.
 
@@ -57,7 +57,7 @@ class MaintenanceClock:
             Current controller timestamp.
         deadline : Deadline
             Outer controller deadline.
-        timeout : float
+        budget : float
             Maximum maintenance pass budget in seconds.
 
         Returns
@@ -68,10 +68,13 @@ class MaintenanceClock:
         """
         if not self.due(now):
             return None
-        pass_timeout = deadline.bounded(timeout)
+        remaining = deadline.remaining
+        if remaining <= 0:
+            return None
+        pass_timeout = min(budget, remaining)
         if pass_timeout <= 0:
             return None
-        return Deadline.from_timeout(pass_timeout, message="")
+        return Deadline(pass_timeout)
 
     def schedule_after(self, seconds: float) -> None:
         """Schedule maintenance after a relative delay.

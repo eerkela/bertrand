@@ -20,7 +20,7 @@ from conan.errors import ConanException
 from conan.internal.model.conf import ConfDefinition
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-from bertrand.env.git import CONTAINER_TMP, Scalar, atomic_write_text, run
+from bertrand.env.git import CONTAINER_TMP, Deadline, Scalar, atomic_write_text, run
 from bertrand.env.version import VERSION
 
 from .core import (
@@ -305,9 +305,7 @@ class ConanConfigModel(BaseModel):
         seen: set[ConanRemoteName] = set()
         for remote in value:
             if remote.name in seen:
-                msg = (
-                    f"duplicate conan remote name in [tool.conan]: '{remote.name}'"
-                )
+                msg = f"duplicate conan remote name in [tool.conan]: '{remote.name}'"
                 raise ValueError(msg)
             seen.add(remote.name)
         return value
@@ -626,7 +624,13 @@ class ConanConfig(Resource[ConanConfigModel]):
 
         atomic_write_text(CONAN_HOME / "remotes.json", text, encoding="utf-8")
 
-    async def render(self, config: Config, *, image_build: bool) -> None:
+    async def render(
+        self,
+        config: Config,
+        *,
+        image_build: bool,
+        deadline: Deadline,  # noqa: ARG002
+    ) -> None:
         """Render Conan artifacts for an image build."""
         if not image_build or config.get(ConanConfig) is None:
             return

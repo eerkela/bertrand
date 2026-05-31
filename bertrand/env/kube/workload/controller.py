@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
@@ -150,7 +149,7 @@ async def ensure_workload_controller(
     *,
     config: BertrandModel | None,
     workload: WorkloadInput,
-    timeout: float,
+    deadline: Deadline,
     primary_args: Sequence[str] | None = None,
     interactive: bool = False,
 ) -> StableWorkloadController | None:
@@ -166,7 +165,7 @@ async def ensure_workload_controller(
         Workload pod intent for Deployment and CronJob topologies, or a stable
         identity for no-workload cleanup. Passing `None` makes no-workload cleanup
         a no-op because there is no resource name to target.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
     primary_args : Sequence[str] | None, optional
         Runtime arguments to append to the primary container command.
@@ -179,8 +178,6 @@ async def ensure_workload_controller(
         Converged stable controller, or `None` for Job/no-workload topology.
 
     """
-    message = "workload controller convergence timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     kind = _topology_kind(config)
 
     if kind == "deployment":
@@ -207,7 +204,7 @@ async def ensure_workload_controller(
         await _delete_stable_resources(
             kube,
             identity=identity,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     return None
 
@@ -228,24 +225,24 @@ async def _ensure_deployment_controller(
         kube,
         network=network,
         workload=pod,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await ensure_workload_claim_templates(
         kube,
         workload=pod,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await _delete_cronjob(
         kube,
         identity=pod.identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await _ensure_deployment_network(
         kube,
         network=network,
         workload=pod,
         route_plan=route_plan,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return await Deployment.upsert(
         kube,
@@ -264,7 +261,7 @@ async def _ensure_deployment_controller(
         progress_deadline_seconds=rollout.timeout if rollout is not None else None,
         revision_history_limit=rollout.history if rollout is not None else None,
         paused=rollout.paused if rollout is not None else None,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -282,17 +279,17 @@ async def _ensure_cronjob_controller(
     await ensure_workload_claim_templates(
         kube,
         workload=pod,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await _delete_network_stack(
         kube,
         identity=pod.identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await _delete_deployment(
         kube,
         identity=pod.identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return await CronJob.upsert(
         kube,
@@ -315,7 +312,7 @@ async def _ensure_cronjob_controller(
         successful_jobs_history_limit=schedule.history.success,
         failed_jobs_history_limit=schedule.history.failure,
         time_zone=schedule.timezone,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -324,7 +321,7 @@ async def create_workload_job_run(
     *,
     config: BertrandModel,
     workload: WorkloadPod,
-    timeout: float,
+    deadline: Deadline,
     primary_args: Sequence[str] | None = None,
     interactive: bool = False,
 ) -> Job:
@@ -338,7 +335,7 @@ async def create_workload_job_run(
         Validated Bertrand workload config whose topology must be `"job"`.
     workload : WorkloadPod
         Workload pod intent to render into the generated Job.
-    timeout : float
+    deadline : Deadline
         Maximum creation budget in seconds. If infinite, wait indefinitely.
     primary_args : Sequence[str] | None, optional
         Runtime arguments to append to the primary container command.
@@ -355,8 +352,6 @@ async def create_workload_job_run(
     ValueError
         If `config` does not select Job topology.
     """
-    message = "workload Job run creation timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     if _topology_kind(config) != "job":
         msg = "generated workload Job runs require Job topology"
         raise ValueError(msg)
@@ -384,12 +379,12 @@ async def _create_generated_workload_job(
     await _delete_stable_resources(
         kube,
         identity=workload.identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await ensure_workload_claim_templates(
         kube,
         workload=workload,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return await Job.create(
         kube,
@@ -409,7 +404,7 @@ async def _create_generated_workload_job(
         completion_mode=_COMPLETION_MODE[
             execution.completion if execution is not None else "all"
         ],
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -420,7 +415,7 @@ async def scale_workload(
     identity: WorkloadIdentity,
     replicas: int,
     grace_period_seconds: int,
-    timeout: float,
+    deadline: Deadline,
 ) -> WorkloadScaleResult:
     """Scale active Kubernetes workload execution for one Bertrand identity.
 
@@ -436,7 +431,7 @@ async def scale_workload(
         Requested logical workload replica count.
     grace_period_seconds : int
         Kubernetes pod termination grace period.
-    timeout : float
+    deadline : Deadline
         Maximum API-operation budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -450,8 +445,6 @@ async def scale_workload(
         If `replicas` or `grace_period_seconds` is negative, or the topology cannot
         be scaled to the requested logical count.
     """
-    message = "workload scale timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     if replicas < 0:
         msg = "workload scale replicas cannot be negative"
         raise ValueError(msg)
@@ -470,7 +463,7 @@ async def scale_workload(
             kube,
             identity=identity,
             replicas=replicas,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         jobs_deleted, pods_deleted = await _delete_active_execution_if_stopped(
             kube,
@@ -490,7 +483,7 @@ async def scale_workload(
             kube,
             identity=identity,
             suspend=replicas == 0,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         jobs_deleted, pods_deleted = await _delete_active_execution_if_stopped(
             kube,
@@ -510,7 +503,7 @@ async def scale_workload(
             kube,
             identity=identity,
             grace_period_seconds=grace_period_seconds,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     elif replicas > 0:
         msg = "cannot scale a project with no configured workload"
@@ -540,7 +533,7 @@ async def _delete_active_execution_if_stopped(
         kube,
         identity=identity,
         grace_period_seconds=grace_period_seconds,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -549,7 +542,7 @@ async def remove_workload(
     *,
     identity: WorkloadIdentity,
     grace_period_seconds: int,
-    timeout: float,
+    deadline: Deadline,
 ) -> WorkloadRemoveResult:
     """Remove managed Kubernetes workload topology for one Bertrand identity.
 
@@ -561,7 +554,7 @@ async def remove_workload(
         Stable workload identity to remove.
     grace_period_seconds : int
         Kubernetes pod termination grace period for active execution objects.
-    timeout : float
+    deadline : Deadline
         Maximum API-operation budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -574,8 +567,6 @@ async def remove_workload(
     ValueError
         If `grace_period_seconds` is negative.
     """
-    message = "workload removal timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     if grace_period_seconds < 0:
         msg = "workload removal grace period cannot be negative"
         raise ValueError(msg)
@@ -583,19 +574,19 @@ async def remove_workload(
     await _delete_network_stack(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     deployment_deleted = await _delete_deployment(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         propagation_policy="Foreground",
         grace_period_seconds=grace_period_seconds,
     )
     cronjob_deleted = await _delete_cronjob(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         propagation_policy="Orphan",
         grace_period_seconds=grace_period_seconds,
     )
@@ -603,7 +594,7 @@ async def remove_workload(
         kube,
         identity=identity,
         grace_period_seconds=grace_period_seconds,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return WorkloadRemoveResult(
         workload=identity.name,
@@ -618,7 +609,7 @@ async def ensure_workload_claim_templates(
     kube: Kube,
     *,
     workload: WorkloadPod,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Converge DRA claim templates required by a rendered workload pod.
 
@@ -628,15 +619,11 @@ async def ensure_workload_claim_templates(
         Active Kubernetes API context.
     workload : WorkloadPod
         Rendered workload pod intent.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
     """
     if not workload.resource_claim_capabilities_by_container:
         return
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="DRA ResourceClaimTemplate convergence timeout must be positive",
-    )
     for (
         container_name,
         capability_ids,
@@ -648,7 +635,7 @@ async def ensure_workload_claim_templates(
             capability_ids=capability_ids,
             container_name=container_name,
             labels=workload.labels,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
 
@@ -658,35 +645,31 @@ async def _ensure_deployment_network(
     network: BertrandModel.Network,
     workload: WorkloadPod,
     route_plan: dict[str, tuple[BertrandModel.Network.Route, int]],
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="workload network convergence timeout must be positive",
-    )
     await prune_workload_http_routes(
         kube,
         identity=workload.identity,
         route_plan=route_plan,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await ensure_workload_network_policy(
         kube,
         network=network,
         workload=workload,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         route_plan=route_plan,
     )
     await ensure_workload_service(
         kube,
         workload=workload,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await ensure_workload_http_routes(
         kube,
         network=network,
         workload=workload,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         route_plan=route_plan,
     )
 
@@ -695,26 +678,22 @@ async def _delete_network_stack(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="workload network deletion timeout must be positive",
-    )
     await delete_workload_http_routes(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await delete_workload_service(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await delete_workload_network_policy(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -722,19 +701,15 @@ async def _delete_stable_resources(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="stable workload resource deletion timeout must be positive",
-    )
     await _delete_network_stack(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
-    await _delete_deployment(kube, identity=identity, timeout=deadline.remaining())
-    await _delete_cronjob(kube, identity=identity, timeout=deadline.remaining())
+    await _delete_deployment(kube, identity=identity, deadline=deadline)
+    await _delete_cronjob(kube, identity=identity, deadline=deadline)
 
 
 async def _scale_deployment(
@@ -742,17 +717,13 @@ async def _scale_deployment(
     *,
     identity: WorkloadIdentity,
     replicas: int,
-    timeout: float,
+    deadline: Deadline,
 ) -> int | None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="workload Deployment scale timeout must be positive",
-    )
     deployment = await Deployment.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     _assert_managed(deployment, identity=identity, kind="Deployment")
     if deployment is None:
@@ -765,7 +736,7 @@ async def _scale_deployment(
         raise OSError(msg)
     if deployment.replicas == replicas:
         return None
-    await deployment.scale(kube, replicas=replicas, timeout=deadline.remaining())
+    await deployment.scale(kube, replicas=replicas, deadline=deadline)
     return replicas
 
 
@@ -774,17 +745,13 @@ async def _set_cronjob_suspended(
     *,
     identity: WorkloadIdentity,
     suspend: bool,
-    timeout: float,
+    deadline: Deadline,
 ) -> bool | None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="workload CronJob suspension timeout must be positive",
-    )
     cronjob = await CronJob.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     _assert_managed(cronjob, identity=identity, kind="CronJob")
     if cronjob is None:
@@ -797,7 +764,7 @@ async def _set_cronjob_suspended(
         raise OSError(msg)
     if cronjob.suspended == suspend:
         return None
-    await cronjob.suspend(kube, suspend=suspend, timeout=deadline.remaining())
+    await cronjob.suspend(kube, suspend=suspend, deadline=deadline)
     return suspend
 
 
@@ -806,39 +773,40 @@ async def _delete_active_execution(
     *,
     identity: WorkloadIdentity,
     grace_period_seconds: int,
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="active workload execution deletion timeout must be positive",
-    )
     jobs = await _active_workload_jobs(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     for job in jobs:
         await job.delete(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             propagation_policy="Foreground",
             grace_period_seconds=grace_period_seconds,
         )
     pods = await _active_workload_pods(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     for pod in pods:
         await pod.delete(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             grace_period_seconds=grace_period_seconds,
         )
+    remaining = deadline.remaining
+    if remaining <= 0:
+        return tuple(job.name for job in jobs), tuple(pod.name for pod in pods)
     await _wait_workload_pods_stopped(
         kube,
         identity=identity,
-        timeout=deadline.bounded(grace_period_seconds + _KILL_POD_PROOF_SECONDS),
+        deadline=Deadline(
+            min(grace_period_seconds + _KILL_POD_PROOF_SECONDS, remaining)
+        ),
     )
     return tuple(job.name for job in jobs), tuple(pod.name for pod in pods)
 
@@ -847,13 +815,13 @@ async def _active_workload_jobs(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[Job, ...]:
     jobs = await Job.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=identity.managed_selector,
-        timeout=timeout,
+        deadline=deadline,
     )
     active = tuple(job for job in jobs if not job.is_complete and not job.is_failed)
     for job in active:
@@ -865,13 +833,13 @@ async def _active_workload_pods(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[Pod, ...]:
     pods = await Pod.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=identity.managed_selector,
-        timeout=timeout,
+        deadline=deadline,
     )
     active = tuple(pod for pod in pods if not pod.is_terminal)
     for pod in active:
@@ -883,19 +851,15 @@ async def _wait_workload_pods_stopped(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message=f"timed out waiting for workload {identity.name} pods to stop",
-    )
     while True:
-        remaining = deadline.remaining()
+        remaining = deadline.remaining
         if remaining <= 0:
             pods = await _active_workload_pods(
                 kube,
                 identity=identity,
-                timeout=_KILL_POD_POLL_SECONDS,
+                deadline=Deadline(_KILL_POD_POLL_SECONDS),
             )
             diagnostics = "\n".join(
                 line for pod in pods for line in pod.status_diagnostics
@@ -906,37 +870,33 @@ async def _wait_workload_pods_stopped(
         pods = await _active_workload_pods(
             kube,
             identity=identity,
-            timeout=remaining,
+            deadline=deadline,
         )
         if not pods:
             return
-        await asyncio.sleep(deadline.bounded(_KILL_POD_POLL_SECONDS))
+        await deadline.sleep(_KILL_POD_POLL_SECONDS)
 
 
 async def _delete_deployment(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
     propagation_policy: DeletionPropagationPolicy = "Background",
     grace_period_seconds: int | None = None,
 ) -> bool:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="workload Deployment deletion timeout must be positive",
-    )
     deployment = await Deployment.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     _assert_managed(deployment, identity=identity, kind="Deployment")
     if deployment is None:
         return False
     await deployment.delete(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,
     )
@@ -947,26 +907,22 @@ async def _delete_cronjob(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
     propagation_policy: DeletionPropagationPolicy = "Background",
     grace_period_seconds: int | None = None,
 ) -> bool:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="workload CronJob deletion timeout must be positive",
-    )
     cronjob = await CronJob.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     _assert_managed(cronjob, identity=identity, kind="CronJob")
     if cronjob is None:
         return False
     await cronjob.delete(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,
     )

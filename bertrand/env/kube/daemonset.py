@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 import kubernetes
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -80,7 +82,7 @@ class DaemonSet(
         labels: Mapping[str, str],
         selector: Mapping[str, str],
         pod_template: PodTemplateSpec,
-        timeout: float,
+        deadline: Deadline,
         annotations: Mapping[str, str] | None = None,
     ) -> Self:
         """Create or patch one Kubernetes DaemonSet from intent-level fields.
@@ -99,7 +101,7 @@ class DaemonSet(
             Immutable pod selector labels for the DaemonSet.
         pod_template : PodTemplateSpec
             Pod template to render into the DaemonSet.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to `metadata.annotations`.
@@ -133,7 +135,7 @@ class DaemonSet(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 
@@ -308,7 +310,7 @@ class DaemonSet(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         minimum: int = 1,
     ) -> Self:
         """Wait until this DaemonSet reports at least `minimum` available pods.
@@ -317,7 +319,7 @@ class DaemonSet(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum wait budget in seconds. If infinite, wait indefinitely.
         minimum : int, optional
             Minimum available pod count required before returning.
@@ -340,9 +342,8 @@ class DaemonSet(
         )
         return await self._wait_until(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             predicate=lambda live: live.has_available_pods(minimum),
-            action=f"waiting for DaemonSet {namespace}/{name} availability",
             pending_message=f"DaemonSet {namespace}/{name} is not available yet",
             missing_message=(
                 f"DaemonSet {namespace}/{name} disappeared while waiting for "
@@ -357,7 +358,7 @@ class DaemonSet(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         minimum: int = 1,
     ) -> Self:
         """Wait until this DaemonSet completes rollout.
@@ -366,7 +367,7 @@ class DaemonSet(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum wait budget in seconds. If infinite, wait indefinitely.
         minimum : int, optional
             Minimum available pod count required before returning.
@@ -388,7 +389,7 @@ class DaemonSet(
         target_generation = self.generation
         return await self._wait_until(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             predicate=lambda live: (
                 (
                     target_generation <= 0
@@ -396,7 +397,6 @@ class DaemonSet(
                 )
                 and live.rollout_ready(minimum)
             ),
-            action=f"waiting for DaemonSet {namespace}/{name} rollout",
             pending_message=f"DaemonSet {namespace}/{name} rollout is not complete yet",
             missing_message=(
                 f"DaemonSet {namespace}/{name} disappeared while waiting for rollout"

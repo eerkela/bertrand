@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.git import until
+from bertrand.env.git import Deadline, until
 from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
 
 if TYPE_CHECKING:
@@ -46,7 +46,7 @@ async def create_volume_snapshot_class(
     name: str,
     driver: str,
     deletion_policy: str,
-    timeout: float,
+    deadline: Deadline,
     parameters: Mapping[str, str] | None = None,
     labels: Mapping[str, str] | None = None,
 ) -> CustomObject:
@@ -68,7 +68,7 @@ async def create_volume_snapshot_class(
     return await VOLUME_SNAPSHOT_CLASS_RESOURCE.create_manifest(
         kube,
         manifest=manifest,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -101,7 +101,7 @@ async def create_volume_snapshot(
     name: str,
     source_claim: str,
     snapshot_class: str,
-    timeout: float,
+    deadline: Deadline,
     labels: Mapping[str, str] | None = None,
     annotations: Mapping[str, str] | None = None,
 ) -> CustomObject:
@@ -122,7 +122,7 @@ async def create_volume_snapshot(
         },
         labels=labels,
         annotations=annotations,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -130,7 +130,7 @@ async def delete_volume_snapshot(
     kube: Kube,
     snapshot: CustomObject,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Delete one VolumeSnapshot."""
     namespace, name = _require_volume_snapshot_namespace_name(
@@ -140,7 +140,7 @@ async def delete_volume_snapshot(
         kube,
         namespace=namespace,
         name=name,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -148,7 +148,7 @@ async def refresh_volume_snapshot(
     kube: Kube,
     snapshot: CustomObject,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> CustomObject | None:
     """Re-read one VolumeSnapshot.
 
@@ -164,7 +164,7 @@ async def refresh_volume_snapshot(
         kube,
         namespace=namespace,
         name=name,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -172,7 +172,7 @@ async def wait_volume_snapshot_ready(
     kube: Kube,
     snapshot: CustomObject,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> CustomObject:
     """Wait until one VolumeSnapshot reports `readyToUse`.
 
@@ -190,8 +190,8 @@ async def wait_volume_snapshot_ready(
         snapshot, "wait for VolumeSnapshot"
     )
 
-    async def ready(remaining: float) -> CustomObject:
-        live = await refresh_volume_snapshot(kube, snapshot, timeout=remaining)
+    async def ready(attempt_deadline: Deadline) -> CustomObject:
+        live = await refresh_volume_snapshot(kube, snapshot, deadline=attempt_deadline)
         if live is None:
             msg = f"VolumeSnapshot {namespace}/{name} disappeared before ready"
             raise OSError(msg)
@@ -207,9 +207,8 @@ async def wait_volume_snapshot_ready(
     try:
         return await until(
             ready,
-            timeout=timeout,
-            interval=VOLUME_SNAPSHOT_WAIT_INTERVAL_SECONDS,
-            action=f"waiting for VolumeSnapshot {namespace}/{name}",
+            deadline=deadline,
+            delay=VOLUME_SNAPSHOT_WAIT_INTERVAL_SECONDS,
         )
     except TimeoutError as err:
         msg = f"timed out waiting for VolumeSnapshot {namespace}/{name}"
@@ -220,7 +219,7 @@ async def wait_volume_snapshot_deleted(
     kube: Kube,
     snapshot: CustomObject,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Wait until one VolumeSnapshot is deleted."""
     namespace, name = _require_volume_snapshot_namespace_name(
@@ -228,9 +227,9 @@ async def wait_volume_snapshot_deleted(
     )
     await VOLUME_SNAPSHOT_RESOURCE.wait_deleted(
         label=f"VolumeSnapshot {namespace}/{name}",
-        timeout=timeout,
+        deadline=deadline,
         refresh=lambda remaining: refresh_volume_snapshot(
-            kube, snapshot, timeout=remaining
+            kube, snapshot, deadline=remaining
         ),
     )
 

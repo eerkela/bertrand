@@ -63,29 +63,25 @@ _DEV_LABELS = {
 }
 
 
-async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
+async def ensure_dev_backend(kube: Kube, *, deadline: Deadline) -> None:
     """Converge Kubernetes dev-session CRDs and RBAC.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="dev-session backend convergence timeout must be positive",
-    )
     await asyncio.gather(
-        CODE_OPEN_RESOURCE.ensure_crd(kube, timeout=deadline.remaining()),
+        CODE_OPEN_RESOURCE.ensure_crd(kube, deadline=deadline),
         ServiceAccount.upsert(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DEV_SERVICE_ACCOUNT,
             labels=_DEV_LABELS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         ROLE_RESOURCE.upsert(
             kube,
@@ -98,7 +94,7 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
                 labels=_DEV_LABELS,
                 rules=_dev_namespace_rules(),
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         CLUSTER_ROLE_RESOURCE.upsert(
             kube,
@@ -110,7 +106,7 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
                 labels=_DEV_LABELS,
                 rules=_dev_cluster_rules(),
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
     await asyncio.gather(
@@ -128,7 +124,7 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
                 service_account_namespace=BERTRAND_NAMESPACE,
                 labels=_DEV_LABELS,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         CLUSTER_ROLE_BINDING_RESOURCE.upsert(
             kube,
@@ -143,7 +139,7 @@ async def ensure_dev_backend(kube: Kube, *, timeout: float) -> None:
                 service_account_namespace=BERTRAND_NAMESPACE,
                 labels=_DEV_LABELS,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
 
@@ -158,7 +154,7 @@ async def create_project_dev_session(
     host_id: str,
     command: Sequence[str],
     interactive: bool,
-    timeout: float,
+    deadline: Deadline,
     node: str | None = None,
 ) -> tuple[Pod, str]:
     """Create one generated Kubernetes Pod for a development session.
@@ -181,7 +177,7 @@ async def create_project_dev_session(
         Primary-container command override.
     interactive : bool
         Whether to render the primary container for TTY attachment.
-    timeout : float
+    deadline : Deadline
         Maximum creation budget in seconds.
     node : str | None, optional
         Optional Kubernetes node name used for node-scoped capabilities.
@@ -201,11 +197,7 @@ async def create_project_dev_session(
     if not config:
         msg = "dev session creation requires an active config context"
         raise RuntimeError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="dev session creation timeout must be positive",
-    )
-    await ensure_dev_backend(kube, timeout=deadline.remaining())
+    await ensure_dev_backend(kube, deadline=deadline)
 
     spec = project_image_spec(config, repo_id=repo_id)
     image = _validate_image_ref(image_ref, image=spec.image)
@@ -227,7 +219,7 @@ async def create_project_dev_session(
     await ensure_workload_claim_templates(
         kube,
         workload=workload,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     name = dev_session_name(session_id)
     labels = _dev_session_labels(session_id=session_id, host_id=host_id)
@@ -245,7 +237,7 @@ async def create_project_dev_session(
         name=name,
         labels=labels,
         pod_template=template,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return pod, workload.primary_container
 
@@ -255,7 +247,7 @@ async def wait_dev_session_running(
     pod: Pod,
     *,
     primary_container: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> Pod:
     """Wait until a dev Pod is running and attachable.
 
@@ -267,7 +259,7 @@ async def wait_dev_session_running(
         Created development Pod.
     primary_container : str
         Container name targeted by shell attachment and editor requests.
-    timeout : float
+    deadline : Deadline
         Maximum wait budget in seconds.
 
     Returns
@@ -282,17 +274,13 @@ async def wait_dev_session_running(
     OSError
         If the Pod reaches a terminal phase before it is attachable.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message=f"timed out waiting for dev session Pod {pod.name!r}",
-    )
     current = pod
     while True:
-        remaining = deadline.remaining()
+        remaining = deadline.remaining
         if remaining <= 0:
             msg = f"timed out waiting for dev session Pod {pod.name!r}"
             raise TimeoutError(msg)
-        live = await current.refresh(kube, timeout=remaining)
+        live = await current.refresh(kube, deadline=deadline)
         if live is None:
             msg = f"dev session Pod {pod.name!r} disappeared before running"
             raise OSError(msg)
@@ -305,14 +293,14 @@ async def wait_dev_session_running(
         if live.phase == "Running" and live.container_running(primary_container):
             return live
         current = live
-        await asyncio.sleep(deadline.bounded(DEV_SESSION_POLL_SECONDS))
+        await deadline.sleep(DEV_SESSION_POLL_SECONDS)
 
 
 async def delete_dev_backend_state(
     kube: Kube,
     *,
     host_id: str | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Delete volatile dev-session state for this host.
 
@@ -323,16 +311,12 @@ async def delete_dev_backend_state(
     host_id : str | None
         Optional host identity. If omitted, all Bertrand-managed dev-session Pods
         are left untouched.
-    timeout : float
+    deadline : Deadline
         Maximum cleanup budget in seconds.
 
     """
     if host_id is None:
         return
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="dev-session backend cleanup timeout must be positive",
-    )
     pod_labels = {
         DEV_SESSION_LABEL: DEV_SESSION_LABEL_VALUE,
         DEV_SESSION_HOST_LABEL: _hash_label(host_id),
@@ -341,12 +325,12 @@ async def delete_dev_backend_state(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=pod_labels,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     for pod in pods:
         await pod.delete(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             grace_period_seconds=1,
         )
 
@@ -354,7 +338,7 @@ async def delete_dev_backend_state(
         requests = await CODE_OPEN_RESOURCE.list(
             kube,
             labels=code_open_host_labels(host_id),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     except OSError:
         return
@@ -363,7 +347,7 @@ async def delete_dev_backend_state(
         await CODE_OPEN_RESOURCE.delete_by_name(
             kube,
             name=request.name,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
 

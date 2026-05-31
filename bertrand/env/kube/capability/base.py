@@ -224,7 +224,7 @@ async def list_capability_secrets(
     scope: CapabilityScope | None = None,
     capability_id: KubeName | None = None,
     scope_value: str | None = None,
-    timeout: float,
+    deadline: Deadline,
 ) -> list[tuple[CapabilityRef, Secret]]:
     """List managed capability Secrets with optional identity filtering.
 
@@ -240,7 +240,7 @@ async def list_capability_secrets(
         Optional host-agnostic capability ID filter.
     scope_value : str | None, optional
         Optional scope value filter for worktree, repository, or node scopes.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -253,10 +253,6 @@ async def list_capability_secrets(
     ValueError
         If a scope-value filter is supplied without a compatible scope.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="capability Secret list timeout must be positive",
-    )
     labels = {CAPABILITY_MANAGED_V1: "true"}
     if kind is not None:
         labels[CAPABILITY_KIND_V1] = _check_kind(kind)
@@ -282,7 +278,7 @@ async def list_capability_secrets(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=labels,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     out: list[tuple[CapabilityRef, Secret]] = []
     for secret in secrets:
@@ -304,7 +300,7 @@ async def resolve_capability_secret(
     repo_id: str | None = None,
     host_id: str | None = None,
     required: bool = True,
-    timeout: float,
+    deadline: Deadline,
 ) -> Secret | None:
     """Resolve a capability Secret using Bertrand's four-tier scope precedence.
 
@@ -324,7 +320,7 @@ async def resolve_capability_secret(
         Optional Bertrand host UUID for the third lookup tier.
     required : bool, default=True
         If true, raise when no capability is found. If false, return `None`.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -337,10 +333,6 @@ async def resolve_capability_secret(
     OSError
         If a required capability is missing.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="capability Secret resolution timeout must be positive",
-    )
     refs: list[CapabilityRef] = []
     if worktree_id is not None:
         refs.append(
@@ -376,7 +368,7 @@ async def resolve_capability_secret(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=ref.name,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         if secret is not None:
             capability_ref_from_secret(secret, expected=ref)
@@ -394,7 +386,7 @@ async def delete_capabilities_for_scope(
     *,
     scope: CapabilityScope,
     scope_value: str | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Delete managed capabilities for one exact parent scope.
 
@@ -407,7 +399,7 @@ async def delete_capabilities_for_scope(
     scope_value : str | None
         Required scope value for worktree, repository, and node scopes. Must be
         omitted for shared scope.
-    timeout : float
+    deadline : Deadline
         Maximum deletion budget.
 
     Raises
@@ -415,10 +407,6 @@ async def delete_capabilities_for_scope(
     ValueError
         If the scope/scope-value combination is invalid.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="capability Secret cleanup timeout must be positive",
-    )
     if scope == "shared":
         if scope_value is not None:
             msg = "shared capability cleanup cannot include a scope value"
@@ -430,11 +418,11 @@ async def delete_capabilities_for_scope(
         kube,
         scope=scope,
         scope_value=scope_value,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     for ref, secret in capabilities:
         capability_ref_from_secret(secret, expected=ref)
-        await secret.delete(kube, timeout=deadline.remaining())
+        await secret.delete(kube, deadline=deadline)
 
 
 def _check_kind(kind: str) -> CapabilityKind:

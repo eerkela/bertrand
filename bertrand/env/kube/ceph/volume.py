@@ -19,7 +19,13 @@ from pydantic import (
 )
 
 from bertrand.env.config.core import _check_uuid
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, REPO_ID_ENV, Deadline
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    BERTRAND_NAMESPACE,
+    REPO_ID_LABEL,
+    Deadline,
+)
 from bertrand.env.kube.api.client import is_missing_api_resource
 from bertrand.env.kube.build.request import (
     BUILDKIT_BUILD_RESOURCE,
@@ -48,7 +54,6 @@ from bertrand.env.kube.volume import (
 from bertrand.env.kube.workload.base import (
     WORKLOAD_LABEL,
     WORKLOAD_LABEL_VALUE,
-    WORKLOAD_REPO_LABEL,
 )
 
 if TYPE_CHECKING:
@@ -56,7 +61,7 @@ if TYPE_CHECKING:
 
     from bertrand.env.kube.api.client import Kube
 
-REPO_VOLUME_ENV: str = "BERTRAND_REPO_VOLUME"
+REPO_VOLUME_CLAIM_LABEL: str = "BERTRAND_REPO_VOLUME"
 CEPHFS_STORAGE_CLASS_PREFERENCES: tuple[str, ...] = ("cephfs", "rook-cephfs")
 DEFAULT_VOLUME_SIZE = "16Mi"
 REPOSITORY_VOLUME_GROUP = "ceph.bertrand.dev"
@@ -77,8 +82,8 @@ REPOSITORY_BUILD_SOURCE_LABEL_VALUE = "v1"
 REPOSITORY_VOLUME_GC_GRACE_SECONDS = 604_800
 REPOSITORY_VOLUME_GC_LIMIT = 4
 _REPOSITORY_VOLUME_LABELS = {
-    BERTRAND_ENV: "1",
-    REPO_VOLUME_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+    REPO_VOLUME_CLAIM_LABEL: BERTRAND_LABEL_MANAGED,
     REPOSITORY_VOLUME_LABEL: REPOSITORY_VOLUME_LABEL_VALUE,
 }
 
@@ -259,17 +264,20 @@ def _assert_managed_repository_volume_claim(
     labels = pvc.labels
     storage_class_name = pvc.storage_class_name
     access_modes = pvc.access_modes
-    if labels.get(BERTRAND_ENV) != "1" or labels.get(REPO_VOLUME_ENV) != "1":
+    if (
+        labels.get(BERTRAND_LABEL) != BERTRAND_LABEL_MANAGED
+        or labels.get(REPO_VOLUME_CLAIM_LABEL) != BERTRAND_LABEL_MANAGED
+    ):
         msg = (
             f"cluster PVC {claim_name!r} collides with Bertrand volume claim, but "
             "is not managed by Bertrand"
         )
         raise OSError(msg)
-    actual_repo_id = labels.get(REPO_ID_ENV)
+    actual_repo_id = labels.get(REPO_ID_LABEL)
     if actual_repo_id != repo_id:
         msg = (
             f"cluster PVC {claim_name!r} has mismatched repo identity label "
-            f"{REPO_ID_ENV!r}: expected {repo_id!r}, got {actual_repo_id!r}"
+            f"{REPO_ID_LABEL!r}: expected {repo_id!r}, got {actual_repo_id!r}"
         )
         raise OSError(msg)
     if storage_class is not None and storage_class_name != storage_class:
@@ -287,7 +295,7 @@ async def ensure_repository_volume_claim(
     kube: Kube,
     *,
     repo_id: str,
-    timeout: float,
+    deadline: Deadline,
     size_request: str,
 ) -> PersistentVolumeClaim:
     """Ensure a deterministic, cluster-wide RWX claim exists.
@@ -298,7 +306,7 @@ async def ensure_repository_volume_claim(
         Active Kubernetes API context.
     repo_id : str
         Repository UUID used to derive the claim name and ownership labels.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
     size_request : str
         Kubernetes storage request to apply to the claim.
@@ -316,10 +324,6 @@ async def ensure_repository_volume_claim(
         If the repository ID or storage request is invalid.
     """
     repo_id = _check_uuid(repo_id)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume claim convergence timeout must be positive",
-    )
     size_request = size_request.strip()
     if not size_request:
         msg = "size request cannot be empty"
@@ -327,7 +331,7 @@ async def ensure_repository_volume_claim(
     claim_name = repo_volume_claim_name(repo_id)
     storage = await StorageClass.select(
         kube=kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         preferences=CEPHFS_STORAGE_CLASS_PREFERENCES,
         require_expansion=True,
     )
@@ -347,11 +351,11 @@ async def ensure_repository_volume_claim(
         storage_class=storage_class,
         storage_request=size_request,
         labels={
-            BERTRAND_ENV: "1",
-            REPO_VOLUME_ENV: "1",
-            REPO_ID_ENV: repo_id,
+            BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+            REPO_VOLUME_CLAIM_LABEL: BERTRAND_LABEL_MANAGED,
+            REPO_ID_LABEL: repo_id,
         },
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     _assert_managed_repository_volume_claim(
         pvc,
@@ -367,7 +371,7 @@ async def list_repository_volume_claims(
     kube: Kube,
     repo_id: str | None,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> list[PersistentVolumeClaim]:
     """List repository volume claims currently present in the cluster.
 
@@ -377,7 +381,7 @@ async def list_repository_volume_claims(
         Active Kubernetes API context.
     repo_id : str | None
         Optional repository UUID used to filter the claim list.
-    timeout : float
+    deadline : Deadline
         Maximum API budget in seconds.
 
     Returns
@@ -390,26 +394,25 @@ async def list_repository_volume_claims(
     OSError
         If a discovered PVC is not a valid managed repository volume.
     """
-    labels = {BERTRAND_ENV: "1", REPO_VOLUME_ENV: "1"}
+    labels = {
+        BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+        REPO_VOLUME_CLAIM_LABEL: BERTRAND_LABEL_MANAGED,
+    }
     if repo_id is not None:
         repo_id = _check_uuid(repo_id)
-        labels[REPO_ID_ENV] = repo_id
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume claim listing timeout must be positive",
-    )
+        labels[REPO_ID_LABEL] = repo_id
     pvcs = await PersistentVolumeClaim.list(
         kube=kube,
         namespaces=(BERTRAND_NAMESPACE,),
-        timeout=deadline.remaining(),
+        deadline=deadline,
         labels=labels,
     )
     out: list[PersistentVolumeClaim] = []
     for pvc in pvcs:
         labels = pvc.labels
-        repo_id = labels.get(REPO_ID_ENV, "")
+        repo_id = labels.get(REPO_ID_LABEL, "")
         if not repo_id:
-            msg = f"cluster PVC {pvc.name!r} is missing label {REPO_ID_ENV!r}"
+            msg = f"cluster PVC {pvc.name!r} is missing label {REPO_ID_LABEL!r}"
             raise OSError(msg)
         repo_id = _check_uuid(repo_id)
         _assert_managed_repository_volume_claim(
@@ -421,7 +424,7 @@ async def list_repository_volume_claims(
         )
         out.append(pvc)
 
-    out.sort(key=lambda pvc: (pvc.labels.get(REPO_ID_ENV, ""), pvc.name))
+    out.sort(key=lambda pvc: (pvc.labels.get(REPO_ID_LABEL, ""), pvc.name))
     return out
 
 
@@ -429,7 +432,7 @@ async def delete_repository_volume_claim(
     kube: Kube,
     *,
     pvc: PersistentVolumeClaim,
-    timeout: float,
+    deadline: Deadline,
     force: bool,
 ) -> None:
     """Delete a repository volume claim from the cluster.
@@ -440,7 +443,7 @@ async def delete_repository_volume_claim(
         Active Kubernetes API context.
     pvc : PersistentVolumeClaim
         Managed repository PVC to delete.
-    timeout : float
+    deadline : Deadline
         Maximum deletion budget in seconds.
     force : bool
         Whether to skip the active-pod safety check.
@@ -450,17 +453,13 @@ async def delete_repository_volume_claim(
     OSError
         If the PVC is still in use by active pods.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume deletion timeout must be positive",
-    )
-    repo_id = _check_uuid(pvc.labels.get(REPO_ID_ENV, ""))
+    repo_id = _check_uuid(pvc.labels.get(REPO_ID_LABEL, ""))
     if not force:
         pods = await Pod.list(
             kube=kube,
             namespaces=(BERTRAND_NAMESPACE,),
-            timeout=deadline.remaining(),
-            labels={BERTRAND_ENV: "1", REPO_ID_ENV: repo_id},
+            deadline=deadline,
+            labels={BERTRAND_LABEL: BERTRAND_LABEL_MANAGED, REPO_ID_LABEL: repo_id},
         )
         active = {
             claim_name
@@ -477,14 +476,14 @@ async def delete_repository_volume_claim(
             )
             raise OSError(msg)
 
-    await pvc.delete(kube=kube, timeout=deadline.remaining())
+    await pvc.delete(kube=kube, deadline=deadline)
 
 
 async def resolve_repository_volume_ceph_path(
     kube: Kube,
     *,
     pvc: PersistentVolumeClaim,
-    timeout: float,
+    deadline: Deadline,
 ) -> PosixPath:
     """Resolve a repo claim's CephFS path from bound PVC/PV metadata.
 
@@ -494,7 +493,7 @@ async def resolve_repository_volume_ceph_path(
         Active Kubernetes API context.
     pvc : PersistentVolumeClaim
         Managed repository PVC to inspect.
-    timeout : float
+    deadline : Deadline
         Maximum resolution budget in seconds.
 
     Returns
@@ -507,10 +506,6 @@ async def resolve_repository_volume_ceph_path(
     OSError
         If PVC/PV metadata cannot identify a valid CephFS path.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume Ceph path resolution timeout must be positive",
-    )
     name = pvc.name
     namespace = pvc.namespace
     if not name:
@@ -521,11 +516,11 @@ async def resolve_repository_volume_ceph_path(
             f"cannot resolve Ceph path for PVC {name!r} with missing metadata.namespace"
         )
         raise OSError(msg)
-    pvc = await pvc.wait_bound(kube=kube, timeout=deadline.remaining())
+    pvc = await pvc.wait_bound(kube=kube, deadline=deadline)
     volume_name = pvc.volume_name
     volume = await PersistentVolume.wait_present(
         kube=kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         name=volume_name,
     )
     driver = volume.csi_driver
@@ -580,7 +575,7 @@ class _RepositoryVolumeSpec(BaseModel):
     def labels(self) -> dict[str, str]:
         return {
             **_REPOSITORY_VOLUME_LABELS,
-            REPO_ID_ENV: self.repo_id,
+            REPO_ID_LABEL: self.repo_id,
             REPOSITORY_VOLUME_PHASE_LABEL: self.phase.lower(),
         }
 
@@ -727,10 +722,10 @@ class CephRepositoryStateRecord(BaseModel):
             )
             raise OSError(msg)
         labels = record.metadata.labels
-        if labels.get(REPO_ID_ENV) != repo_id:
+        if labels.get(REPO_ID_LABEL) != repo_id:
             msg = (
                 f"malformed {REPOSITORY_STATE_KIND} {record.name!r}: repo label "
-                f"{REPO_ID_ENV!r} does not match spec repo_id {repo_id!r}"
+                f"{REPO_ID_LABEL!r} does not match spec repo_id {repo_id!r}"
             )
             raise OSError(msg)
         label_phase = labels.get(REPOSITORY_VOLUME_PHASE_LABEL, "").strip()
@@ -874,21 +869,17 @@ class _RepositoryVolumeGcInventory:
         cls,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
     ) -> _RepositoryVolumeGcInventory:
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="repository volume GC inventory timeout must be positive",
-        )
         buildkit_task = asyncio.create_task(
-            _list_buildkit_records(kube, timeout=deadline.remaining())
+            _list_buildkit_records(kube, deadline=deadline)
         )
         deployment_task = asyncio.create_task(
             Deployment.list(
                 kube,
                 namespaces=(BERTRAND_NAMESPACE,),
                 labels={WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE},
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         )
         cronjob_task = asyncio.create_task(
@@ -896,7 +887,7 @@ class _RepositoryVolumeGcInventory:
                 kube,
                 namespaces=(BERTRAND_NAMESPACE,),
                 labels={WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE},
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         )
         job_task = asyncio.create_task(
@@ -904,14 +895,14 @@ class _RepositoryVolumeGcInventory:
                 kube,
                 namespaces=(BERTRAND_NAMESPACE,),
                 labels={WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE},
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         )
         pod_task = asyncio.create_task(
             Pod.list(
                 kube,
                 namespaces=(BERTRAND_NAMESPACE,),
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         )
         snapshot_task = asyncio.create_task(
@@ -919,13 +910,13 @@ class _RepositoryVolumeGcInventory:
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 labels={
-                    BERTRAND_ENV: "1",
+                    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
                     REPOSITORY_SNAPSHOT_LABEL: REPOSITORY_SNAPSHOT_LABEL_VALUE,
                     REPOSITORY_SNAPSHOT_PURPOSE_LABEL: (
                         REPOSITORY_SNAPSHOT_PURPOSE_RETAINED
                     ),
                 },
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         )
         await asyncio.gather(
@@ -954,20 +945,17 @@ class _RepositoryVolumeGcInventory:
 
     def workload_blocker(self, repo_id: str) -> str | None:
         repo_id = _check_uuid(repo_id)
-        repo_label = hashlib.sha256(repo_id.encode()).hexdigest()[:16]
         deployments = [
             item
             for item in self.deployments
-            if item.labels.get(WORKLOAD_REPO_LABEL) == repo_label
+            if item.labels.get(REPO_ID_LABEL) == repo_id
         ]
         if deployments:
             names = ", ".join(item.name for item in deployments[:3])
             return f"managed Deployments still reference repository {repo_id}: {names}"
 
         cronjobs = [
-            item
-            for item in self.cronjobs
-            if item.labels.get(WORKLOAD_REPO_LABEL) == repo_label
+            item for item in self.cronjobs if item.labels.get(REPO_ID_LABEL) == repo_id
         ]
         if cronjobs:
             names = ", ".join(item.name for item in cronjobs[:3])
@@ -977,7 +965,7 @@ class _RepositoryVolumeGcInventory:
             item
             for item in self.jobs
             if (
-                item.labels.get(WORKLOAD_REPO_LABEL) == repo_label
+                item.labels.get(REPO_ID_LABEL) == repo_id
                 and not item.is_complete
                 and not item.is_failed
             )
@@ -1022,7 +1010,7 @@ class _RepositoryVolumeGcInventory:
     def has_retained_snapshot(self, repo_id: str) -> bool:
         repo_id = _check_uuid(repo_id)
         return any(
-            snapshot.labels.get(REPO_ID_ENV) == repo_id
+            snapshot.labels.get(REPO_ID_LABEL) == repo_id
             for snapshot in self.retained_snapshots
         )
 
@@ -1030,10 +1018,10 @@ class _RepositoryVolumeGcInventory:
 async def _list_buildkit_records(
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> list[BuildKitBuildRecord]:
     try:
-        return await BUILDKIT_BUILD_RESOURCE.list(kube, timeout=timeout)
+        return await BUILDKIT_BUILD_RESOURCE.list(kube, deadline=deadline)
     except OSError as err:
         if is_missing_api_resource(err):
             return []
@@ -1044,7 +1032,7 @@ async def ensure_repository_volume_record(
     kube: Kube,
     *,
     repo_id: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephRepositoryStateRecord:
     """Mark a managed repository volume as initializing or recently observed.
 
@@ -1054,7 +1042,7 @@ async def ensure_repository_volume_record(
         Active Kubernetes API context.
     repo_id : str
         Stable repository UUID.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     Returns
@@ -1063,21 +1051,17 @@ async def ensure_repository_volume_record(
         Lifecycle record for the repository volume.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume lifecycle convergence timeout must be positive",
-    )
     repo_id = _check_uuid(repo_id)
     claim_name = repo_volume_claim_name(repo_id)
     await REPOSITORY_STATE_RESOURCE.ensure_crd(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     existing = await REPOSITORY_STATE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     now = datetime.now(UTC)
     spec = _RepositoryVolumeSpec(
@@ -1098,7 +1082,7 @@ async def ensure_repository_volume_record(
         name=claim_name,
         spec=spec,
         labels=spec.labels,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -1106,7 +1090,7 @@ async def mark_repository_volume_ready(
     kube: Kube,
     *,
     repo_id: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephRepositoryStateRecord:
     """Mark a repository volume as finalized and safe for normal recovery.
 
@@ -1116,7 +1100,7 @@ async def mark_repository_volume_ready(
         Active Kubernetes API context.
     repo_id : str
         Stable repository UUID.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     Returns
@@ -1125,21 +1109,17 @@ async def mark_repository_volume_ready(
         Ready lifecycle record for the repository volume.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume phase update timeout must be positive",
-    )
     repo_id = _check_uuid(repo_id)
     claim_name = repo_volume_claim_name(repo_id)
     await REPOSITORY_STATE_RESOURCE.ensure_crd(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     existing = await REPOSITORY_STATE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     now = datetime.now(UTC)
     if existing is None:
@@ -1156,7 +1136,7 @@ async def mark_repository_volume_ready(
             name=claim_name,
             spec=spec,
             labels=spec.labels,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     spec = existing.spec.model_copy(
@@ -1172,7 +1152,7 @@ async def mark_repository_volume_ready(
         name=claim_name,
         spec=spec,
         labels=spec.labels,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -1181,7 +1161,7 @@ async def mark_repository_volume_failed(
     *,
     repo_id: str,
     last_error: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephRepositoryStateRecord | None:
     """Mark an incomplete repository volume as failed.
 
@@ -1196,7 +1176,7 @@ async def mark_repository_volume_failed(
         Stable repository UUID.
     last_error : str
         Diagnostic describing the failed initialization stage.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     Returns
@@ -1205,23 +1185,19 @@ async def mark_repository_volume_failed(
         Updated failed record, existing ready/retired record, or None if the volume
         has not yet been recorded.
     """
-    if timeout <= 0:
+    if deadline.remaining <= 0:
         return None
     repo_id = _check_uuid(repo_id)
     claim_name = repo_volume_claim_name(repo_id)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume failed phase update timeout must be positive",
-    )
     await REPOSITORY_STATE_RESOURCE.ensure_crd(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     record = await REPOSITORY_STATE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if record is None or record.spec.phase in ("Ready", "Retired"):
         return record
@@ -1239,7 +1215,7 @@ async def mark_repository_volume_failed(
         name=claim_name,
         spec=spec,
         labels=spec.labels,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -1250,7 +1226,7 @@ async def ensure_repository_mount_record(
     host_id: str,
     alias_path: str,
     node_name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephRepositoryMount:
     """Mark a host repository mount alias as active and recently observed.
 
@@ -1266,7 +1242,7 @@ async def ensure_repository_mount_record(
         Absolute host path used as the repository mount alias.
     node_name : str
         Best-effort local node name to store for diagnostics.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     Returns
@@ -1275,23 +1251,19 @@ async def ensure_repository_mount_record(
         Active lifecycle record for the host alias.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository mount lifecycle convergence timeout must be positive",
-    )
     repo_id = _check_uuid(repo_id)
     host_id = _check_uuid(host_id)
     alias_path = repository_mount_alias_path(alias_path)
     claim_name = repo_volume_claim_name(repo_id)
     await REPOSITORY_STATE_RESOURCE.ensure_crd(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     state = await REPOSITORY_STATE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if state is None:
         now = datetime.now(UTC)
@@ -1309,7 +1281,7 @@ async def ensure_repository_mount_record(
             name=claim_name,
             spec=spec,
             labels=spec.labels,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     name = repository_mount_name(repo_id, host_id, alias_path)
     existing = state.status.mounts.get(name)
@@ -1332,7 +1304,7 @@ async def ensure_repository_mount_record(
         namespace=BERTRAND_NAMESPACE,
         name=state.name,
         status=state.status.with_mount(entry),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return state.status.mounts[name]
 
@@ -1343,7 +1315,7 @@ async def ensure_repository_worktree_record(
     repo_id: str,
     worktree_id: str,
     worktree: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephRepositoryWorktree:
     """Mark a repository worktree as active and recently observed.
 
@@ -1357,7 +1329,7 @@ async def ensure_repository_worktree_record(
         Persistent worktree UUID stored in the worktree metadata directory.
     worktree : str
         Repository-relative worktree path.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     Returns
@@ -1366,23 +1338,19 @@ async def ensure_repository_worktree_record(
         Active lifecycle record for the worktree.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository worktree lifecycle convergence timeout must be positive",
-    )
     repo_id = _check_uuid(repo_id)
     worktree_id = _check_uuid(worktree_id)
     worktree = repository_worktree_path(worktree)
     claim_name = repo_volume_claim_name(repo_id)
     await REPOSITORY_STATE_RESOURCE.ensure_crd(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     state = await REPOSITORY_STATE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if state is None:
         now = datetime.now(UTC)
@@ -1400,7 +1368,7 @@ async def ensure_repository_worktree_record(
             name=claim_name,
             spec=spec,
             labels=spec.labels,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     name = repository_worktree_name(repo_id, worktree_id)
     existing = state.status.worktrees.get(name)
@@ -1422,7 +1390,7 @@ async def ensure_repository_worktree_record(
         namespace=BERTRAND_NAMESPACE,
         name=state.name,
         status=state.status.with_worktree(entry),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return state.status.worktrees[name]
 
@@ -1431,7 +1399,7 @@ async def retire_repository_mount_record(
     kube: Kube,
     *,
     record: CephRepositoryMount,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephRepositoryMount:
     """Retire one repository mount lifecycle record without deleting storage.
 
@@ -1441,7 +1409,7 @@ async def retire_repository_mount_record(
         Active Kubernetes API context.
     record : CephRepositoryMount
         Mount lifecycle record to retire.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -1450,15 +1418,11 @@ async def retire_repository_mount_record(
         Retired lifecycle record.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository mount retirement timeout must be positive",
-    )
     repo_id = _check_uuid(record.repo_id)
     claim_name = repo_volume_claim_name(repo_id)
     await REPOSITORY_STATE_RESOURCE.ensure_crd(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     retired_at = record.retired_at or datetime.now(UTC)
     entry = record.model_copy(
@@ -1473,7 +1437,7 @@ async def retire_repository_mount_record(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if state is None:
         now = datetime.now(UTC)
@@ -1491,14 +1455,14 @@ async def retire_repository_mount_record(
             name=claim_name,
             spec=spec,
             labels=spec.labels,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     state = await REPOSITORY_STATE_RESOURCE.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=state.name,
         status=state.status.with_mount(entry),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return state.status.mounts[record.name]
 
@@ -1509,7 +1473,7 @@ async def retire_repository_mount(
     repo_id: str,
     host_id: str,
     alias_path: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephRepositoryMount | None:
     """Retire one repository mount lifecycle record by identity.
 
@@ -1523,7 +1487,7 @@ async def retire_repository_mount(
         Durable Bertrand host UUID.
     alias_path : str
         Absolute host path used as the repository mount alias.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -1532,23 +1496,19 @@ async def retire_repository_mount(
         Retired lifecycle record, or None if the record does not exist.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository mount retirement timeout must be positive",
-    )
     repo_id = _check_uuid(repo_id)
     host_id = _check_uuid(host_id)
     alias_path = repository_mount_alias_path(alias_path)
     claim_name = repo_volume_claim_name(repo_id)
     await REPOSITORY_STATE_RESOURCE.ensure_crd(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     state = await REPOSITORY_STATE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if state is None:
         return None
@@ -1571,7 +1531,7 @@ async def retire_repository_mount(
         namespace=BERTRAND_NAMESPACE,
         name=state.name,
         status=state.status.with_mount(entry),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return state.status.mounts[record.name]
 
@@ -1580,7 +1540,7 @@ async def delete_repository_snapshot_artifacts(
     kube: Kube,
     *,
     repo_id: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Delete all snapshot resources associated with one repository.
 
@@ -1590,47 +1550,43 @@ async def delete_repository_snapshot_artifacts(
         Active Kubernetes API context.
     repo_id : str
         Stable repository UUID.
-    timeout : float
+    deadline : Deadline
         Maximum deletion budget in seconds.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository snapshot artifact deletion timeout must be positive",
-    )
     repo_id = _check_uuid(repo_id)
     pvcs = await PersistentVolumeClaim.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels={
-            BERTRAND_ENV: "1",
-            REPO_ID_ENV: repo_id,
+            BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+            REPO_ID_LABEL: repo_id,
             REPOSITORY_BUILD_SOURCE_LABEL: REPOSITORY_BUILD_SOURCE_LABEL_VALUE,
         },
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     for pvc in sorted(pvcs, key=lambda item: item.name):
-        await pvc.delete(kube, timeout=deadline.remaining())
-        await pvc.wait_deleted(kube, timeout=deadline.remaining())
+        await pvc.delete(kube, deadline=deadline)
+        await pvc.wait_deleted(kube, deadline=deadline)
 
     snapshots = await VOLUME_SNAPSHOT_RESOURCE.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels={
-            BERTRAND_ENV: "1",
-            REPO_ID_ENV: repo_id,
+            BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+            REPO_ID_LABEL: repo_id,
             REPOSITORY_SNAPSHOT_LABEL: REPOSITORY_SNAPSHOT_LABEL_VALUE,
         },
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     for snapshot in sorted(snapshots, key=lambda item: item.name):
-        await delete_volume_snapshot(kube, snapshot, timeout=deadline.remaining())
+        await delete_volume_snapshot(kube, snapshot, deadline=deadline)
 
 
 async def gc_repository_volumes(
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
     grace_seconds: int = REPOSITORY_VOLUME_GC_GRACE_SECONDS,
     limit: int = REPOSITORY_VOLUME_GC_LIMIT,
 ) -> list[CephRepositoryStateRecord]:
@@ -1640,7 +1596,7 @@ async def gc_repository_volumes(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum GC budget in seconds.
     grace_seconds : int, optional
         Minimum time a record must remain retired before collection.
@@ -1657,10 +1613,6 @@ async def gc_repository_volumes(
     ValueError
         If `grace_seconds` or `limit` is negative.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume GC timeout must be positive",
-    )
     if grace_seconds < 0:
         msg = "repository volume GC grace_seconds must be non-negative"
         raise ValueError(msg)
@@ -1673,13 +1625,13 @@ async def gc_repository_volumes(
     grace = timedelta(seconds=grace_seconds)
     await REPOSITORY_STATE_RESOURCE.ensure_crd(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     records = await REPOSITORY_STATE_RESOURCE.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels={REPOSITORY_VOLUME_PHASE_LABEL: "retired"},
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     inventory: _RepositoryVolumeGcInventory | None = None
     collected: list[CephRepositoryStateRecord] = []
@@ -1702,7 +1654,7 @@ async def gc_repository_volumes(
             if inventory is None:
                 inventory = await _RepositoryVolumeGcInventory.collect(
                     kube,
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
             if inventory.active_buildkit_builds(record.spec.repo_id):
                 blocker = "active BuildKit builds still reference repository"
@@ -1755,19 +1707,19 @@ async def gc_repository_volumes(
                     name=record.name,
                     spec=spec,
                     labels=spec.labels,
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
                 continue
 
             await delete_repository_snapshot_artifacts(
                 kube,
                 repo_id=record.spec.repo_id,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             volumes = await list_repository_volume_claims(
                 kube,
                 record.spec.repo_id,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             collection_error = None
             if len(volumes) > 1:
@@ -1779,7 +1731,7 @@ async def gc_repository_volumes(
                 )
             elif volumes:
                 pvc = volumes[0]
-                repo_id = pvc.labels.get(REPO_ID_ENV, "")
+                repo_id = pvc.labels.get(REPO_ID_LABEL, "")
                 if repo_id != record.spec.repo_id or pvc.name != record.claim_name:
                     collection_error = (
                         f"{REPOSITORY_STATE_KIND} {record.name!r} points to "
@@ -1790,7 +1742,7 @@ async def gc_repository_volumes(
                     await delete_repository_volume_claim(
                         kube,
                         pvc=pvc,
-                        timeout=deadline.remaining(),
+                        deadline=deadline,
                         force=False,
                     )
             if collection_error is not None:
@@ -1807,27 +1759,27 @@ async def gc_repository_volumes(
                     name=record.name,
                     spec=spec,
                     labels=spec.labels,
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
                 continue
 
             credentials = await RepoCredentials.get(
                 record.spec.repo_id,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             if credentials is not None:
-                await credentials.delete(timeout=deadline.remaining())
+                await credentials.delete(deadline=deadline)
 
             await _delete_repository_parented_records(
                 kube,
                 record=record,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             await REPOSITORY_STATE_RESOURCE.delete_by_name(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=record.name,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         except (OSError, TimeoutError, ValueError) as err:
             spec = record.spec.model_copy(
@@ -1843,7 +1795,7 @@ async def gc_repository_volumes(
                 name=record.name,
                 spec=spec,
                 labels=spec.labels,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             continue
         collected.append(record)
@@ -1853,7 +1805,7 @@ async def gc_repository_volumes(
 async def next_repository_volume_gc_time(
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
     grace_seconds: int = REPOSITORY_VOLUME_GC_GRACE_SECONDS,
 ) -> datetime | None:
     """Return the next time retired repository volumes may be GC-eligible.
@@ -1862,7 +1814,7 @@ async def next_repository_volume_gc_time(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
     grace_seconds : int, optional
         Minimum time a record must remain retired before collection.
@@ -1878,19 +1830,15 @@ async def next_repository_volume_gc_time(
     ValueError
         If `grace_seconds` is negative.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume GC scheduling timeout must be positive",
-    )
     if grace_seconds < 0:
         msg = "repository volume GC grace_seconds must be non-negative"
         raise ValueError(msg)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, deadline=deadline)
     records = await REPOSITORY_STATE_RESOURCE.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels={REPOSITORY_VOLUME_PHASE_LABEL: "retired"},
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if not records:
         return None
@@ -1909,12 +1857,8 @@ async def _delete_repository_parented_records(
     kube: Kube,
     *,
     record: CephRepositoryStateRecord,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository parented record cleanup timeout must be positive",
-    )
     for worktree in sorted(
         record.status.worktrees.values(),
         key=lambda item: (item.worktree, item.worktree_id),
@@ -1929,11 +1873,11 @@ async def _delete_repository_parented_records(
             kube,
             scope="worktree",
             scope_value=worktree.worktree_id,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     await delete_capabilities_for_scope(
         kube,
         scope="repository",
         scope_value=record.spec.repo_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )

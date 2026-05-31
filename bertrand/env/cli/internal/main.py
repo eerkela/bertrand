@@ -5,57 +5,213 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import cast
 
 from bertrand.env.cli.internal._helper import live_project_context
-from bertrand.env.cli.internal.build import bertrand_build
-from bertrand.env.cli.internal.run import bertrand_run
+from bertrand.env.cli.internal.build import InternalBuildCommand
+from bertrand.env.cli.internal.run import InternalRunCommand
 from bertrand.env.cli.util import cli
 from bertrand.env.git import (
     CONTAINER_TMP,
     WORKTREE_MOUNT,
+    Deadline,
     inside_container,
 )
-from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.dev import send_code_open_request
 from bertrand.env.version import __version__
 
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+
+@dataclass(frozen=True, slots=True)
+class InternalCodeCommand:
+    """Internal `bertrand code` command closure."""
+
+    editor: str | None
+    block: bool
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> InternalCodeCommand:
+        """Create a command object from parsed arguments.
+
+        Returns
+        -------
+        InternalCodeCommand
+            Command object for this parser leaf.
+        """
+        return cls(editor=args.editor or None, block=args.block)
+
+    async def __call__(self, deadline: Deadline) -> None:
+        """Run the command.
+
+        Raises
+        ------
+        RuntimeError
+            If the command is not running inside a live dev Pod.
+        """
+        if not inside_container():
+            msg = (
+                "`bertrand code` requires a live Bertrand dev Pod context. Run "
+                "`bertrand enter` first."
+            )
+            raise RuntimeError(msg)
+        deadline.check("timed out before editor request could be submitted")
+        await send_code_open_request(editor=self.editor, block=self.block)
 
 
-def internal_cli[T](
-    op: Callable[..., Awaitable[T]],
-    *,
-    timeout: float,
-    **kwargs: Any,
-) -> T:
-    """Run a CLI command in the internal CLI context.
+@dataclass(frozen=True, slots=True)
+class InternalCheckCommand:
+    """Internal `bertrand check` command closure."""
 
-    Parameters
-    ----------
-    op : Callable[[Deadline], T]
-        Command closure to run, which accepts a `Deadline` object representing its total
-        time budget from the start of computation.
-    timeout : float
-        CLI timeout used to set the `Deadline` for the command.
-    kwargs : Any
-        Additional keyword arguments to forward to the command function, in addition to
-        `kube: Kube` and `deadline: Deadline`.
+    @classmethod
+    def from_args(cls, _args: argparse.Namespace) -> InternalCheckCommand:
+        """Create a command object from parsed arguments.
 
-    Returns
-    -------
-    T
-        The return type of the provided `op` closure.
-    """
-    async def _helper() -> T:
-        with await Kube.inside_cluster(timeout=timeout) as kube:
-            return await cli(op, kube=kube, timeout=timeout, **kwargs)
+        Returns
+        -------
+        InternalCheckCommand
+            Command object for this parser leaf.
+        """
+        return cls()
 
-    return asyncio.run(_helper())
+    async def __call__(self, deadline: Deadline) -> None:
+        """Run the command.
+
+        Raises
+        ------
+        RuntimeError
+            If the command is not running inside a live container context.
+        SystemExit
+            If any check command exits non-zero.
+        """
+        if not inside_container():
+            msg = "`bertrand check` requires a live container context"
+            raise RuntimeError(msg)
+
+        await _refresh_artifacts("check", deadline=deadline)
+        files = _compile_command_sources()
+        artifact_root = str(CONTAINER_TMP)
+        clang_tidy_config = CONTAINER_TMP / ".clang-tidy"
+
+        for cmd in (["ruff", "check", "."], ["ty", "check", "."]):
+            result = subprocess.run(cmd, check=False, cwd=WORKTREE_MOUNT)
+            if result.returncode != 0:
+                raise SystemExit(result.returncode)
+
+        for source in files:
+            result = subprocess.run(
+                [
+                    "clang-tidy",
+                    "-p",
+                    artifact_root,
+                    f"--config-file={clang_tidy_config}",
+                    str(source),
+                ],
+                check=False,
+                cwd=WORKTREE_MOUNT,
+            )
+            if result.returncode != 0:
+                raise SystemExit(result.returncode)
+
+
+@dataclass(frozen=True, slots=True)
+class InternalFormatCommand:
+    """Internal `bertrand format` command closure."""
+
+    @classmethod
+    def from_args(cls, _args: argparse.Namespace) -> InternalFormatCommand:
+        """Create a command object from parsed arguments.
+
+        Returns
+        -------
+        InternalFormatCommand
+            Command object for this parser leaf.
+        """
+        return cls()
+
+    async def __call__(self, deadline: Deadline) -> None:
+        """Run the command.
+
+        Raises
+        ------
+        RuntimeError
+            If the command is not running inside a live container context.
+        SystemExit
+            If formatting exits non-zero.
+        """
+        if not inside_container():
+            msg = "`bertrand format` requires a live container context"
+            raise RuntimeError(msg)
+
+        await _refresh_artifacts("format", deadline=deadline)
+        files = _compile_command_sources()
+        clang_format_config = CONTAINER_TMP / ".clang-format"
+
+        result = subprocess.run(
+            ["ruff", "format", "."],
+            check=False,
+            cwd=WORKTREE_MOUNT,
+        )
+        if result.returncode != 0:
+            raise SystemExit(result.returncode)
+
+        for source in files:
+            result = subprocess.run(
+                [
+                    "clang-format",
+                    f"--style=file:{clang_format_config}",
+                    "-i",
+                    str(source),
+                ],
+                check=False,
+                cwd=WORKTREE_MOUNT,
+            )
+            if result.returncode != 0:
+                raise SystemExit(result.returncode)
+
+
+@dataclass(frozen=True, slots=True)
+class InternalTestCommand:
+    """Internal `bertrand test` command closure."""
+
+    @classmethod
+    def from_args(cls, _args: argparse.Namespace) -> InternalTestCommand:
+        """Create a command object from parsed arguments.
+
+        Returns
+        -------
+        InternalTestCommand
+            Command object for this parser leaf.
+        """
+        return cls()
+
+    async def __call__(self, _deadline: Deadline) -> None:
+        """Run the command.
+
+        Raises
+        ------
+        RuntimeError
+            If the command is not running inside a live container context.
+        SystemExit
+            If the test process exits non-zero.
+        """
+        if not inside_container():
+            msg = "`bertrand test` requires a live container context"
+            raise RuntimeError(msg)
+        result = subprocess.run(["pytest", "-q"], check=False, cwd=WORKTREE_MOUNT)
+        if result.returncode != 0:
+            raise SystemExit(result.returncode)
+
+
+def _internal_build_command(args: argparse.Namespace) -> InternalBuildCommand:
+    return InternalBuildCommand(build_arg=tuple(args.build_arg))
+
+
+def _internal_run_command(args: argparse.Namespace) -> InternalRunCommand:
+    return InternalRunCommand(detach=args.detach, tty=args.tty, args=tuple(args.args))
 
 
 class Internal:
@@ -120,7 +276,10 @@ class Internal:
                 help="Block until the launched host editor exits.  If omitted, this "
                 "command returns after the editor launch request is submitted.",
             )
-            command.set_defaults(handler=Internal.code)
+            command.set_defaults(
+                command_factory=InternalCodeCommand.from_args,
+                command_timeout=math.inf,
+            )
 
         def build(self) -> None:
             """Add the 'build' command to the parser."""
@@ -137,7 +296,10 @@ class Internal:
                 help="Image-build-only argument to persist into the image build "
                 "contract and forward to the PEP 517/660 backend.",
             )
-            command.set_defaults(handler=Internal.build)
+            command.set_defaults(
+                command_factory=_internal_build_command,
+                command_timeout=math.inf,
+            )
 
         def run(self) -> None:
             """Add the 'run' command to the parser."""
@@ -165,7 +327,11 @@ class Internal:
                 action="store_false",
                 help="Disable interactive TTY attachment and use log streaming.",
             )
-            command.set_defaults(command="run", handler=Internal.run)
+            command.set_defaults(
+                command="run",
+                command_factory=_internal_run_command,
+                command_timeout=math.inf,
+            )
 
         def check(self) -> None:
             """Add the 'check' command to the parser."""
@@ -174,7 +340,10 @@ class Internal:
                 help="Run cross-language static checks for the current workspace: "
                 "Ruff, Ty, and clang-tidy (requires compile_commands.json).",
             )
-            command.set_defaults(handler=Internal.check)
+            command.set_defaults(
+                command_factory=InternalCheckCommand.from_args,
+                command_timeout=math.inf,
+            )
 
         def test(self) -> None:
             """Add the 'test' command to the parser."""
@@ -182,7 +351,10 @@ class Internal:
                 "test",
                 help="Run the workspace test suite with pytest.",
             )
-            command.set_defaults(handler=Internal.test)
+            command.set_defaults(
+                command_factory=InternalTestCommand.from_args,
+                command_timeout=math.inf,
+            )
 
         def format(self) -> None:
             """Add the 'format' command to the parser."""
@@ -191,7 +363,10 @@ class Internal:
                 help="Run cross-language formatting for the current workspace: "
                 "Ruff and clang-format (requires compile_commands.json).",
             )
-            command.set_defaults(handler=Internal.format)
+            command.set_defaults(
+                command_factory=InternalFormatCommand.from_args,
+                command_timeout=math.inf,
+            )
 
         def __call__(self) -> argparse.Namespace:
             """Run the command-line parser.
@@ -219,200 +394,6 @@ class Internal:
             args.args = workload_args
             return args
 
-    @staticmethod
-    def version(_args: argparse.Namespace) -> None:
-        """Execute the `bertrand --version` CLI command.
-
-        This command runs from within a containerized environment.
-
-        Parameters
-        ----------
-        _args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        print(__version__)
-
-    @staticmethod
-    def code(args: argparse.Namespace) -> None:
-        """Execute the `bertrand code` CLI command.
-
-        This command runs from within a containerized environment.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        Raises
-        ------
-        RuntimeError
-            If not invoked from within a containerized environment.
-        """
-        if not inside_container():
-            msg = (
-                "`bertrand code` requires a live Bertrand dev Pod context. Run "
-                "`bertrand enter` first."
-            )
-            raise RuntimeError(msg)
-        with asyncio.Runner() as runner:
-            runner.run(
-                send_code_open_request(
-                    editor=args.editor or None,
-                    block=args.block,
-                )
-            )
-
-    @staticmethod
-    def build(args: argparse.Namespace) -> None:
-        """Execute the `bertrand build` CLI command.
-
-        This command runs from within a containerized environment.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        """
-        bertrand_build(args)
-
-    @staticmethod
-    def run(args: argparse.Namespace) -> None:
-        """Execute the `bertrand run` CLI command.
-
-        This command runs from within a live containerized dev environment.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        bertrand_run(args)
-
-    @staticmethod
-    def check(_args: argparse.Namespace) -> None:
-        """Execute the `bertrand check` CLI command.
-
-        This command runs from within a containerized environment.
-
-        Parameters
-        ----------
-        _args : argparse.Namespace
-            The parsed command-line arguments.
-
-        Raises
-        ------
-        RuntimeError
-            If not invoked from within a live container context.
-        SystemExit
-            If any check command exits non-zero.
-        """
-        if not inside_container():
-            msg = "`bertrand check` requires a live container context"
-            raise RuntimeError(msg)
-
-        asyncio.run(_refresh_artifacts("check"))
-        files = _compile_command_sources()
-        artifact_root = str(CONTAINER_TMP)
-        clang_tidy_config = CONTAINER_TMP / ".clang-tidy"
-
-        # Python static checks
-        for cmd in (["ruff", "check", "."], ["ty", "check", "."]):
-            result = subprocess.run(cmd, check=False, cwd=WORKTREE_MOUNT)
-            if result.returncode != 0:
-                raise SystemExit(result.returncode)
-
-        # C++ static checks over resolved compilation sources.
-        for source in files:
-            result = subprocess.run(
-                [
-                    "clang-tidy",
-                    "-p",
-                    artifact_root,
-                    f"--config-file={clang_tidy_config}",
-                    str(source),
-                ],
-                check=False,
-                cwd=WORKTREE_MOUNT,
-            )
-            if result.returncode != 0:
-                raise SystemExit(result.returncode)
-
-    @staticmethod
-    def format(_args: argparse.Namespace) -> None:
-        """Execute the `bertrand format` CLI command.
-
-        This command runs from within a containerized environment.
-
-        Parameters
-        ----------
-        _args : argparse.Namespace
-            The parsed command-line arguments.
-
-        Raises
-        ------
-        RuntimeError
-            If not invoked from within a live container context.
-        SystemExit
-            If formatting exits non-zero.
-        """
-        if not inside_container():
-            msg = "`bertrand format` requires a live container context"
-            raise RuntimeError(msg)
-
-        asyncio.run(_refresh_artifacts("format"))
-        files = _compile_command_sources()
-        clang_format_config = CONTAINER_TMP / ".clang-format"
-
-        # Python formatting
-        result = subprocess.run(
-            ["ruff", "format", "."],
-            check=False,
-            cwd=WORKTREE_MOUNT,
-        )
-        if result.returncode != 0:
-            raise SystemExit(result.returncode)
-
-        # C++ formatting over resolved compilation sources.
-        for source in files:
-            result = subprocess.run(
-                [
-                    "clang-format",
-                    f"--style=file:{clang_format_config}",
-                    "-i",
-                    str(source),
-                ],
-                check=False,
-                cwd=WORKTREE_MOUNT,
-            )
-            if result.returncode != 0:
-                raise SystemExit(result.returncode)
-
-    @staticmethod
-    def test(_args: argparse.Namespace) -> None:
-        """Execute the `bertrand test` CLI command.
-
-        This command runs from within a containerized environment.
-
-        Parameters
-        ----------
-        _args : argparse.Namespace
-            The parsed command-line arguments.
-
-        Raises
-        ------
-        RuntimeError
-            If not invoked from within a live container context.
-        SystemExit
-            If the test process exits non-zero.
-        """
-        if not inside_container():
-            msg = "`bertrand test` requires a live container context"
-            raise RuntimeError(msg)
-        result = subprocess.run(["pytest", "-q"], check=False, cwd=WORKTREE_MOUNT)
-        if result.returncode != 0:
-            raise SystemExit(result.returncode)
-
     def __call__(self) -> None:
         """Parse and dispatch the selected internal command."""
         parser = Internal.Parser()
@@ -420,12 +401,16 @@ class Internal:
         if args.command is None:
             parser.root.print_help()
             return
-        args.handler(args)
+        command = args.command_factory(args)
+        asyncio.run(cli(command, timeout=args.command_timeout))
 
 
-async def _refresh_artifacts(command: str) -> None:
-    async with live_project_context(command) as (_kube, config, _repo_id):
-        await config.sync(image_build=True)
+async def _refresh_artifacts(command: str, *, deadline: Deadline) -> None:
+    async with live_project_context(
+        command,
+        deadline=deadline,
+    ) as (_kube, config, _repo_id):
+        await config.sync(image_build=True, deadline=deadline)
 
 
 def _compile_command_sources() -> list[Path]:

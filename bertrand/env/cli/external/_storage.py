@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.git import BERTRAND_NAMESPACE
+from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.ceph.capacity import (
     STORAGE_ACTION_PHASES,
     STORAGE_ACTION_RESOURCE,
@@ -195,7 +194,7 @@ async def storage_cli_snapshot(
     kube: Kube,
     *,
     host_id: str | None = None,
-    timeout: float = math.inf,
+    deadline: Deadline,
 ) -> StorageCliSnapshot:
     """Collect storage records for external CLI status and doctor commands.
 
@@ -206,7 +205,7 @@ async def storage_cli_snapshot(
     host_id : str | None, default None
         Optional host ID used to scope node-local records. Reservations remain
         cluster-wide to preserve existing CLI output.
-    timeout : float, default infinity
+    deadline : Deadline
         Kubernetes request budget in seconds.
 
     Returns
@@ -214,11 +213,11 @@ async def storage_cli_snapshot(
     StorageCliSnapshot
         Storage records and CSI readiness in command scope.
     """
-    policy = await read_storage_state(kube, timeout=timeout)
+    policy = await read_storage_state(kube, deadline=deadline)
     actions = await STORAGE_ACTION_RESOURCE.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
+        deadline=deadline,
     )
     reservations = sorted(
         policy.status.reservations.values(),
@@ -236,7 +235,7 @@ async def storage_cli_snapshot(
         reservations=reservations,
         reports=reports,
         osds=osds,
-        csi=await storage_csi_status(kube),
+        csi=await storage_csi_status(kube, deadline=deadline),
     )
 
 
@@ -339,13 +338,19 @@ def _osd_status_payload(osd: CephStorageOSD) -> dict[str, object]:
     )
 
 
-async def storage_csi_status(kube: Kube) -> dict[str, object]:
+async def storage_csi_status(
+    kube: Kube,
+    *,
+    deadline: Deadline,
+) -> dict[str, object]:
     """Return Bertrand OSD CSI driver readiness.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
+    deadline : Deadline
+        Kubernetes request budget.
 
     Returns
     -------
@@ -358,20 +363,20 @@ async def storage_csi_status(kube: Kube) -> dict[str, object]:
                 name=CSI_DRIVER_NAME,
                 _request_timeout=request_timeout,
             ),
-            timeout=math.inf,
+            deadline=deadline,
             context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
         ),
         Deployment.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=CSI_CONTROLLER_NAME,
-            timeout=math.inf,
+            deadline=deadline,
         ),
         DaemonSet.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=CSI_NODE_NAME,
-            timeout=math.inf,
+            deadline=deadline,
         ),
     )
     return {

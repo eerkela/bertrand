@@ -12,18 +12,17 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
 
-from bertrand.env.cli.util import warn
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
     confirm,
     symlink_points_to,
 )
+from bertrand.env.git.bertrand_git import warn
 from bertrand.env.host import (
     HOST_ID_FILE,
     REPO_DIR,
@@ -102,12 +101,12 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         # recovery or future explicit destructive cleanup.
         await REPOSITORY_STATE_RESOURCE.ensure_crd(
             state.kube,
-            timeout=state.deadline.remaining(),
+            deadline=state.deadline,
         )
         states = await REPOSITORY_STATE_RESOURCE.list(
             state.kube,
             namespace=BERTRAND_NAMESPACE,
-            timeout=state.deadline.remaining(),
+            deadline=state.deadline,
         )
         records = [
             record
@@ -122,7 +121,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
             await retire_repository_mount_record(
                 state.kube,
                 record=record,
-                timeout=state.deadline.remaining(),
+                deadline=state.deadline,
             )
             if symlink_points_to(alias, hidden_mount):
                 alias.unlink()
@@ -156,7 +155,7 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         mount_path = repo_root / REPO_MOUNT_EXT
         mount = MountInfo.search(mount_path)
         if mount is not None:
-            await mount.unmount(timeout=state.deadline.remaining(), force=True)
+            await mount.unmount(deadline=state.deadline, force=True)
         shutil.rmtree(repo_root)
 
     # safety sweep in case metadata was missing or corrupt
@@ -166,22 +165,22 @@ async def _clean_repo_mounts_aliases(state: CleanState) -> None:
         reverse=True,
     )
     for mount in mounts:
-        await mount.unmount(timeout=state.deadline.remaining(), force=True)
+        await mount.unmount(deadline=state.deadline, force=True)
 
 
 async def _disable_unmount_run_tmpfs(state: CleanState) -> None:
-    await disable_run_tmpfs_mount(timeout=state.deadline.remaining())
+    await disable_run_tmpfs_mount(deadline=state.deadline)
 
     # always attempt runtime tmpfs unmount, even without systemd
     run_mount = MountInfo.search(RUN_DIR)
     if run_mount is not None:
-        await run_mount.unmount(timeout=state.deadline.remaining(), force=True)
+        await run_mount.unmount(deadline=state.deadline, force=True)
 
 
 async def _clean_dashboard_backend(state: CleanState) -> None:
     if state.kube is None:
         return
-    await delete_dashboard_backend(state.kube, timeout=state.deadline.remaining())
+    await delete_dashboard_backend(state.kube, deadline=state.deadline)
 
 
 async def _clean_dev_backend(state: CleanState) -> None:
@@ -190,7 +189,7 @@ async def _clean_dev_backend(state: CleanState) -> None:
     await delete_dev_backend_state(
         state.kube,
         host_id=state.host_id,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
 
 
@@ -200,7 +199,7 @@ async def _retire_local_node_record(state: CleanState) -> None:
     await retire_bertrand_node(
         state.kube,
         host_id=state.host_id,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
 
 
@@ -293,7 +292,7 @@ async def bertrand_clean(*, deadline: Deadline, assume_yes: bool, force: bool) -
 
     kube: Kube | None = None
     try:
-        kube = await Kube.host(timeout=deadline.remaining())
+        kube = await Kube.host(deadline=deadline)
     except _CLEAN_ERROR_TYPES as err:
         if not force:
             msg = (

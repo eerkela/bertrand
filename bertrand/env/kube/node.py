@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import platform
 from dataclasses import dataclass
@@ -98,14 +97,14 @@ class Node(
     )
 
     @classmethod
-    async def local(cls, kube: Kube, *, timeout: float) -> Self:
+    async def local(cls, kube: Kube, *, deadline: Deadline) -> Self:
         """Resolve the Kubernetes Node for the current host.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
@@ -119,7 +118,7 @@ class Node(
             If no node can be matched, the matched node has no name, or multiple
             nodes make host identity ambiguous.
         """
-        nodes = await cls.list(kube=kube, timeout=timeout)
+        nodes = await cls.list(kube=kube, deadline=deadline)
         if not nodes:
             msg = "Kubernetes node list is empty"
             raise OSError(msg)
@@ -385,7 +384,7 @@ class Node(
         *,
         kube: Kube,
         body: dict[str, object],
-        timeout: float,
+        deadline: Deadline,
         context: str,
     ) -> kubernetes.client.V1Node:
         name = self.name
@@ -393,12 +392,12 @@ class Node(
             msg = "cannot patch Kubernetes node with missing metadata.name"
             raise OSError(msg)
         payload = await kube.run(
-            lambda timeout: kube.core.patch_node(
+            lambda request_timeout: kube.core.patch_node(
                 name=name,
                 body=body,
-                _request_timeout=timeout,
+                _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=context,
         )
         if payload is None:
@@ -415,7 +414,7 @@ class Node(
         *,
         label: str,
         value: str,
-        timeout: float,
+        deadline: Deadline,
     ) -> None:
         """Apply or overwrite one node label.
 
@@ -427,14 +426,14 @@ class Node(
             Label key to apply.
         value : str
             Label value to apply.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
         """
         await self._patch(
             kube=kube,
             body={"metadata": {"labels": {label: value}}},
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to set label {label!r} on Kubernetes node {self.name!r}",
         )
 
@@ -443,7 +442,7 @@ class Node(
         kube: Kube,
         *,
         label: str,
-        timeout: float,
+        deadline: Deadline,
     ) -> None:
         """Remove one node label when present.
 
@@ -453,7 +452,7 @@ class Node(
             Active Kubernetes API context.
         label : str
             Label key to remove.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
         """
@@ -464,7 +463,7 @@ class Node(
         await self._patch(
             kube=kube,
             body={"metadata": {"labels": labels}},
-            timeout=timeout,
+            deadline=deadline,
             context=(
                 f"failed to remove label {label!r} from Kubernetes node {self.name!r}"
             ),
@@ -476,7 +475,7 @@ class Node(
         *,
         key: str,
         value: str,
-        timeout: float,
+        deadline: Deadline,
     ) -> None:
         """Apply or overwrite one node annotation.
 
@@ -488,14 +487,14 @@ class Node(
             Annotation key to apply.
         value : str
             Annotation value to apply.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
         """
         await self._patch(
             kube=kube,
             body={"metadata": {"annotations": {key: value}}},
-            timeout=timeout,
+            deadline=deadline,
             context=(
                 f"failed to set annotation {key!r} on Kubernetes node {self.name!r}"
             ),
@@ -506,7 +505,7 @@ class Node(
         kube: Kube,
         *,
         key: str,
-        timeout: float,
+        deadline: Deadline,
     ) -> None:
         """Remove one node annotation when present.
 
@@ -516,7 +515,7 @@ class Node(
             Active Kubernetes API context.
         key : str
             Annotation key to remove.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
         """
@@ -527,46 +526,46 @@ class Node(
         await self._patch(
             kube=kube,
             body={"metadata": {"annotations": annotations}},
-            timeout=timeout,
+            deadline=deadline,
             context=(
                 f"failed to remove annotation {key!r} from Kubernetes node "
                 f"{self.name!r}"
             ),
         )
 
-    async def cordon(self, kube: Kube, *, timeout: float) -> None:
+    async def cordon(self, kube: Kube, *, deadline: Deadline) -> None:
         """Mark this node unschedulable.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
         """
         await self._patch(
             kube=kube,
             body={"spec": {"unschedulable": True}},
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to cordon Kubernetes node {self.name!r}",
         )
 
-    async def uncordon(self, kube: Kube, *, timeout: float) -> None:
+    async def uncordon(self, kube: Kube, *, deadline: Deadline) -> None:
         """Mark this node schedulable.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
         """
         await self._patch(
             kube=kube,
             body={"spec": {"unschedulable": False}},
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to uncordon Kubernetes node {self.name!r}",
         )
 
@@ -577,7 +576,7 @@ class Node(
         key: str,
         effect: TaintEffect,
         value: str | None,
-        timeout: float,
+        deadline: Deadline,
     ) -> None:
         """Upsert one node taint by `(key, effect)`.
 
@@ -591,7 +590,7 @@ class Node(
             Taint effect (`NoSchedule`, `PreferNoSchedule`, or `NoExecute`).
         value : str | None
             Optional taint value.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
         """
@@ -622,7 +621,7 @@ class Node(
         await self._patch(
             kube=kube,
             body={"spec": {"taints": payload}},
-            timeout=timeout,
+            deadline=deadline,
             context=(
                 f"failed to set taint {key!r}/{effect!r} on Kubernetes node "
                 f"{self.name!r}"
@@ -635,7 +634,7 @@ class Node(
         *,
         key: str,
         effect: TaintEffect | None,
-        timeout: float,
+        deadline: Deadline,
     ) -> None:
         """Remove taints matching `key` and optional `effect`.
 
@@ -647,7 +646,7 @@ class Node(
             Taint key to remove.
         effect : TaintEffect | None
             Optional effect filter.  If omitted, all effects for `key` are removed.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
         """
@@ -664,7 +663,7 @@ class Node(
         await self._patch(
             kube=kube,
             body={"spec": {"taints": payload}},
-            timeout=timeout,
+            deadline=deadline,
             context=(
                 f"failed to remove taint {key!r}/{effect or '*'} on Kubernetes "
                 f"node {self.name!r}"
@@ -675,7 +674,7 @@ class Node(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         namespaces: Collection[str] | None = None,
     ) -> builtins.list[Pod]:
@@ -685,7 +684,7 @@ class Node(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
         labels : Mapping[str, str] | None, optional
             Optional pod label selector filters.
@@ -715,7 +714,7 @@ class Node(
             raise OSError(msg)
         return await Pod.list(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             namespaces=namespaces,
             labels=labels,
             field_selector=f"spec.nodeName={node_name}",
@@ -725,7 +724,7 @@ class Node(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         force: bool = False,
     ) -> None:
         """Drain this node with safety-first defaults and one escalation flag.
@@ -734,7 +733,7 @@ class Node(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
         force : bool, optional
             Escalation toggle for disruptive evictions.  When False (default), drain
@@ -752,13 +751,8 @@ class Node(
         pods, always skip DaemonSets, respect PDB backpressure (429 retries), and
         require explicit force for potentially disruptive cases.
         """
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="node drain timeout must be positive",
-        )
-
-        await self.cordon(kube=kube, timeout=deadline.remaining())
-        pods = await self.pods(kube=kube, timeout=deadline.remaining())
+        await self.cordon(kube=kube, deadline=deadline)
+        pods = await self.pods(kube=kube, deadline=deadline)
         candidates, blocked = _classify_node_drain_pods(pods, force=force)
         if blocked:
             raise OSError(_node_drain_blocked_message(self, blocked))
@@ -826,19 +820,19 @@ async def _evict_node_drain_candidates(
     for pod in candidates:
         while True:
             try:
-                await pod.evict(kube, timeout=deadline.remaining())
+                await pod.evict(kube, deadline=deadline)
                 break
             except OSError as err:
                 if not isinstance(err, KubeApiError) or err.status != 429:
                     raise
-                remaining = deadline.remaining()
+                remaining = deadline.remaining
                 if remaining <= 0:
                     msg = (
                         f"timed out waiting for PDB eviction budget while draining "
                         f"node {node.name!r}"
                     )
                     raise TimeoutError(msg) from err
-                await asyncio.sleep(deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS))
+                await deadline.sleep(NODE_DRAIN_POLL_INTERVAL_SECONDS)
 
 
 async def _wait_node_drain_convergence(
@@ -849,7 +843,7 @@ async def _wait_node_drain_convergence(
     deadline: Deadline,
 ) -> None:
     while pending:
-        remaining = deadline.remaining()
+        remaining = deadline.remaining
         if remaining <= 0:
             remaining_pods = ", ".join(
                 f"{namespace}/{name}" for namespace, name in sorted(pending)
@@ -861,9 +855,9 @@ async def _wait_node_drain_convergence(
             raise TimeoutError(msg)
         live = {
             (pod.namespace, pod.name)
-            for pod in await node.pods(kube=kube, timeout=remaining)
+            for pod in await node.pods(kube=kube, deadline=deadline)
             if pod.namespace and pod.name
         }
         pending.intersection_update(live)
         if pending:
-            await asyncio.sleep(deadline.bounded(NODE_DRAIN_POLL_INTERVAL_SECONDS))
+            await deadline.sleep(NODE_DRAIN_POLL_INTERVAL_SECONDS)

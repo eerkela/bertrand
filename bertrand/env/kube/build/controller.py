@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import sys
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, Deadline
 from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
@@ -117,9 +116,9 @@ async def _reconcile_build(
                 message="BuildKit build is running",
                 reset=True,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
-        policy = await read_storage_state(kube, timeout=deadline.remaining())
+        policy = await read_storage_state(kube, deadline=deadline)
         reservation_bytes = parse_size_bytes(policy.spec.default_write_reservation)
         async with reserve_ceph_storage(
             kube,
@@ -128,7 +127,7 @@ async def _reconcile_build(
             request_id=str(request.metadata.generation),
             requested_bytes=reservation_bytes,
             reason="BuildKit image publication",
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ):
             platform_refs = await _publish_platforms(
                 kube,
@@ -153,14 +152,14 @@ async def _reconcile_build(
                 external_digest_ref=external_digest_ref,
                 platform_images=platform_refs,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await retire_project_images(
             kube,
             repo_id=request.spec.repo_id,
             worktree_id=request.spec.worktree_id,
             exclude_names={record.name},
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         project_image_gc.schedule_no_later_than(
             datetime.now(UTC) + timedelta(seconds=BUILDKIT_IMAGE_GC_GRACE_SECONDS)
@@ -176,7 +175,7 @@ async def _reconcile_build(
                 message=message,
                 log_excerpt=_log_excerpt(str(err)),
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
 
@@ -198,7 +197,7 @@ async def _publish_platforms(
                 active_platform=platform,
                 message=f"BuildKit build is running for {platform}",
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     return await publish_project_platforms(
@@ -206,7 +205,7 @@ async def _publish_platforms(
         spec,
         build_name=request.metadata.name,
         job_observer=observe_job,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -229,7 +228,7 @@ async def _publish_manifest(
                 active_platform="",
                 message="image manifest assembly is running",
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     return await _publish_project_image_manifest(
@@ -237,7 +236,7 @@ async def _publish_manifest(
         spec=spec,
         platform_refs=platform_refs,
         job_observer=observe_job,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -280,7 +279,7 @@ async def _maybe_project_image_gc(
     pass_deadline = project_image_gc.pass_deadline(
         now,
         deadline=deadline,
-        timeout=PROJECT_IMAGE_GC_TIMEOUT_SECONDS,
+        budget=PROJECT_IMAGE_GC_TIMEOUT_SECONDS,
     )
     if pass_deadline is None:
         return
@@ -288,7 +287,7 @@ async def _maybe_project_image_gc(
     try:
         next_gc = await next_project_image_gc_time(
             kube,
-            timeout=pass_deadline.remaining(),
+            deadline=pass_deadline,
         )
         if next_gc is None:
             project_image_gc.schedule_after(PROJECT_IMAGE_GC_EMPTY_CHECK_SECONDS)
@@ -299,18 +298,18 @@ async def _maybe_project_image_gc(
 
         prior_maintenance = await image_repository_maintenance_status(
             kube,
-            timeout=pass_deadline.remaining(),
+            deadline=pass_deadline,
         )
         marker_was_clean = not prior_maintenance.storage_dirty
         if marker_was_clean:
             await mark_image_repository_storage_dirty(
                 kube,
                 count=1,
-                timeout=pass_deadline.remaining(),
+                deadline=pass_deadline,
             )
         collected = await gc_project_images(
             kube,
-            timeout=pass_deadline.remaining(),
+            deadline=pass_deadline,
         )
         if collected:
             extra_count = len(collected) - 1 if marker_was_clean else len(collected)
@@ -318,11 +317,11 @@ async def _maybe_project_image_gc(
                 await mark_image_repository_storage_dirty(
                     kube,
                     count=extra_count,
-                    timeout=pass_deadline.remaining(),
+                    deadline=pass_deadline,
                 )
             updated_maintenance = await image_repository_maintenance_status(
                 kube,
-                timeout=pass_deadline.remaining(),
+                deadline=pass_deadline,
             )
             if updated_maintenance.dirty_count >= REGISTRY_STORAGE_GC_DIRTY_THRESHOLD:
                 registry_storage_gc.schedule_now()
@@ -335,7 +334,7 @@ async def _maybe_project_image_gc(
         elif marker_was_clean:
             await clear_image_repository_storage_dirty(
                 kube,
-                timeout=pass_deadline.remaining(),
+                deadline=pass_deadline,
             )
         project_image_gc.schedule_after(PROJECT_IMAGE_GC_READY_CHECK_SECONDS)
     except (OSError, TimeoutError, ValueError) as err:
@@ -353,18 +352,18 @@ async def _maybe_registry_storage_gc(
     pass_deadline = registry_storage_gc.pass_deadline(
         now,
         deadline=deadline,
-        timeout=REGISTRY_STORAGE_GC_TIMEOUT_SECONDS,
+        budget=REGISTRY_STORAGE_GC_TIMEOUT_SECONDS,
     )
     if pass_deadline is None:
         return
 
     try:
 
-        async def buildkit_idle(remaining: float) -> bool:
+        async def buildkit_idle(attempt_deadline: Deadline) -> bool:
             try:
                 records = await BUILDKIT_BUILD_RESOURCE.list(
                     kube,
-                    timeout=remaining,
+                    deadline=attempt_deadline,
                 )
             except OSError as err:
                 if is_missing_api_resource(err):
@@ -374,7 +373,7 @@ async def _maybe_registry_storage_gc(
 
         maintenance = await image_repository_maintenance_status(
             kube,
-            timeout=pass_deadline.remaining(),
+            deadline=pass_deadline,
         )
         if not maintenance.storage_dirty:
             registry_storage_gc.schedule_after(REGISTRY_STORAGE_GC_CLEAN_CHECK_SECONDS)
@@ -400,7 +399,7 @@ async def _maybe_registry_storage_gc(
             )
             return
 
-        if not await buildkit_idle(pass_deadline.remaining()):
+        if not await buildkit_idle(pass_deadline):
             registry_storage_gc.schedule_after(
                 REGISTRY_STORAGE_GC_ACTIVE_BUILD_RETRY_SECONDS
             )
@@ -410,7 +409,7 @@ async def _maybe_registry_storage_gc(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=IMAGE_REPOSITORY_NAME,
-            timeout=pass_deadline.remaining(),
+            deadline=pass_deadline,
         )
         if deployment is None or not deployment.rollout_ready(minimum=1):
             registry_storage_gc.schedule_after(
@@ -420,7 +419,7 @@ async def _maybe_registry_storage_gc(
 
         ran = await garbage_collect_image_repository_storage(
             kube,
-            timeout=pass_deadline.remaining(),
+            deadline=pass_deadline,
             preflight=buildkit_idle,
         )
         if not ran:
@@ -431,7 +430,7 @@ async def _maybe_registry_storage_gc(
         await clear_image_repository_storage_dirty(
             kube,
             last_gc_at=datetime.now(UTC),
-            timeout=pass_deadline.remaining(),
+            deadline=pass_deadline,
         )
         registry_storage_gc.schedule_after(REGISTRY_STORAGE_GC_MIN_INTERVAL_SECONDS)
     except (OSError, TimeoutError, ValueError) as err:
@@ -440,11 +439,14 @@ async def _maybe_registry_storage_gc(
 
 
 async def _restore_registry_writable(kube: Kube, *, deadline: Deadline) -> None:
-    timeout = deadline.bounded(REGISTRY_STORAGE_GC_RESTORE_TIMEOUT_SECONDS)
-    if timeout <= 0:
+    remaining = deadline.remaining
+    if remaining <= 0:
         return
+    restore_deadline = Deadline(
+        min(REGISTRY_STORAGE_GC_RESTORE_TIMEOUT_SECONDS, remaining)
+    )
     try:
-        await restore_image_repository_writable(kube, timeout=timeout)
+        await restore_image_repository_writable(kube, deadline=restore_deadline)
     except (OSError, TimeoutError, ValueError) as err:
         _warn(f"failed to restore image registry writable mode: {err}")
 
@@ -460,7 +462,7 @@ async def _maybe_build_source_gc(
     pass_deadline = build_source_gc.pass_deadline(
         now,
         deadline=deadline,
-        timeout=BUILD_SOURCE_GC_TIMEOUT_SECONDS,
+        budget=BUILD_SOURCE_GC_TIMEOUT_SECONDS,
     )
     if pass_deadline is None:
         return
@@ -476,7 +478,7 @@ async def _maybe_build_source_gc(
         deleted = await cleanup_orphaned_build_sources(
             kube,
             active_build_names=active_names,
-            timeout=pass_deadline.remaining(),
+            deadline=pass_deadline,
         )
         build_source_gc.schedule_after(
             BUILD_SOURCE_GC_READY_CHECK_SECONDS
@@ -492,7 +494,7 @@ async def ensure_buildkit_build_controller(
     kube: Kube,
     *,
     image: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Converge the in-cluster BuildKit build controller.
 
@@ -503,7 +505,7 @@ async def ensure_buildkit_build_controller(
     image : str
         Bertrand control-plane image containing this package and runtime
         dependencies.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     Raises
@@ -515,18 +517,14 @@ async def ensure_buildkit_build_controller(
     if not image:
         msg = "BuildKit build controller image cannot be empty"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BuildKit build controller timeout must be positive",
-    )
     await asyncio.gather(
-        BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, timeout=deadline.remaining()),
+        BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, deadline=deadline),
         ServiceAccount.upsert(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
             labels=BUILDKIT_BUILD_LABELS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         CLUSTER_ROLE_RESOURCE.upsert(
             kube,
@@ -538,7 +536,7 @@ async def ensure_buildkit_build_controller(
                 labels=BUILDKIT_BUILD_LABELS,
                 rules=_controller_rules(),
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
     await CLUSTER_ROLE_BINDING_RESOURCE.upsert(
@@ -554,7 +552,7 @@ async def ensure_buildkit_build_controller(
             service_account_namespace=BERTRAND_NAMESPACE,
             labels=BUILDKIT_BUILD_LABELS,
         ),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     deployment = await Deployment.upsert(
         kube,
@@ -578,35 +576,31 @@ async def ensure_buildkit_build_controller(
                 CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE,
             },
         ),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
-    await deployment.wait_rollout(kube, timeout=deadline.remaining())
+    await deployment.wait_rollout(kube, deadline=deadline)
 
 
-async def run_buildkit_build_controller(*, timeout: float = math.inf) -> None:
+async def run_buildkit_build_controller(*, deadline: Deadline = NO_DEADLINE) -> None:
     """Run the in-cluster durable BuildKit build controller.
 
     Parameters
     ----------
-    timeout : float, optional
+    deadline : Deadline
         Maximum runtime budget in seconds. If infinite, run indefinitely.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BuildKit build controller timeout must be positive",
-    )
     project_image_gc = MaintenanceClock()
     registry_storage_gc = MaintenanceClock()
     build_source_gc = MaintenanceClock()
-    with Kube.inside_cluster(namespace=BERTRAND_NAMESPACE) as kube:
+    with await Kube.internal(namespace=BERTRAND_NAMESPACE) as kube:
         await _restore_registry_writable(kube, deadline=deadline)
-        while deadline.remaining() > 0:
+        while deadline.remaining > 0:
             requests: list[BuildKitBuildRecord] | None = None
             try:
                 requests = await BUILDKIT_BUILD_RESOURCE.list(
                     kube,
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
                 for request in sorted(requests, key=lambda item: item.metadata.name):
                     if request.is_terminal:
@@ -629,9 +623,9 @@ async def run_buildkit_build_controller(*, timeout: float = math.inf) -> None:
                 registry_storage_gc=registry_storage_gc,
                 build_source_gc=build_source_gc,
             )
-            if deadline.remaining() <= 0:
+            if deadline.remaining <= 0:
                 break
-            await asyncio.sleep(deadline.bounded(BUILDKIT_BUILD_RECONCILE_SECONDS))
+            await deadline.sleep(BUILDKIT_BUILD_RECONCILE_SECONDS)
 
 
 def main() -> int:

@@ -24,7 +24,13 @@ from pydantic import (
     model_validator,
 )
 
-from bertrand.env.git import METADATA_DIR, Scalar, atomic_write_text, ensure_worktree_id
+from bertrand.env.git import (
+    METADATA_DIR,
+    Deadline,
+    GitRepository,
+    Scalar,
+    atomic_write_text,
+)
 from bertrand.env.kube.build.request import worktree_identity
 from bertrand.env.kube.ceph.volume import ensure_repository_worktree_record
 
@@ -365,9 +371,7 @@ class BertrandModel(BaseModel):
                 Field(
                     default="/",
                     examples=["/"],
-                    description=(
-                        "HTTP path prefix matched by the rendered HTTPRoute."
-                    ),
+                    description=("HTTP path prefix matched by the rendered HTTPRoute."),
                 ),
             ]
 
@@ -619,9 +623,7 @@ class BertrandModel(BaseModel):
         ]
         ssh: Annotated[
             list[BertrandModel.SSH],
-            AfterValidator(
-                lambda x: BertrandModel._check_unique(x, where="image ssh")
-            ),
+            AfterValidator(lambda x: BertrandModel._check_unique(x, where="image ssh")),
             Field(
                 default_factory=list,
                 examples=[
@@ -959,9 +961,7 @@ class BertrandModel(BaseModel):
 
         @model_validator(mode="after")
         def _validate_source(self) -> Self:
-            sources = sum(
-                (bool(self.cmd), self.http is not None, self.tcp is not None)
-            )
+            sources = sum((bool(self.cmd), self.http is not None, self.tcp is not None))
             if sources != 1:
                 msg = "probe must define exactly one of cmd, http, or tcp"
                 raise ValueError(msg)
@@ -1011,14 +1011,10 @@ class BertrandModel(BaseModel):
             @model_validator(mode="after")
             def _validate_conflicts(self) -> Self:
                 if "ALL" in self.add and len(self.add) > 1:
-                    msg = (
-                        "security.capabilities.add cannot combine ALL with entries"
-                    )
+                    msg = "security.capabilities.add cannot combine ALL with entries"
                     raise ValueError(msg)
                 if "ALL" in self.drop and len(self.drop) > 1:
-                    msg = (
-                        "security.capabilities.drop cannot combine ALL with entries"
-                    )
+                    msg = "security.capabilities.drop cannot combine ALL with entries"
                     raise ValueError(msg)
                 overlap = {cap for cap in self.add if cap != "ALL"}.intersection(
                     cap for cap in self.drop if cap != "ALL"
@@ -1148,8 +1144,7 @@ class BertrandModel(BaseModel):
                     BertrandModel.Security.Capabilities.model_construct()
                 ),
                 description=(
-                    "Linux capability adjustments for the container security "
-                    "context."
+                    "Linux capability adjustments for the container security context."
                 ),
             ),
         ]
@@ -1285,8 +1280,7 @@ class BertrandModel(BaseModel):
                 default_factory=list,
                 examples=[[{"id": "git_deploy_key", "required": True}]],
                 description=(
-                    "Runtime SSH credential capabilities mounted into this "
-                    "container."
+                    "Runtime SSH credential capabilities mounted into this container."
                 ),
             ),
         ]
@@ -1899,8 +1893,7 @@ class BertrandModel(BaseModel):
             default=None,
             examples=[{"replicas": 2}],
             description=(
-                "Long-lived replica behavior.  Presence selects Deployment "
-                "topology."
+                "Long-lived replica behavior.  Presence selects Deployment topology."
             ),
         ),
     ]
@@ -1933,9 +1926,7 @@ class BertrandModel(BaseModel):
             default=None,
             alias="service-account",
             examples=["bertrand-runtime"],
-            description=(
-                "Kubernetes ServiceAccount name used by the workload pod."
-            ),
+            description=("Kubernetes ServiceAccount name used by the workload pod."),
         ),
     ]
     node: Annotated[
@@ -1989,8 +1980,7 @@ class BertrandModel(BaseModel):
                 ]
             ],
             description=(
-                "Kubernetes pod tolerations used with node taints and placement "
-                "policy."
+                "Kubernetes pod tolerations used with node taints and placement policy."
             ),
         ),
     ]
@@ -2060,9 +2050,7 @@ class BertrandModel(BaseModel):
                 raise ValueError(msg)
             return self
         if self.schedule is not None and signals:
-            msg = (
-                f"schedule conflicts with Deployment topology: {', '.join(signals)}"
-            )
+            msg = f"schedule conflicts with Deployment topology: {', '.join(signals)}"
             raise ValueError(msg)
         if self.execution is not None and signals:
             msg = (
@@ -2128,7 +2116,13 @@ class Bertrand(Resource[BertrandModel]):
         result.image.resolve_containerfile(config.root)
         return result
 
-    async def render(self, config: Config, *, image_build: bool) -> None:
+    async def render(
+        self,
+        config: Config,
+        *,
+        image_build: bool,
+        deadline: Deadline,
+    ) -> None:
         """Render Bertrand-managed project files."""
         if image_build:
             return
@@ -2140,14 +2134,17 @@ class Bertrand(Resource[BertrandModel]):
         (config.root / "src").mkdir(parents=True, exist_ok=True)
         (config.root / "tests").mkdir(parents=True, exist_ok=True)
         (config.root / "docs").mkdir(parents=True, exist_ok=True)
-        worktree_id = ensure_worktree_id(config.root)
+        worktree_id = GitRepository.Worktree(
+            repo=config.repo,
+            path=config.root,
+        ).id
         if config.kube is not None:
             await ensure_repository_worktree_record(
                 config.kube,
                 repo_id=config.repo.id,
                 worktree_id=worktree_id,
                 worktree=worktree_identity(config.worktree),
-                timeout=config.timeout,
+                deadline=deadline,
             )
 
         # render ignore files

@@ -300,7 +300,7 @@ class MountInfo:
         monitors: Sequence[str],
         ceph_user: str,
         ceph_secretfile: Path,
-        timeout: float,
+        deadline: Deadline,
     ) -> MountInfo:
         """Ensure a repository hidden mount exists and return its mount entry.
 
@@ -316,7 +316,7 @@ class MountInfo:
             Ceph user used for host mount options.
         ceph_secretfile : Path
             Existing secret file containing Ceph key material.
-        timeout : float
+        deadline : Deadline
             Maximum runtime timeout in seconds for convergence.
 
         Returns
@@ -339,11 +339,6 @@ class MountInfo:
         if os.name != "posix" or platform.system() != "Linux":
             msg = "repository mounts are only supported on Linux platforms"
             raise OSError(msg)
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="repository mount timeout must be positive",
-        )
-
         ceph_user = ceph_user.strip()
         if not ceph_user:
             msg = "repository Ceph user cannot be empty"
@@ -373,7 +368,7 @@ class MountInfo:
 
         async with HostLock(
             root / REPO_LOCK_EXT,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ):
             mounted = cls.search(mount_path)
             if mounted is None:
@@ -397,7 +392,7 @@ class MountInfo:
                         ]
                     ),
                     capture_output=True,
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
                 mounted = cls.search(mount_path)
                 if mounted is None:
@@ -423,12 +418,12 @@ class MountInfo:
 
         return mounted
 
-    async def unmount(self, *, timeout: float, force: bool) -> bool:
+    async def unmount(self, *, deadline: Deadline, force: bool) -> bool:
         """Detach this mounted entry from the host.
 
         Parameters
         ----------
-        timeout : float
+        deadline : Deadline
             Maximum runtime command timeout in seconds for this unmount operation.
         force : bool
             If True, pass `-f` to `umount`.
@@ -446,11 +441,6 @@ class MountInfo:
         if os.name != "posix" or platform.system() != "Linux":
             msg = "repository mounts are only supported on Linux platforms"
             raise OSError(msg)
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="repository unmount timeout must be positive",
-        )
-
         cmd = ["umount"]
         if force:
             cmd.append("-f")
@@ -459,7 +449,7 @@ class MountInfo:
             await run(
                 sudo(cmd),
                 capture_output=True,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         except CommandError as err:
             # Treat a stale-entry race as idempotent success.
@@ -484,12 +474,11 @@ class MountInfo:
         """
 
         mount: MountInfo
-        timeout: float
+        deadline: Deadline
         aliases: set[Path] = field(default_factory=set)
         _root: Path = field(init=False)
         _mount_path: Path = field(init=False)
         _lock: HostLock | None = field(default=None)
-        _deadline: Deadline | None = field(default=None)
         _depth: int = field(default=0)
 
         def __post_init__(self) -> None:
@@ -502,7 +491,7 @@ class MountInfo:
             TimeoutError
                 If `timeout` is non-positive.
             """
-            if self.timeout <= 0:
+            if self.deadline.remaining <= 0:
                 msg = "repository alias lock timeout must be positive"
                 raise TimeoutError(msg)
             if self.mount.repo_id is None:
@@ -528,16 +517,9 @@ class MountInfo:
 
             # hold the repo-local lock for the entire mutation window so alias
             # symlinks cannot drift across concurrent init/clean callers
-            self._deadline = Deadline.from_timeout(
-                self.timeout,
-                message="repository alias lock timeout must be positive",
-            )
             self._root.mkdir(parents=True, exist_ok=True)
-            self._lock = HostLock(
-                self._root / REPO_LOCK_EXT,
-                timeout=self._deadline.remaining(),
-            )
-            await self._lock.lock()  # block until acquire or deadline
+            self._lock = HostLock(self._root / REPO_LOCK_EXT)
+            await self._lock.lock(self.deadline)  # block until acquire or deadline
 
             self._depth = 1
             return self
@@ -648,12 +630,12 @@ class MountInfo:
                     self._lock = None
             self._depth = 0
 
-    def aliases(self, *, timeout: float) -> Aliases:
+    def aliases(self, *, deadline: Deadline) -> Aliases:
         """Return an async context manager for locked alias symlink mutation.
 
         Parameters
         ----------
-        timeout : float
+        deadline : Deadline
             Maximum timeout for lock acquisition and alias convergence.
 
         Returns
@@ -672,7 +654,7 @@ class MountInfo:
                 "repository identity"
             )
             raise OSError(msg)
-        return self.Aliases(self, timeout=timeout)
+        return self.Aliases(self, deadline=deadline)
 
 
 async def ensure_repository_mount(
@@ -680,7 +662,7 @@ async def ensure_repository_mount(
     *,
     repo_id: UUIDHex,
     target: Path,
-    timeout: float,
+    deadline: Deadline,
     size_request: str,
     volumes: Sequence[PersistentVolumeClaim] | None = None,
 ) -> Path:
@@ -694,7 +676,7 @@ async def ensure_repository_mount(
         Stable repository identity.
     target : Path
         Desired host alias path for the managed repository mount.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
     size_request : str
         Storage request used when a new repository claim must be created.
@@ -713,18 +695,13 @@ async def ensure_repository_mount(
     """
     repo_id = _check_uuid(repo_id)
     target = abspath(target)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository mount convergence timeout must be positive",
-    )
-
     candidates = (
         list(volumes)
         if volumes is not None
         else await list_repository_volume_claims(
             kube,
             repo_id,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     )
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
@@ -733,7 +710,7 @@ async def ensure_repository_mount(
         ceph_path = await resolve_repository_volume_ceph_path(
             kube,
             pvc=volume,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         mounted = MountInfo.search(hidden_mount)
         if mounted is not None and not (
@@ -748,24 +725,24 @@ async def ensure_repository_mount(
         volume = await ensure_repository_volume_claim(
             kube,
             repo_id=repo_id,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             size_request=size_request,
         )
         ceph_path = await resolve_repository_volume_ceph_path(
             kube,
             pvc=volume,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     await ensure_repository_volume_record(
         kube,
         repo_id=repo_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
     credentials: RepoCredentials = await RepoCredentials.ensure(
         repo_id=repo_id,
         ceph_path=ceph_path,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
     target_occupied = target.exists() or target.is_symlink()
@@ -778,12 +755,12 @@ async def ensure_repository_mount(
         mount = await MountInfo.mount(
             repo_id=repo_id,
             ceph_path=ceph_path,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             monitors=credentials.monitors,
             ceph_user=credentials.user,
             ceph_secretfile=ceph_secretfile,
         )
-    async with mount.aliases(timeout=deadline.remaining()) as aliases:
+    async with mount.aliases(deadline=deadline) as aliases:
         aliases.link(alias)
 
     atomic_write_text(
@@ -797,7 +774,7 @@ async def ensure_repository_mount(
         host_id=_current_host_id(),
         alias_path=alias.as_posix(),
         node_name=platform.node(),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return alias
 
@@ -889,7 +866,7 @@ async def finalize_repository_mount(
     repo_id: UUIDHex,
     target: Path,
     alias: Path,
-    timeout: float,
+    deadline: Deadline,
     replace_existing: bool,
 ) -> Path:
     """Promote a staged repository mount alias into its final location.
@@ -904,7 +881,7 @@ async def finalize_repository_mount(
         Final user-facing repository path.
     alias : Path
         Current managed alias path returned by repository mount convergence.
-    timeout : float
+    deadline : Deadline
         Maximum finalization budget in seconds.
     replace_existing : bool
         Whether an occupied destination may be displaced during cutover.
@@ -926,10 +903,6 @@ async def finalize_repository_mount(
     repo_id = _check_uuid(repo_id)
     target = abspath(target)
     alias = abspath(alias)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository mount finalization timeout must be positive",
-    )
     hidden_mount = REPO_DIR / repo_id / REPO_MOUNT_EXT
     staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
     swap_path = target.parent / f".{target.name}.bertrand.swap.{repo_id}"
@@ -983,7 +956,7 @@ async def finalize_repository_mount(
             and symlink_points_to(stale_alias, hidden_mount)
         ):
             mount = MountInfo(mount_point=hidden_mount)
-            async with mount.aliases(timeout=deadline.remaining()) as aliases:
+            async with mount.aliases(deadline=deadline) as aliases:
                 aliases.unlink(stale_alias)
         if stale_alias != target:
             await retire_repository_mount(
@@ -991,7 +964,7 @@ async def finalize_repository_mount(
                 repo_id=repo_id,
                 host_id=host_id,
                 alias_path=stale_alias.as_posix(),
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
 
     await ensure_repository_mount_record(
@@ -1000,12 +973,12 @@ async def finalize_repository_mount(
         host_id=host_id,
         alias_path=target.as_posix(),
         node_name=platform.node(),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await mark_repository_volume_ready(
         kube,
         repo_id=repo_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
     return target
@@ -1015,16 +988,12 @@ async def _mount_repository_volume(
     kube: Kube,
     *,
     repo_id: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> MountInfo:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository volume remount timeout must be positive",
-    )
     volumes = await list_repository_volume_claims(
         kube,
         repo_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     volume = _single_repository_volume(repo_id, volumes)
     if volume is None:
@@ -1037,18 +1006,18 @@ async def _mount_repository_volume(
     ceph_path = await resolve_repository_volume_ceph_path(
         kube,
         pvc=volume,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     credentials: RepoCredentials = await RepoCredentials.ensure(
         repo_id=repo_id,
         ceph_path=ceph_path,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     with credentials.secretfile() as ceph_secretfile:
         mount = await MountInfo.mount(
             repo_id=repo_id,
             ceph_path=ceph_path,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             monitors=credentials.monitors,
             ceph_user=credentials.user,
             ceph_secretfile=ceph_secretfile,
@@ -1056,7 +1025,7 @@ async def _mount_repository_volume(
     await mark_repository_volume_ready(
         kube,
         repo_id=repo_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     atomic_write_text(
         REPO_DIR / repo_id / REPO_MOUNT_EXT / METADATA_ID,
@@ -1070,18 +1039,14 @@ async def _resurrect_repository_mount_record(
     kube: Kube,
     path: Path,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[UUIDHex, MountInfo] | None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository mount record recovery timeout must be positive",
-    )
     inspected = abspath(path)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, deadline=deadline)
     states = await REPOSITORY_STATE_RESOURCE.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
     for candidate in (inspected, *inspected.parents):
@@ -1118,9 +1083,9 @@ async def _resurrect_repository_mount_record(
         mount = await _mount_repository_volume(
             kube,
             repo_id=repo_id,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
-        async with mount.aliases(timeout=deadline.remaining()) as aliases:
+        async with mount.aliases(deadline=deadline) as aliases:
             aliases.link(candidate)
         await ensure_repository_mount_record(
             kube,
@@ -1128,7 +1093,7 @@ async def _resurrect_repository_mount_record(
             host_id=_current_host_id(),
             alias_path=candidate.as_posix(),
             node_name=platform.node(),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         return repo_id, mount
 
@@ -1139,7 +1104,7 @@ async def resurrect_repository_mount(
     kube: Kube,
     path: Path,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[UUIDHex, MountInfo] | None:
     """Restore a managed repository mount from symlinks or CRD records.
 
@@ -1149,7 +1114,7 @@ async def resurrect_repository_mount(
         Active Kubernetes API context.
     path : Path
         Host path to inspect for managed alias ancestry or recorded mount aliases.
-    timeout : float
+    deadline : Deadline
         Maximum resurrection budget in seconds.
 
     Returns
@@ -1159,18 +1124,13 @@ async def resurrect_repository_mount(
         or None when no managed recovery metadata is present.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository mount resurrection timeout must be positive",
-    )
-
     # Search for managed Bertrand symlink alias pointing to a mounted volume.
     managed = _managed_alias_ancestor(path)
     if managed is None:
         return await _resurrect_repository_mount_record(
             kube,
             path,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     _, repo_id, mount = managed
     if mount is not None:
@@ -1181,7 +1141,7 @@ async def resurrect_repository_mount(
     mount = await _mount_repository_volume(
         kube,
         repo_id=repo_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     return repo_id, mount
 
@@ -1190,7 +1150,7 @@ async def refresh_repository_alias_for_path(
     kube: Kube,
     path: Path,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> UUIDHex | None:
     """Refresh mount metadata for a managed alias used by a host path.
 
@@ -1200,7 +1160,7 @@ async def refresh_repository_alias_for_path(
         Active Kubernetes API context.
     path : Path
         Host path to inspect before resolving symlinks.
-    timeout : float
+    deadline : Deadline
         Maximum refresh budget in seconds.
 
     Returns
@@ -1210,11 +1170,6 @@ async def refresh_repository_alias_for_path(
         None.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository alias refresh timeout must be positive",
-    )
-
     managed = _managed_alias_ancestor(path)
     if managed is not None:
         alias, repo_id, mount = managed
@@ -1222,7 +1177,7 @@ async def refresh_repository_alias_for_path(
             await _mount_repository_volume(
                 kube,
                 repo_id=repo_id,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         await ensure_repository_mount_record(
             kube,
@@ -1230,14 +1185,14 @@ async def refresh_repository_alias_for_path(
             host_id=_current_host_id(),
             alias_path=alias.as_posix(),
             node_name=platform.node(),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         return repo_id
 
     resurrected = await _resurrect_repository_mount_record(
         kube,
         path,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if resurrected is None:
         return None
@@ -1249,7 +1204,7 @@ async def prune_repository_mount_aliases(
     kube: Kube,
     *,
     repo_id: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> bool:
     """Retire stale local alias records for one repository.
 
@@ -1259,7 +1214,7 @@ async def prune_repository_mount_aliases(
         Active Kubernetes API context.
     repo_id : str
         Repository UUID whose local aliases should be reconciled.
-    timeout : float
+    deadline : Deadline
         Maximum prune budget in seconds.
 
     Returns
@@ -1272,16 +1227,12 @@ async def prune_repository_mount_aliases(
     OSError
         If a recorded alias path is occupied by unmanaged content.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository alias pruning timeout must be positive",
-    )
     repo_id = _check_uuid(repo_id)
     host_id = _current_host_id()
     states = await REPOSITORY_STATE_RESOURCE.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     records = [
         record
@@ -1307,7 +1258,7 @@ async def prune_repository_mount_aliases(
         await retire_repository_mount_record(
             kube,
             record=record,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     return live
 
@@ -1315,7 +1266,7 @@ async def prune_repository_mount_aliases(
 async def prune_repository_mounts(
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
     limit: int = REPOSITORY_MOUNT_PRUNE_LIMIT,
 ) -> tuple[UUIDHex, ...]:
     """Prune bounded hidden repository mounts with no live local aliases.
@@ -1324,7 +1275,7 @@ async def prune_repository_mounts(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum prune budget in seconds.
     limit : int, optional
         Maximum number of hidden mounted repositories to inspect.
@@ -1339,10 +1290,6 @@ async def prune_repository_mounts(
     ValueError
         If `limit` is negative.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="repository mount pruning timeout must be positive",
-    )
     if limit < 0:
         msg = "repository mount prune limit cannot be negative"
         raise ValueError(msg)
@@ -1363,13 +1310,13 @@ async def prune_repository_mounts(
         live = await prune_repository_mount_aliases(
             kube,
             repo_id=repo_id,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         if live:
             continue
         current = MountInfo.search(mount.mount_point)
         if current is None:
             continue
-        await current.unmount(timeout=deadline.remaining(), force=False)
+        await current.unmount(deadline=deadline, force=False)
         pruned.append(repo_id)
     return tuple(pruned)

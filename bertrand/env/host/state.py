@@ -24,7 +24,6 @@ from bertrand.env.git.bertrand_git import (
 )
 
 BERTRAND_GROUP = _git.BERTRAND_GROUP
-BIN_DIR = _git.BIN_DIR
 CACHE_DIR = _git.CACHE_DIR
 HOST_ID_FILE = _git.HOST_ID_FILE
 HOST_MOUNTS = _git.HOST_MOUNTS
@@ -33,7 +32,6 @@ REPO_LOCK_EXT = _git.REPO_LOCK_EXT
 REPO_MOUNT_EXT = _git.REPO_MOUNT_EXT
 RUN_DIR = _git.RUN_DIR
 STATE_DIR = _git.STATE_DIR
-TOOLS_DIR = _git.TOOLS_DIR
 STATE_DIR_MODE = 0o2770
 RUN_TMPFS_MOUNT_UNIT_NAME = "bertrand-run.mount"
 RUN_TMPFS_MOUNT_UNIT_PATH = Path("/etc/systemd/system") / RUN_TMPFS_MOUNT_UNIT_NAME
@@ -113,7 +111,7 @@ async def _configure_state_acl(*, deadline: Deadline, assume_yes: bool) -> None:
         ["setfacl", "-d", "-m", f"group:{BERTRAND_GROUP}:rwx", str(STATE_DIR)],
         ["setfacl", "-d", "-m", "mask::rwx", str(STATE_DIR)],
     ):
-        await run(sudo(cmd, non_interactive=assume_yes), timeout=deadline.remaining())
+        await run(sudo(cmd, non_interactive=assume_yes), deadline=deadline)
 
     await run(
         sudo(
@@ -130,7 +128,7 @@ async def _configure_state_acl(*, deadline: Deadline, assume_yes: bool) -> None:
             ],
             non_interactive=assume_yes,
         ),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -194,7 +192,7 @@ async def _configure_run_tmpfs_mount(
     *,
     group_gid: int,
     assume_yes: bool,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     if not shutil.which("systemctl"):
         msg = (
@@ -202,11 +200,6 @@ async def _configure_run_tmpfs_mount(
             f"mount at {RUN_DIR}."
         )
         raise OSError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="Bertrand runtime tmpfs mount timeout must be positive",
-    )
-
     fd: int | None = None
     temp_unit: Path | None = None
     try:
@@ -232,7 +225,7 @@ async def _configure_run_tmpfs_mount(
                 ],
                 non_interactive=assume_yes,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     finally:
         if fd is not None:
@@ -247,7 +240,7 @@ async def _configure_run_tmpfs_mount(
     ):
         await run(
             sudo(cmd, non_interactive=assume_yes),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
 
@@ -282,14 +275,14 @@ def host_state_backend_trustworthy() -> bool:
 
 async def ensure_host_group(
     *,
-    timeout: float,
+    deadline: Deadline,
     assume_yes: bool,
 ) -> grp.struct_group:
     """Ensure Bertrand's shared host group exists.
 
     Parameters
     ----------
-    timeout : float
+    deadline : Deadline
         Maximum time in seconds to wait for required host commands.
     assume_yes : bool
         Whether to automatically confirm prompts for creating the shared group.
@@ -309,11 +302,6 @@ async def ensure_host_group(
     CommandError
         If the host group creation command fails unexpectedly.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="Bertrand shared group bootstrap timeout must be positive",
-    )
-
     try:
         return grp.getgrnam(BERTRAND_GROUP)
     except KeyError:
@@ -341,7 +329,7 @@ async def ensure_host_group(
                 non_interactive=assume_yes,
             ),
             capture_output=True,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     except CommandError:
         with contextlib.suppress(KeyError):
@@ -359,7 +347,7 @@ async def ensure_host_state(
     *,
     user: str,
     assume_yes: bool,
-    timeout: float,
+    deadline: Deadline,
 ) -> GroupStatus:
     """Ensure Bertrand's shared host state and runtime directory are configured.
 
@@ -369,7 +357,7 @@ async def ensure_host_state(
         Host username to configure for Bertrand group access.
     assume_yes : bool
         Whether to automatically confirm prompts during installation.
-    timeout : float
+    deadline : Deadline
         Maximum time in seconds to wait for required host commands.
 
     Returns
@@ -388,13 +376,8 @@ async def ensure_host_state(
     if os.name != "posix":
         msg = "Bertrand state bootstrap requires a POSIX host."
         raise OSError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="Bertrand host state bootstrap timeout must be positive",
-    )
-
     group_info = await ensure_host_group(
-        timeout=deadline.remaining(),
+        deadline=deadline,
         assume_yes=assume_yes,
     )
     if (
@@ -433,7 +416,7 @@ async def ensure_host_state(
                 ],
                 non_interactive=assume_yes,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await _configure_state_acl(
             deadline=deadline,
@@ -442,7 +425,7 @@ async def ensure_host_state(
         await _configure_run_tmpfs_mount(
             group_gid=group_info.gr_gid,
             assume_yes=assume_yes,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     if not _host_id_configured():
@@ -482,29 +465,25 @@ async def ensure_host_state(
     return group
 
 
-async def disable_run_tmpfs_mount(*, timeout: float) -> None:
+async def disable_run_tmpfs_mount(*, deadline: Deadline) -> None:
     """Disable Bertrand's managed systemd runtime tmpfs unit.
 
     Parameters
     ----------
-    timeout : float
+    deadline : Deadline
         Maximum time in seconds to wait for systemd commands.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="Bertrand runtime tmpfs disable timeout must be positive",
-    )
     if shutil.which("systemctl"):
         await run(
             ["systemctl", "disable", "--now", RUN_TMPFS_MOUNT_UNIT_NAME],
             check=False,
             capture_output=True,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         RUN_TMPFS_MOUNT_UNIT_PATH.unlink(missing_ok=True)
         await run(
             ["systemctl", "daemon-reload"],
             check=False,
             capture_output=True,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )

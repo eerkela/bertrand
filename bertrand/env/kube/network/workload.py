@@ -36,7 +36,7 @@ async def ensure_workload_service(
     kube: Kube,
     *,
     workload: WorkloadPod,
-    timeout: float,
+    deadline: Deadline,
 ) -> Service | None:
     """Converge this workload's canonical internal Kubernetes Service.
 
@@ -46,7 +46,7 @@ async def ensure_workload_service(
         Active Kubernetes API context.
     workload : WorkloadPod
         Workload pod intent whose declared container ports define the Service shape.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -56,15 +56,13 @@ async def ensure_workload_service(
         and any stale managed Service has been removed.
 
     """
-    message = "workload Service convergence timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     identity = workload.identity
     ports = workload_service_ports(workload)
     if not ports:
         await delete_workload_service(
             kube,
             identity=identity,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         return None
 
@@ -72,7 +70,7 @@ async def ensure_workload_service(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     _assert_managed(service, identity=identity, kind="Service")
     return await Service.upsert(
@@ -83,7 +81,7 @@ async def ensure_workload_service(
         ports=ports,
         labels=identity.labels,
         service_type="ClusterIP",
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -91,7 +89,7 @@ async def delete_workload_service(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Delete this workload's managed Service, if present.
 
@@ -101,21 +99,19 @@ async def delete_workload_service(
         Active Kubernetes API context.
     identity : WorkloadIdentity
         Stable workload identity used to locate and validate the Service.
-    timeout : float
+    deadline : Deadline
         Maximum deletion budget in seconds. If infinite, wait indefinitely.
 
     """
-    message = "workload Service deletion timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     service = await Service.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     _assert_managed(service, identity=identity, kind="Service")
     if service is not None:
-        await service.delete(kube, timeout=deadline.remaining())
+        await service.delete(kube, deadline=deadline)
 
 
 async def ensure_workload_network_policy(
@@ -123,7 +119,7 @@ async def ensure_workload_network_policy(
     *,
     network: BertrandModel.Network,
     workload: WorkloadPod,
-    timeout: float,
+    deadline: Deadline,
     route_plan: _HTTPRoutePlan | None = None,
 ) -> NetworkPolicy | None:
     """Converge this workload's Kubernetes NetworkPolicy intent.
@@ -137,7 +133,7 @@ async def ensure_workload_network_policy(
         shape.
     workload : WorkloadPod
         Workload pod intent whose stable selector identifies the protected Pods.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
     route_plan : dict[str, tuple[BertrandModel.Network.Route, int]] | None, optional
         Prepared HTTPRoute data whose backend ports are used for route-aware isolated
@@ -155,15 +151,13 @@ async def ensure_workload_network_policy(
         If the validated network config contains an unsupported policy value, or an
         HTTPRoute targets a non-TCP Service port.
     """
-    message = "workload NetworkPolicy convergence timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     identity = workload.identity
     policy = network.policy.strip().lower()
     if policy == "open":
         await delete_workload_network_policy(
             kube,
             identity=identity,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         return None
     if policy != "isolated":
@@ -174,7 +168,7 @@ async def ensure_workload_network_policy(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     _assert_managed(network_policy, identity=identity, kind="NetworkPolicy")
     return await NetworkPolicy.upsert(
@@ -185,7 +179,7 @@ async def ensure_workload_network_policy(
         labels=identity.labels,
         policy_types=("Ingress",),
         ingress=_isolated_ingress_rules(network, workload, route_plan=route_plan),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -193,7 +187,7 @@ async def delete_workload_network_policy(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Delete this workload's managed NetworkPolicy, if present.
 
@@ -203,21 +197,19 @@ async def delete_workload_network_policy(
         Active Kubernetes API context.
     identity : WorkloadIdentity
         Stable workload identity used to locate and validate the NetworkPolicy.
-    timeout : float
+    deadline : Deadline
         Maximum deletion budget in seconds. If infinite, wait indefinitely.
 
     """
-    message = "workload NetworkPolicy deletion timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     network_policy = await NetworkPolicy.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     _assert_managed(network_policy, identity=identity, kind="NetworkPolicy")
     if network_policy is not None:
-        await network_policy.delete(kube, timeout=deadline.remaining())
+        await network_policy.delete(kube, deadline=deadline)
 
 
 async def ensure_workload_http_routes(
@@ -225,7 +217,7 @@ async def ensure_workload_http_routes(
     *,
     network: BertrandModel.Network,
     workload: WorkloadPod,
-    timeout: float,
+    deadline: Deadline,
     route_plan: _HTTPRoutePlan | None = None,
 ) -> tuple[CustomObject, ...]:
     """Converge this workload's managed Gateway API HTTPRoutes.
@@ -239,7 +231,7 @@ async def ensure_workload_http_routes(
         shape.
     workload : WorkloadPod
         Workload pod intent whose canonical Service receives route traffic.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
     route_plan : dict[str, tuple[BertrandModel.Network.Route, int]] | None, optional
         Prepared route data. If omitted, route validation and Gateway preflight are
@@ -255,8 +247,6 @@ async def ensure_workload_http_routes(
     OSError
         If Gateway API HTTPRoute resources are unavailable.
     """
-    message = "workload HTTPRoute convergence timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     plan = (
         route_plan
         if route_plan is not None
@@ -264,7 +254,7 @@ async def ensure_workload_http_routes(
             kube,
             network=network,
             workload=workload,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     )
     identity = workload.identity
@@ -272,7 +262,7 @@ async def ensure_workload_http_routes(
         kube,
         identity=identity,
         route_plan=plan,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if not plan:
         return ()
@@ -282,7 +272,7 @@ async def ensure_workload_http_routes(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=name,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         _assert_managed(current, identity=identity, kind="HTTPRoute")
         try:
@@ -300,7 +290,7 @@ async def ensure_workload_http_routes(
                     ),
                 ),
                 labels=_http_route_labels(identity),
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         except OSError as err:
             if gateway_api_crd_missing(err):
@@ -322,7 +312,7 @@ async def prepare_workload_http_routes(
     *,
     network: BertrandModel.Network,
     workload: WorkloadPod,
-    timeout: float,
+    deadline: Deadline,
 ) -> _HTTPRoutePlan:
     """Validate HTTPRoute intent and preflight shared Gateway readiness.
 
@@ -335,7 +325,7 @@ async def prepare_workload_http_routes(
         shape.
     workload : WorkloadPod
         Workload pod intent whose canonical Service receives route traffic.
-    timeout : float
+    deadline : Deadline
         Maximum preparation budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -349,13 +339,11 @@ async def prepare_workload_http_routes(
     OSError
         If configured routes require Gateway API resources that are unavailable.
     """
-    message = "workload HTTPRoute preparation timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     plan = _workload_http_route_plan(network, workload)
     if not plan:
         return plan
     try:
-        await ensure_bertrand_gateway(kube, timeout=deadline.remaining())
+        await ensure_bertrand_gateway(kube, deadline=deadline)
     except OSError as err:
         if gateway_api_crd_missing(err):
             msg = (
@@ -374,7 +362,7 @@ async def prune_workload_http_routes(
     *,
     identity: WorkloadIdentity,
     route_plan: _HTTPRoutePlan,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Delete stale managed HTTPRoutes before desired route convergence.
 
@@ -386,17 +374,15 @@ async def prune_workload_http_routes(
         Stable workload identity used to select managed routes.
     route_plan : dict[str, tuple[BertrandModel.Network.Route, int]]
         Prepared route data whose desired names should remain.
-    timeout : float
+    deadline : Deadline
         Maximum pruning budget in seconds. If infinite, wait indefinitely.
 
     """
-    message = "workload HTTPRoute pruning timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     require_gateway_api = bool(route_plan)
     for stale in await _list_workload_http_routes(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         require_gateway_api=require_gateway_api,
     ):
         if stale.name in route_plan:
@@ -406,7 +392,7 @@ async def prune_workload_http_routes(
             kube,
             namespace=stale.namespace,
             name=stale.name,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
 
@@ -414,7 +400,7 @@ async def delete_workload_http_routes(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
     require_gateway_api: bool = False,
 ) -> None:
     """Delete this workload's managed HTTPRoutes, if present.
@@ -425,19 +411,17 @@ async def delete_workload_http_routes(
         Active Kubernetes API context.
     identity : WorkloadIdentity
         Stable workload identity used to locate and validate HTTPRoutes.
-    timeout : float
+    deadline : Deadline
         Maximum deletion budget in seconds. If infinite, wait indefinitely.
     require_gateway_api : bool, optional
         Whether missing Gateway API CRDs should raise. Cleanup paths normally leave
         this disabled so stale-route cleanup does not require Gateway installation.
 
     """
-    message = "workload HTTPRoute deletion timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=message)
     for route in await _list_workload_http_routes(
         kube,
         identity=identity,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         require_gateway_api=require_gateway_api,
     ):
         _assert_managed(route, identity=identity, kind="HTTPRoute")
@@ -445,7 +429,7 @@ async def delete_workload_http_routes(
             kube,
             namespace=route.namespace,
             name=route.name,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
 
@@ -534,7 +518,7 @@ async def _list_workload_http_routes(
     kube: Kube,
     *,
     identity: WorkloadIdentity,
-    timeout: float,
+    deadline: Deadline,
     require_gateway_api: bool,
 ) -> tuple[CustomObject, ...]:
     try:
@@ -546,7 +530,7 @@ async def _list_workload_http_routes(
                     **identity.managed_selector,
                     HTTP_ROUTE_LABEL: HTTP_ROUTE_LABEL_VALUE,
                 },
-                timeout=timeout,
+                deadline=deadline,
             )
         )
     except OSError as err:

@@ -6,9 +6,10 @@ import argparse
 import asyncio
 import math
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.cli.external.build import bertrand_build
 from bertrand.env.cli.external.clean import bertrand_clean
@@ -58,9 +59,11 @@ from bertrand.env.cli.external.secret import (
     bertrand_shared_secret_list,
     bertrand_shared_secret_rm,
 )
-from bertrand.env.cli.util import CLICommand, cli
-from bertrand.env.kube.api.client import Kube
+from bertrand.env.cli.util import cli
 from bertrand.env.version import __version__
+
+if TYPE_CHECKING:
+    from bertrand.env.git import Deadline
 
 type _KwargSpec = tuple[str, str] | tuple[str, str, Callable[[Any], Any]]
 
@@ -70,6 +73,60 @@ _CAPABILITY_SOURCE_HELP = (
 _CAPABILITY_KIND_STORE_HELP = "Capability kind to store."
 _CAPABILITY_KIND_REMOVE_HELP = "Capability kind to remove."
 _CAPABILITY_KIND_FILTER_HELP = "Optional capability kind filter."
+
+
+def _resolved_path(value: str) -> Path:
+    return Path(value).expanduser().resolve()
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalLeafCommand:
+    """External command leaf backed by one async implementation."""
+
+    func: Callable[..., Awaitable[None]]
+    kwargs: dict[str, object]
+    converters: dict[str, Callable[[Any], Any]]
+
+    async def __call__(self, deadline: Deadline) -> None:
+        """Run the command."""
+        kwargs = {}
+        for key, value in self.kwargs.items():
+            converter = self.converters.get(key)
+            kwargs[key] = converter(value) if converter is not None else value
+        await self.func(deadline=deadline, **kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalLeafFactory:
+    """Create an external command leaf from parsed arguments."""
+
+    func: Callable[..., Awaitable[None]]
+    kwargs: tuple[_KwargSpec, ...] = ()
+    fixed: dict[str, object] | None = None
+
+    def __call__(self, args: argparse.Namespace) -> _ExternalLeafCommand:
+        values: dict[str, object] = dict(self.fixed or {})
+        converters: dict[str, Callable[[Any], Any]] = {}
+        for spec in self.kwargs:
+            if len(spec) == 2:
+                dest, source = cast("tuple[str, str]", spec)
+                converter = None
+            else:
+                dest, source, converter = cast(
+                    "tuple[str, str, Callable[[Any], Any]]",
+                    spec,
+                )
+            if dest == "timeout":
+                continue
+            value = getattr(args, source)
+            if converter is not None:
+                converters[dest] = converter
+            values[dest] = value
+        return _ExternalLeafCommand(
+            func=self.func,
+            kwargs=values,
+            converters=converters,
+        )
 
 
 class External:
@@ -133,7 +190,7 @@ class External:
             parser.add_argument(
                 "--json",
                 action="store_true",
-                help="Emit machine-readable JSON instead of human-readable text."
+                help="Emit machine-readable JSON instead of human-readable text.",
             )
 
         @staticmethod
@@ -150,10 +207,17 @@ class External:
                 help=help,
             )
 
+        def timeout(self, parser: argparse.ArgumentParser) -> None:
+            """Add the shared command timeout option."""
+            self._add_timeout(
+                parser,
+                help="Maximum time in seconds for command convergence.",
+            )
+
         @staticmethod
         def terminal(
             parser: argparse.ArgumentParser,
-            func: Callable[..., Any],
+            func: Callable[..., Awaitable[None]],
             *,
             cmd: tuple[str, ...],
             timeout_scope: str,
@@ -162,14 +226,18 @@ class External:
             display_args: tuple[str, ...] = (),
         ) -> None:
             """Attach a terminal async command leaf."""
+            _ = (cmd, timeout_scope, display_args)
+            timeout_attr = (
+                "timeout" if any(spec[0] == "timeout" for spec in kwargs) else None
+            )
             parser.set_defaults(
-                handler=External.terminal,
-                terminal_func=func,
-                terminal_cmd=cmd,
-                terminal_timeout_scope=timeout_scope,
-                terminal_kwargs=kwargs,
-                terminal_fixed=fixed or {},
-                terminal_display_args=display_args,
+                command_factory=_ExternalLeafFactory(
+                    func=func,
+                    kwargs=tuple(spec for spec in kwargs if spec[0] != "timeout"),
+                    fixed=fixed or {},
+                ),
+                command_timeout_attr=timeout_attr,
+                command_timeout=math.inf,
             )
 
         @staticmethod
@@ -208,7 +276,7 @@ class External:
             name: str,
             *,
             help_text: str,
-            func: Callable[..., Any],
+            func: Callable[..., Awaitable[None]],
             cmd: tuple[str, ...],
             timeout_scope: str,
         ) -> argparse.ArgumentParser:
@@ -239,9 +307,9 @@ class External:
             add_help: str,
             rm_help: str,
             list_help: str,
-            add_func: Callable[..., Any],
-            rm_func: Callable[..., Any],
-            list_func: Callable[..., Any],
+            add_func: Callable[..., Awaitable[None]],
+            rm_func: Callable[..., Awaitable[None]],
+            list_func: Callable[..., Awaitable[None]],
             cmd_prefix: tuple[str, ...],
             timeout_scope: str,
             path_scoped: bool,
@@ -335,8 +403,8 @@ class External:
             namespace_help: str,
             status_help: str,
             doctor_help: str,
-            status_func: Callable[..., Any],
-            doctor_func: Callable[..., Any],
+            status_func: Callable[..., Awaitable[None]],
+            doctor_func: Callable[..., Awaitable[None]],
             cmd_prefix: tuple[str, ...],
             timeout_scope: str,
         ) -> None:
@@ -559,7 +627,16 @@ class External:
                 "worktree.  Disabled resources always take precedence over enabled "
                 "ones.",
             )
-            command.set_defaults(handler=External.init)
+            command.set_defaults(
+                command_factory=lambda args: ExternalInit(
+                    path=args.path,
+                    enable=args.enable,
+                    disable=args.disable,
+                    yes=args.yes,
+                ),
+                command_timeout_attr="timeout",
+                command_timeout=math.inf,
+            )
 
         def build(self) -> None:
             """Add the 'build' command to the parser."""
@@ -599,7 +676,20 @@ class External:
                 help="Submit durable build requests and exit without waiting for "
                 "publication.",
             )
-            command.set_defaults(handler=External.build)
+            command.set_defaults(
+                command_factory=_ExternalLeafFactory(
+                    func=bertrand_build,
+                    kwargs=(
+                        ("path", "path", _resolved_path),
+                        ("publish", "publish"),
+                        ("auth", "auth"),
+                        ("detach", "detach"),
+                    ),
+                    fixed={"quiet": False},
+                ),
+                command_timeout=math.inf,
+                command_timeout_attr=None,
+            )
 
         def secret(self) -> None:
             """Add the top-level path-scoped 'secret' command namespace."""
@@ -607,9 +697,7 @@ class External:
                 self.commands,
                 command_dest="secret_command",
                 namespace_help="Manage repository/worktree-scoped secret capabilities.",
-                add_help=(
-                    "Create or update a repository/worktree-scoped capability."
-                ),
+                add_help=("Create or update a repository/worktree-scoped capability."),
                 rm_help="Delete a repository/worktree-scoped capability.",
                 list_help=(
                     "List path-relevant capabilities without printing payloads."
@@ -1237,7 +1325,20 @@ class External:
                 action="store_false",
                 help="Disable interactive TTY attachment and use log streaming.",
             )
-            command.set_defaults(command="run", handler=External.run)
+            command.set_defaults(
+                command="run",
+                command_factory=_ExternalLeafFactory(
+                    func=bertrand_run,
+                    kwargs=(
+                        ("target", "path", _resolved_path),
+                        ("detach", "detach"),
+                        ("tty", "tty"),
+                        ("args", "args", tuple),
+                    ),
+                ),
+                command_timeout=math.inf,
+                command_timeout_attr=None,
+            )
 
         def enter(self) -> None:
             """Add the 'enter' command to the parser."""
@@ -1256,7 +1357,17 @@ class External:
                 "Validation is performed at runtime by `bertrand_enter` against "
                 "the configured shell map.",
             )
-            command.set_defaults(handler=External.enter)
+            command.set_defaults(
+                command_factory=_ExternalLeafFactory(
+                    func=bertrand_enter,
+                    kwargs=(
+                        ("target", "path", _resolved_path),
+                        ("shell", "shell"),
+                    ),
+                ),
+                command_timeout=math.inf,
+                command_timeout_attr=None,
+            )
 
         def code(self) -> None:
             """Add the 'code' command to the parser."""
@@ -1274,7 +1385,17 @@ class External:
                 "Validation is performed at runtime by dev-session config "
                 "resolution.",
             )
-            command.set_defaults(handler=External.code)
+            command.set_defaults(
+                command_factory=_ExternalLeafFactory(
+                    func=bertrand_code,
+                    kwargs=(
+                        ("target", "path", _resolved_path),
+                        ("editor", "editor"),
+                    ),
+                ),
+                command_timeout=math.inf,
+                command_timeout_attr=None,
+            )
 
         def scale(self) -> None:
             """Add the 'scale' command to the parser."""
@@ -1308,7 +1429,18 @@ class External:
                     "inf to wait indefinitely."
                 ),
             )
-            command.set_defaults(handler=External.scale)
+            command.set_defaults(
+                command_factory=_ExternalLeafFactory(
+                    func=bertrand_scale,
+                    kwargs=(
+                        ("target", "path", _resolved_path),
+                        ("replicas", "replicas"),
+                        ("grace_period_seconds", "grace"),
+                    ),
+                ),
+                command_timeout_attr="timeout",
+                command_timeout=math.inf,
+            )
 
         def rm(self) -> None:
             """Add the 'rm' command to the parser."""
@@ -1333,7 +1465,17 @@ class External:
                     "inf to wait indefinitely."
                 ),
             )
-            command.set_defaults(handler=External.rm)
+            command.set_defaults(
+                command_factory=_ExternalLeafFactory(
+                    func=bertrand_rm,
+                    kwargs=(
+                        ("target", "path", _resolved_path),
+                        ("grace_period_seconds", "grace"),
+                    ),
+                ),
+                command_timeout_attr="timeout",
+                command_timeout=math.inf,
+            )
 
         def dashboard(self) -> None:
             """Add the 'dashboard' command to the parser."""
@@ -1370,7 +1512,17 @@ class External:
                 action="store_false",
                 help="Print the dashboard URL without opening a browser.",
             )
-            command.set_defaults(handler=External.dashboard)
+            command.set_defaults(
+                command_factory=_ExternalLeafFactory(
+                    func=bertrand_dashboard,
+                    kwargs=(
+                        ("port", "port"),
+                        ("open_browser", "open_browser"),
+                    ),
+                ),
+                command_timeout_attr="timeout",
+                command_timeout=math.inf,
+            )
 
         def clean(self) -> None:
             """Add the 'clean' command to the parser."""
@@ -1402,7 +1554,17 @@ class External:
                     "wait indefinitely."
                 ),
             )
-            command.set_defaults(handler=External.clean)
+            command.set_defaults(
+                command_factory=_ExternalLeafFactory(
+                    func=bertrand_clean,
+                    kwargs=(
+                        ("assume_yes", "yes"),
+                        ("force", "force"),
+                    ),
+                ),
+                command_timeout_attr="timeout",
+                command_timeout=math.inf,
+            )
 
         def __call__(self) -> argparse.Namespace:
             """Run the command-line parser.
@@ -1430,207 +1592,6 @@ class External:
             args.args = workload_args
             return args
 
-    @staticmethod
-    def version(_: argparse.Namespace) -> None:
-        """Execute the `bertrand --version` CLI command.
-
-        Parameters
-        ----------
-        _ : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        print(__version__)
-
-    @staticmethod
-    def init(args: argparse.Namespace) -> None:
-        """Execute the `bertrand init` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        asyncio.run(cli(
-            ExternalInit(
-                path=(
-                    None if args.path is None
-                    else Path(args.path).expanduser().resolve()
-                ),
-                enable=args.enable,
-                disable=args.disable,
-                yes=args.yes
-            ),
-            timeout=args.timeout,
-        ))
-
-    @staticmethod
-    def build(args: argparse.Namespace) -> None:
-        """Execute the `bertrand build` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        worktree = Path(args.path).expanduser().resolve()
-        asyncio.run(cli(
-            bertrand_build,
-            timeout=math.inf,
-            path=worktree,
-            publish=args.publish,
-            auth=args.auth,
-            quiet=False,
-            detach=args.detach,
-        ))
-
-    @staticmethod
-    def run(args: argparse.Namespace) -> None:
-        """Execute the `bertrand run` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        cli(
-            lambda _: asyncio.run(bertrand_run(
-                Path(args.path).expanduser().resolve(),
-                detach=args.detach,
-                tty=args.tty,
-                args=args.args,
-            )),
-            timeout=math.inf,
-        )
-
-    @staticmethod
-    def enter(args: argparse.Namespace) -> None:
-        """Execute the `bertrand enter` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-        """
-        cli(
-            lambda _: asyncio.run(bertrand_enter(
-                Path(args.path).expanduser().resolve(),
-                shell=args.shell or None,
-            )),
-            timeout=math.inf,
-        )
-
-    @staticmethod
-    def code(args: argparse.Namespace) -> None:
-        """Execute the `bertrand code` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        """
-        cli(
-            lambda _: asyncio.run(bertrand_code(
-                Path(args.path).expanduser().resolve(),
-                editor=args.editor or None,
-            )),
-            timeout=math.inf,
-        )
-
-    @staticmethod
-    def scale(args: argparse.Namespace) -> None:
-        """Execute the `bertrand scale` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        Raises
-        ------
-        OSError
-            If the replica count or grace period is invalid.
-        """
-        if args.replicas < 0:
-            msg = "scale replicas cannot be negative"
-            raise OSError(msg)
-        if args.grace < 0:
-            msg = "scale grace period must be non-negative"
-            raise OSError(msg)
-        cli(
-            lambda deadline: asyncio.run(bertrand_scale(
-                Path(args.path).expanduser().resolve(),
-                deadline=deadline,
-                replicas=args.replicas,
-                grace_period_seconds=args.grace,
-            )),
-            timeout=args.timeout,
-        )
-
-    @staticmethod
-    def rm(args: argparse.Namespace) -> None:
-        """Execute the `bertrand rm` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        Raises
-        ------
-        OSError
-            If the grace period is invalid.
-        """
-        if args.grace < 0:
-            msg = "rm grace period must be non-negative"
-            raise OSError(msg)
-        cli(
-            lambda deadline: asyncio.run(bertrand_rm(
-                Path(args.path).expanduser().resolve(),
-                deadline=deadline,
-                grace_period_seconds=args.grace,
-            )),
-            timeout=args.timeout,
-        )
-
-    @staticmethod
-    def dashboard(args: argparse.Namespace) -> None:
-        """Execute the `bertrand dashboard` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        """
-        cli(
-            lambda deadline: asyncio.run(bertrand_dashboard(
-                deadline=deadline,
-                port=args.port,
-                open_browser=args.open_browser,
-            )),
-            timeout=args.timeout,
-        )
-
-    @staticmethod
-    def clean(args: argparse.Namespace) -> None:
-        """Execute the `bertrand clean` CLI command.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            The parsed command-line arguments.
-
-        """
-        cli(
-            lambda deadline: asyncio.run(bertrand_clean(
-                deadline=deadline,
-                assume_yes=args.yes,
-                force=args.force,
-            )),
-            timeout=args.timeout,
-        )
-
     def __call__(self) -> None:
         """Parse and dispatch the selected external command."""
         parser = External.Parser()
@@ -1638,4 +1599,7 @@ class External:
         if args.command is None:
             parser.root.print_help()
             return
-        args.handler(args)
+        command = args.command_factory(args)
+        timeout_attr = args.command_timeout_attr
+        timeout = getattr(args, timeout_attr) if timeout_attr else args.command_timeout
+        asyncio.run(cli(command, timeout=float(timeout)))

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from bertrand.env.build_args import (
@@ -18,6 +18,7 @@ from bertrand.env.config.bertrand import Bertrand
 from bertrand.env.config.core import Config, _metadata_lock_key
 from bertrand.env.config.python import PyProject
 from bertrand.env.git import (
+    Deadline,
     atomic_write_text,
     inside_container,
     inside_image,
@@ -26,31 +27,28 @@ from bertrand.env.git import (
 from bertrand.env.kube.lock.cluster import ClusterLock
 
 if TYPE_CHECKING:
-    import argparse
     from collections.abc import AsyncIterator, Sequence
 
 
-def bertrand_build(args: argparse.Namespace) -> None:
-    """Execute the internal `bertrand build` command.
+@dataclass(frozen=True, slots=True)
+class InternalBuildCommand:
+    """Internal `bertrand build` command closure."""
 
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed internal CLI arguments.
+    build_arg: tuple[str, ...]
 
-    """
-    asyncio.run(_bertrand_build_async(args))
-
-
-async def _bertrand_build_async(args: argparse.Namespace) -> None:
-    cli_args = _parse_build_args(args.build_arg)
-    resolved_args = _resolve_image_build_args(cli_args)
-    if inside_container():
-        async with live_project_context("build") as (_kube, config, _repo_id):
-            await _build(config, build_args=resolved_args)
-    else:
-        async with image_build_context("build") as config:
-            await _build(config, build_args=resolved_args)
+    async def __call__(self, deadline: Deadline) -> None:
+        """Run the command."""
+        cli_args = _parse_build_args(self.build_arg)
+        resolved_args = _resolve_image_build_args(cli_args)
+        if inside_container():
+            async with live_project_context(
+                "build",
+                deadline=deadline,
+            ) as (_kube, config, _repo_id):
+                await _build(config, build_args=resolved_args, deadline=deadline)
+        else:
+            async with image_build_context("build", deadline=deadline) as config:
+                await _build(config, build_args=resolved_args, deadline=deadline)
 
 
 def _parse_build_args(entries: Sequence[str]) -> dict[str, str]:
@@ -113,7 +111,12 @@ def _write_stored_image_build_args(args: dict[str, str]) -> None:
     IMAGE_BUILD_ARGS_FILE.chmod(0o444)
 
 
-async def _build(config: Config, *, build_args: dict[str, str]) -> None:
+async def _build(
+    config: Config,
+    *,
+    build_args: dict[str, str],
+    deadline: Deadline,
+) -> None:
     if not config:
         msg = "build() requires an active config context"
         raise RuntimeError(msg)
@@ -143,8 +146,8 @@ async def _build(config: Config, *, build_args: dict[str, str]) -> None:
     if not inside_container():
         sync_cmd.append("--no-editable")
 
-    async with _build_lock(config):
-        await config.sync(image_build=True)
+    async with _build_lock(config, deadline=deadline):
+        await config.sync(image_build=True, deadline=deadline)
         await run(
             [
                 "uv",
@@ -164,13 +167,13 @@ def _uv_build_arg_settings(build_args: dict[str, str]) -> list[str]:
 
 
 @asynccontextmanager
-async def _build_lock(config: Config) -> AsyncIterator[None]:
+async def _build_lock(config: Config, *, deadline: Deadline) -> AsyncIterator[None]:
     if config.kube is None:
         yield
         return
-    async with ClusterLock(
-        config.kube,
-        _metadata_lock_key(config.repo, config.root),
-        timeout=config.timeout,
-    ):
+    lock = ClusterLock(config.kube, _metadata_lock_key(config.repo, config.root))
+    await lock.lock(deadline)
+    try:
         yield
+    finally:
+        await lock.unlock(ignore_errors=True)

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 from bertrand.env.cli.external._helper import _project_command_context
+from bertrand.env.git import Deadline
 from bertrand.env.kube.workload.project import remove_project_workload
 
 if TYPE_CHECKING:
@@ -18,7 +18,7 @@ async def bertrand_rm(
     target: Path,
     *,
     grace_period_seconds: int = 10,
-    timeout: float = math.inf,
+    deadline: Deadline,
 ) -> None:
     """Remove managed Kubernetes workload topology for a project target.
 
@@ -29,7 +29,7 @@ async def bertrand_rm(
         attached to HEAD.
     grace_period_seconds : int, optional
         Kubernetes pod termination grace period for active execution objects.
-    timeout : float, optional
+    deadline : Deadline
         Maximum Kubernetes API/convergence budget.
 
     Raises
@@ -46,7 +46,7 @@ async def bertrand_rm(
         msg = "rm grace period cannot be negative"
         raise ValueError(msg)
 
-    async with _project_command_context(target, timeout=timeout) as (
+    async with _project_command_context(target, deadline=deadline) as (
         kube,
         _repo,
         _worktree,
@@ -55,9 +55,9 @@ async def bertrand_rm(
         result = await remove_project_workload(
             kube,
             config=config,
-            repo_id=config.repo.repo_id,
+            repo_id=config.repo.id,
             grace_period_seconds=grace_period_seconds,
-            timeout=timeout,
+            deadline=deadline,
         )
     _print_rm_result(result)
 

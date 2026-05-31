@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import KubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -68,7 +70,7 @@ class Namespace(
         kube: Kube,
         *,
         name: str,
-        timeout: float,
+        deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
     ) -> Self:
@@ -80,7 +82,7 @@ class Namespace(
             Active Kubernetes API context.
         name : str
             Namespace name to create or patch.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         labels : Mapping[str, str] | None, optional
             Labels to apply to `metadata.labels`.
@@ -108,7 +110,7 @@ class Namespace(
                 kube,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 

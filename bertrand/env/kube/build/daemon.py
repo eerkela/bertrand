@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import math
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, Deadline
 from bertrand.env.host import CACHE_DIR
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.daemonset import DaemonSet
@@ -200,7 +199,7 @@ class _BuildKitPoolInventory:
 async def ensure_buildkit_pool(
     kube: Kube,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
     config_hash: str | None = None,
 ) -> None:
     """Converge the per-node BuildKit DaemonSet.
@@ -209,7 +208,7 @@ async def ensure_buildkit_pool(
     ----------
     kube : Kube
         Kubernetes API client for the target cluster.
-    timeout : float, optional
+    deadline : Deadline
         Maximum runtime budget in seconds. If infinite, wait indefinitely.
     config_hash : str | None, optional
         Hash of the mounted BuildKit configuration. When provided, the hash is
@@ -222,9 +221,7 @@ async def ensure_buildkit_pool(
     OSError
         If the cluster has no ready, schedulable Linux build nodes.
     """
-    msg = "BuildKit pool timeout must be positive"
-    deadline = Deadline.from_timeout(timeout, message=msg)
-    nodes = await Node.list(kube, timeout=deadline.remaining())
+    nodes = await Node.list(kube, deadline=deadline)
     if not _eligible_nodes_from(nodes):
         msg = "BuildKit pool requires at least one ready schedulable Linux node"
         raise OSError(msg)
@@ -235,10 +232,10 @@ async def ensure_buildkit_pool(
         labels=_BUILDKIT_POOL_LABELS,
         selector=_BUILDKIT_POOL_SELECTOR,
         pod_template=_pod_template(config_hash=config_hash),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     try:
-        await daemonset.wait_rollout(kube, timeout=deadline.remaining())
+        await daemonset.wait_rollout(kube, deadline=deadline)
     except (OSError, TimeoutError) as err:
         msg = await _rollout_error(kube, config_hash=config_hash)
         if isinstance(err, TimeoutError):
@@ -249,7 +246,7 @@ async def ensure_buildkit_pool(
 async def buildkit_pool_status(
     kube: Kube,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
     config_hash: str | None = None,
 ) -> BuildKitPoolStatus:
     """Inspect BuildKit pool readiness without mutating the cluster.
@@ -258,7 +255,7 @@ async def buildkit_pool_status(
     ----------
     kube : Kube
         Kubernetes API client for the target cluster.
-    timeout : float, optional
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
     config_hash : str | None, optional
         Expected BuildKit configuration hash. When omitted, config freshness is not
@@ -274,10 +271,6 @@ async def buildkit_pool_status(
     OSError
         If Kubernetes read operations fail or return malformed data.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BuildKit pool status timeout must be positive",
-    )
     try:
         inventory = await _buildkit_pool_inventory(
             kube,
@@ -334,7 +327,7 @@ async def buildkit_pool_status(
 async def ready_buildkit_platform_nodes(
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
     config_hash: str | None,
 ) -> dict[str, tuple[str, ...]]:
     """Return ready BuildKit node names grouped by native platform.
@@ -343,7 +336,7 @@ async def ready_buildkit_platform_nodes(
     ----------
     kube : Kube
         Kubernetes API client for the target cluster.
-    timeout : float
+    deadline : Deadline
         Maximum discovery budget in seconds. If infinite, wait indefinitely.
     config_hash : str | None
         Expected BuildKit configuration hash. When provided, stale builder pods are
@@ -359,10 +352,6 @@ async def ready_buildkit_platform_nodes(
     OSError
         If no current builder is available for an eligible platform.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BuildKit pool discovery timeout must be positive",
-    )
     inventory = await _buildkit_pool_inventory(
         kube,
         config_hash=config_hash,
@@ -401,12 +390,12 @@ async def _buildkit_pool_inventory(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BUILDKIT_NAME,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
-        Node.list(kube, timeout=deadline.remaining()),
+        Node.list(kube, deadline=deadline),
         Pod.list(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             namespaces=(BERTRAND_NAMESPACE,),
             labels=_BUILDKIT_POOL_SELECTOR,
         ),
@@ -569,7 +558,7 @@ async def _rollout_error(
     try:
         status = await buildkit_pool_status(
             kube,
-            timeout=BUILDKIT_ROLLOUT_DIAGNOSTIC_TIMEOUT_SECONDS,
+            deadline=Deadline(BUILDKIT_ROLLOUT_DIAGNOSTIC_TIMEOUT_SECONDS),
             config_hash=config_hash,
         )
     except (OSError, TimeoutError) as diagnostic_err:

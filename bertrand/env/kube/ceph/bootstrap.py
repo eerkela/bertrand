@@ -7,7 +7,7 @@ import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_ENV, Deadline, until
+from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline, until
 from bertrand.env.kube.api.bootstrap import kubectl
 from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
 from bertrand.env.kube.crd import CustomResourceDefinition
@@ -45,7 +45,7 @@ ROOK_BACKEND_POLL_SECONDS = 0.5
 ROOK_MANAGED_LABEL = "bertrand.dev/rook-ceph"
 ROOK_MANAGED_VALUE = "v1"
 ROOK_LABELS = {
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     ROOK_MANAGED_LABEL: ROOK_MANAGED_VALUE,
 }
 ROOK_CEPH_CLUSTER_RESOURCE: CustomObjectResource[CustomObject] = CustomObjectResource(
@@ -57,72 +57,64 @@ ROOK_CEPH_CLUSTER_RESOURCE: CustomObjectResource[CustomObject] = CustomObjectRes
 )
 
 
-async def ensure_rook_ceph_base(kube: Kube, *, timeout: float) -> None:
+async def ensure_rook_ceph_base(kube: Kube, *, deadline: Deadline) -> None:
     """Install Bertrand's Rook operator substrate without waiting for Ceph health.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="Rook Ceph base convergence timeout must be positive",
-    )
-    await _ensure_namespace_owned(kube, ROOK_NAMESPACE, timeout=deadline.remaining())
+    await _ensure_namespace_owned(kube, ROOK_NAMESPACE, deadline=deadline)
     await _apply_urls(
         ROOK_CRDS_URL,
         ROOK_COMMON_URL,
         ROOK_OPERATOR_URL,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await asyncio.gather(
         _wait_crd_established(
             kube,
             "cephclusters.ceph.rook.io",
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         _wait_crd_established(
             kube,
             "cephfilesystems.ceph.rook.io",
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
     await _wait_deployment(
         kube,
         namespace=ROOK_NAMESPACE,
         name=ROOK_OPERATOR_DEPLOYMENT,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await asyncio.gather(
-        _ensure_rook_storage_classes(timeout=deadline.remaining()),
-        _ensure_rook_cluster(timeout=deadline.remaining()),
+        _ensure_rook_storage_classes(deadline=deadline),
+        _ensure_rook_cluster(deadline=deadline),
     )
-    await _apply_urls(ROOK_TOOLBOX_URL, timeout=deadline.remaining())
+    await _apply_urls(ROOK_TOOLBOX_URL, deadline=deadline)
 
 
-async def wait_rook_ceph_ready(kube: Kube, *, timeout: float) -> None:
+async def wait_rook_ceph_ready(kube: Kube, *, deadline: Deadline) -> None:
     """Wait until the Rook-managed Ceph cluster and storage classes are ready."""
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="Rook Ceph readiness timeout must be positive",
-    )
     await asyncio.gather(
-        _wait_ceph_cluster_ready(kube, timeout=deadline.remaining()),
+        _wait_ceph_cluster_ready(kube, deadline=deadline),
         _wait_deployment(
             kube,
             namespace=ROOK_NAMESPACE,
             name=ROOK_TOOLBOX_DEPLOYMENT,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
-        _wait_storage_classes(kube, timeout=deadline.remaining()),
+        _wait_storage_classes(kube, deadline=deadline),
     )
 
 
-async def rook_ceph_ready(kube: Kube, *, timeout: float) -> bool:
+async def rook_ceph_ready(kube: Kube, *, deadline: Deadline) -> bool:
     """Return whether the Rook-managed Ceph substrate appears ready.
 
     Returns
@@ -136,18 +128,18 @@ async def rook_ceph_ready(kube: Kube, *, timeout: float) -> bool:
                 kube,
                 namespace=ROOK_NAMESPACE,
                 name=ROOK_OPERATOR_DEPLOYMENT,
-                timeout=timeout,
+                deadline=deadline,
             ),
-            _wait_ceph_cluster_ready(kube, timeout=timeout),
-            _wait_storage_classes(kube, timeout=timeout),
+            _wait_ceph_cluster_ready(kube, deadline=deadline),
+            _wait_storage_classes(kube, deadline=deadline),
         )
     except (OSError, TimeoutError, ValueError):
         return False
     return True
 
 
-async def _ensure_namespace_owned(kube: Kube, name: str, *, timeout: float) -> None:
-    current = await Namespace.get(kube, name=name, timeout=timeout)
+async def _ensure_namespace_owned(kube: Kube, name: str, *, deadline: Deadline) -> None:
+    current = await Namespace.get(kube, name=name, deadline=deadline)
     if current is not None:
         labels = current.labels
         if labels.get(ROOK_MANAGED_LABEL) != ROOK_MANAGED_VALUE:
@@ -156,20 +148,16 @@ async def _ensure_namespace_owned(kube: Kube, name: str, *, timeout: float) -> N
                 "Bertrand-managed; refusing to mutate a shared Rook install"
             )
             raise OSError(msg)
-    await Namespace.upsert(kube, name=name, labels=ROOK_LABELS, timeout=timeout)
+    await Namespace.upsert(kube, name=name, labels=ROOK_LABELS, deadline=deadline)
 
 
-async def _apply_urls(*urls: str, timeout: float) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="storage backend manifest apply timeout must be positive",
-    )
+async def _apply_urls(*urls: str, deadline: Deadline) -> None:
     for url in urls:
         try:
             await kubectl(
                 ["apply", "--server-side", "-f", url],
                 capture_output=True,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         except OSError as err:
             msg = f"failed to apply storage backend manifest {url!r}"
@@ -179,13 +167,13 @@ async def _apply_urls(*urls: str, timeout: float) -> None:
 async def _kubectl_apply_manifest(
     manifest: Mapping[str, object],
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     await kubectl(
         ["apply", "--server-side", "-f", "-"],
         stdin=json.dumps(manifest, separators=(",", ":")),
         capture_output=True,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -193,10 +181,14 @@ async def _wait_crd_established(
     kube: Kube,
     name: str,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> CustomResourceDefinition:
-    async def established(remaining: float) -> CustomResourceDefinition:
-        crd = await CustomResourceDefinition.get(kube, name=name, timeout=remaining)
+    async def established(attempt_deadline: Deadline) -> CustomResourceDefinition:
+        crd = await CustomResourceDefinition.get(
+            kube,
+            name=name,
+            deadline=attempt_deadline,
+        )
         if crd is None:
             msg = f"storage backend CRD {name!r} is not installed yet"
             raise TimeoutError(msg)
@@ -205,12 +197,15 @@ async def _wait_crd_established(
             raise TimeoutError(msg)
         return crd
 
-    return await until(
-        established,
-        timeout=timeout,
-        interval=ROOK_BACKEND_POLL_SECONDS,
-        action=f"waiting for storage backend CRD {name!r}",
-    )
+    try:
+        return await until(
+            established,
+            deadline=deadline,
+            delay=ROOK_BACKEND_POLL_SECONDS,
+        )
+    except TimeoutError as err:
+        msg = f"waiting for storage backend CRD {name!r} timed out"
+        raise TimeoutError(msg) from err
 
 
 async def _wait_deployment(
@@ -218,14 +213,14 @@ async def _wait_deployment(
     *,
     namespace: str,
     name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> Deployment:
-    async def available(remaining: float) -> Deployment:
+    async def available(attempt_deadline: Deadline) -> Deployment:
         deployment = await Deployment.get(
             kube,
             namespace=namespace,
             name=name,
-            timeout=remaining,
+            deadline=attempt_deadline,
         )
         if deployment is None:
             msg = f"Deployment {namespace}/{name} is not created yet"
@@ -235,15 +230,18 @@ async def _wait_deployment(
             raise TimeoutError(msg)
         return deployment
 
-    return await until(
-        available,
-        timeout=timeout,
-        interval=ROOK_BACKEND_POLL_SECONDS,
-        action=f"waiting for Deployment {namespace}/{name}",
-    )
+    try:
+        return await until(
+            available,
+            deadline=deadline,
+            delay=ROOK_BACKEND_POLL_SECONDS,
+        )
+    except TimeoutError as err:
+        msg = f"waiting for Deployment {namespace}/{name} timed out"
+        raise TimeoutError(msg) from err
 
 
-async def _ensure_rook_storage_classes(*, timeout: float) -> None:
+async def _ensure_rook_storage_classes(*, deadline: Deadline) -> None:
     manifest = {
         "apiVersion": "v1",
         "kind": "List",
@@ -292,10 +290,10 @@ async def _ensure_rook_storage_classes(*, timeout: float) -> None:
             },
         ],
     }
-    await _kubectl_apply_manifest(manifest, timeout=timeout)
+    await _kubectl_apply_manifest(manifest, deadline=deadline)
 
 
-async def _ensure_rook_cluster(*, timeout: float) -> None:
+async def _ensure_rook_cluster(*, deadline: Deadline) -> None:
     manifest = {
         "apiVersion": "v1",
         "kind": "List",
@@ -347,15 +345,15 @@ async def _ensure_rook_cluster(*, timeout: float) -> None:
             },
         ],
     }
-    await _kubectl_apply_manifest(manifest, timeout=timeout)
+    await _kubectl_apply_manifest(manifest, deadline=deadline)
 
 
-async def _wait_ceph_cluster_ready(kube: Kube, *, timeout: float) -> None:
-    async def ready(remaining: float) -> None:
+async def _wait_ceph_cluster_ready(kube: Kube, *, deadline: Deadline) -> None:
+    async def ready(attempt_deadline: Deadline) -> None:
         obj = await ROOK_CEPH_CLUSTER_RESOURCE.get(
             kube,
             name=ROOK_CLUSTER_NAME,
-            timeout=remaining,
+            deadline=attempt_deadline,
             context=f"failed to read Rook CephCluster {ROOK_NAMESPACE}/"
             f"{ROOK_CLUSTER_NAME}",
         )
@@ -380,31 +378,30 @@ async def _wait_ceph_cluster_ready(kube: Kube, *, timeout: float) -> None:
             )
             raise TimeoutError(msg)
 
-    await until(
-        ready,
-        timeout=timeout,
-        interval=ROOK_BACKEND_POLL_SECONDS,
-        action=f"waiting for Rook CephCluster {ROOK_CLUSTER_NAME!r}",
-    )
+    try:
+        await until(ready, deadline=deadline, delay=ROOK_BACKEND_POLL_SECONDS)
+    except TimeoutError as err:
+        msg = f"waiting for Rook CephCluster {ROOK_CLUSTER_NAME!r} timed out"
+        raise TimeoutError(msg) from err
 
 
-async def _wait_storage_classes(kube: Kube, *, timeout: float) -> None:
-    async def ready(remaining: float) -> None:
+async def _wait_storage_classes(kube: Kube, *, deadline: Deadline) -> None:
+    async def ready(attempt_deadline: Deadline) -> None:
         cephfs, fallback, osd_csi = await asyncio.gather(
             StorageClass.get(
                 kube,
                 name=ROOK_CEPHFS_STORAGE_CLASS,
-                timeout=remaining,
+                deadline=attempt_deadline,
             ),
             StorageClass.get(
                 kube,
                 name=ROOK_CEPHFS_FALLBACK_STORAGE_CLASS,
-                timeout=remaining,
+                deadline=attempt_deadline,
             ),
             StorageClass.get(
                 kube,
                 name=ROOK_OSD_STORAGE_CLASS,
-                timeout=remaining,
+                deadline=attempt_deadline,
             ),
         )
         cephfs = cephfs or fallback
@@ -415,9 +412,8 @@ async def _wait_storage_classes(kube: Kube, *, timeout: float) -> None:
             msg = "Bertrand OSD CSI StorageClass is not available yet"
             raise TimeoutError(msg)
 
-    await until(
-        ready,
-        timeout=timeout,
-        interval=ROOK_BACKEND_POLL_SECONDS,
-        action="waiting for Bertrand storage classes",
-    )
+    try:
+        await until(ready, deadline=deadline, delay=ROOK_BACKEND_POLL_SECONDS)
+    except TimeoutError as err:
+        msg = "waiting for Bertrand storage classes timed out"
+        raise TimeoutError(msg) from err

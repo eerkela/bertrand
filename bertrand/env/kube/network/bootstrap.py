@@ -28,41 +28,37 @@ GATEWAY_API_CRDS = (
 NETWORK_BACKEND_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
-async def ensure_network_backend(kube: Kube, *, timeout: float) -> None:
+async def ensure_network_backend(kube: Kube, *, deadline: Deadline) -> None:
     """Install and verify Bertrand's cluster networking backend.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="network backend convergence timeout must be positive",
-    )
-    await _apply_envoy_gateway(timeout=deadline.remaining())
+    await _apply_envoy_gateway(deadline=deadline)
     await asyncio.gather(
         *(
             _wait_crd_established(
                 kube,
                 name=crd_name,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             for crd_name in GATEWAY_API_CRDS
         )
     )
-    await _wait_envoy_gateway_available(kube, timeout=deadline.remaining())
+    await _wait_envoy_gateway_available(kube, deadline=deadline)
 
 
-async def _apply_envoy_gateway(*, timeout: float) -> None:
+async def _apply_envoy_gateway(*, deadline: Deadline) -> None:
     try:
         await kubectl(
             ["apply", "--server-side", "-f", ENVOY_GATEWAY_INSTALL_URL],
             capture_output=True,
-            timeout=timeout,
+            deadline=deadline,
         )
     except OSError as err:
         msg = (
@@ -76,10 +72,14 @@ async def _wait_crd_established(
     kube: Kube,
     *,
     name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> CustomResourceDefinition:
-    async def established(remaining: float) -> CustomResourceDefinition:
-        crd = await CustomResourceDefinition.get(kube, name=name, timeout=remaining)
+    async def established(attempt_deadline: Deadline) -> CustomResourceDefinition:
+        crd = await CustomResourceDefinition.get(
+            kube,
+            name=name,
+            deadline=attempt_deadline,
+        )
         if crd is None:
             msg = f"Gateway API CRD {name!r} is not installed yet"
             raise TimeoutError(msg)
@@ -91,9 +91,8 @@ async def _wait_crd_established(
     try:
         return await until(
             established,
-            timeout=timeout,
-            interval=NETWORK_BACKEND_WAIT_POLL_INTERVAL_SECONDS,
-            action=f"waiting for Gateway API CRD {name!r}",
+            deadline=deadline,
+            delay=NETWORK_BACKEND_WAIT_POLL_INTERVAL_SECONDS,
         )
     except TimeoutError as err:
         msg = (
@@ -106,14 +105,14 @@ async def _wait_crd_established(
 async def _wait_envoy_gateway_available(
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> Deployment:
-    async def available(remaining: float) -> Deployment:
+    async def available(attempt_deadline: Deadline) -> Deployment:
         deployment = await Deployment.get(
             kube,
             namespace=ENVOY_GATEWAY_NAMESPACE,
             name=ENVOY_GATEWAY_DEPLOYMENT,
-            timeout=remaining,
+            deadline=attempt_deadline,
         )
         if deployment is None:
             msg = (
@@ -132,12 +131,8 @@ async def _wait_envoy_gateway_available(
     try:
         return await until(
             available,
-            timeout=timeout,
-            interval=NETWORK_BACKEND_WAIT_POLL_INTERVAL_SECONDS,
-            action=(
-                f"waiting for Envoy Gateway Deployment {ENVOY_GATEWAY_NAMESPACE}/"
-                f"{ENVOY_GATEWAY_DEPLOYMENT}"
-            ),
+            deadline=deadline,
+            delay=NETWORK_BACKEND_WAIT_POLL_INTERVAL_SECONDS,
         )
     except TimeoutError as err:
         msg = (

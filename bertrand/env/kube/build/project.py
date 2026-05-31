@@ -11,7 +11,7 @@ from bertrand.env.config.bertrand import Bertrand, BertrandModel, project_image_
 from bertrand.env.config.conan import ConanConfig, ConanConfigModel
 from bertrand.env.config.core import Config, _check_uuid
 from bertrand.env.config.python import PyProject
-from bertrand.env.git import ensure_worktree_id
+from bertrand.env.git import GitRepository
 from bertrand.env.kube.build.containerfile import project_containerfile
 from bertrand.env.kube.build.repository import image_repository_ref
 from bertrand.env.kube.build.request import (
@@ -81,7 +81,7 @@ def project_image_spec(
     image_config = bertrand.image
 
     worktree = worktree_identity(config.worktree)
-    worktree_id = ensure_worktree_id(config.root)
+    worktree_id = GitRepository.Worktree(repo=config.repo, path=config.root).id
     oci_tag = project_image_tag(pyproject.project.version)
     image = image_repository_ref(
         "/".join(

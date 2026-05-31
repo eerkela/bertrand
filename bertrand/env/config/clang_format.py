@@ -20,7 +20,7 @@ from pydantic import (
     model_validator,
 )
 
-from bertrand.env.git import CONTAINER_TMP, atomic_write_text
+from bertrand.env.git import CONTAINER_TMP, Deadline, atomic_write_text
 
 from .core import (
     Config,
@@ -54,8 +54,7 @@ class ClangFormatModel(BaseModel):
         for qualifier in value:
             if qualifier in seen:
                 msg = (
-                    "duplicate qualifier in ClangFormat.QualifierOrder: "
-                    f"'{qualifier}'"
+                    f"duplicate qualifier in ClangFormat.QualifierOrder: '{qualifier}'"
                 )
                 raise ValueError(msg)
             seen.add(qualifier)
@@ -784,9 +783,7 @@ class ClangFormatModel(BaseModel):
             _ConsecutiveBitFields,
             Field(
                 default_factory=_ConsecutiveBitFields.model_construct,
-                description=(
-                    "Options for aligning consecutive bit field declarations"
-                ),
+                description=("Options for aligning consecutive bit field declarations"),
             ),
         ]
         ConsecutiveDeclarations: Annotated[
@@ -794,8 +791,7 @@ class ClangFormatModel(BaseModel):
             Field(
                 default_factory=_ConsecutiveDeclarations.model_construct,
                 description=(
-                    "Options for aligning consecutive function/variable "
-                    "declarations"
+                    "Options for aligning consecutive function/variable declarations"
                 ),
             ),
         ]
@@ -2762,9 +2758,7 @@ class ClangFormatModel(BaseModel):
             _Base,
             Field(
                 default_factory=_Base.model_construct,
-                description=(
-                    "Options for formatting separators in decimal literals."
-                ),
+                description=("Options for formatting separators in decimal literals."),
             ),
         ]
         Hex: Annotated[
@@ -2814,9 +2808,7 @@ class ClangFormatModel(BaseModel):
             bool,
             Field(
                 default=False,
-                description=(
-                    "Controls whether to keep empty lines at start of file."
-                ),
+                description=("Controls whether to keep empty lines at start of file."),
             ),
         ]
 
@@ -3087,8 +3079,7 @@ class ClangFormatModel(BaseModel):
                 Field(
                     default=False,
                     description=(
-                        "Controls whether to add a space before non-empty "
-                        "parentheses."
+                        "Controls whether to add a space before non-empty parentheses."
                     ),
                 ),
             ]
@@ -3873,8 +3864,7 @@ class ClangFormatModel(BaseModel):
         Field(
             default=True,
             description=(
-                "Whether to insert a newline at the end of the file if it is "
-                "missing."
+                "Whether to insert a newline at the end of the file if it is missing."
             ),
         ),
     ]
@@ -4638,9 +4628,7 @@ class ClangFormatModel(BaseModel):
         _Space,
         Field(
             default_factory=_Space.model_construct,
-            description=(
-                "Options for spacing around language tokens and delimiters."
-            ),
+            description=("Options for spacing around language tokens and delimiters."),
         ),
     ]
 
@@ -4666,7 +4654,13 @@ class ClangFormat(Resource[ClangFormatModel]):
             result[f"{name}MaxDigitsRemove"] = base.Max
         return result
 
-    async def render(self, config: Config, *, image_build: bool) -> None:
+    async def render(
+        self,
+        config: Config,
+        *,
+        image_build: bool,
+        deadline: Deadline,  # noqa: ARG002
+    ) -> None:
         """Render the `.clang-format` artifact."""
         model = config.get(ClangFormat)
         if not image_build or model is None:

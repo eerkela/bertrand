@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 import kubernetes
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -112,7 +114,7 @@ class Service(
         name: str,
         selector: Mapping[str, str],
         ports: Collection[ServicePortView],
-        timeout: float,
+        deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
         service_type: ServiceType = "ClusterIP",
@@ -131,7 +133,7 @@ class Service(
             Pod label selector for the Service.
         ports : Collection[ServicePortView]
             Ports exposed by the Service.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         labels : Mapping[str, str] | None, optional
             Labels to apply to `metadata.labels`.
@@ -172,7 +174,7 @@ class Service(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 

@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bertrand.env.cli.util import warn
 from bertrand.env.config.core import Config
-from bertrand.env.git import GitRepository, abspath
+from bertrand.env.git import Deadline, GitRepository, abspath
+from bertrand.env.git.bertrand_git import warn
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.ceph.mount import (
     prune_repository_mounts,
@@ -17,6 +16,7 @@ from bertrand.env.kube.ceph.mount import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
 
 # TODO: _project_command_context is horrific.  We should probably just do this in
@@ -32,26 +32,31 @@ if TYPE_CHECKING:
 async def _project_command_context(
     target: Path,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> AsyncIterator[tuple[Kube, GitRepository, Path, Config]]:
-    with await Kube.host(timeout=timeout) as kube:
+    with await Kube.host(deadline=deadline) as kube:
         repo, worktree = await resolve_project_worktree(
             kube,
             target,
-            timeout=timeout,
+            deadline=deadline,
         )
-        config = await Config.load(worktree, kube=kube, repo=repo, timeout=timeout)
-        async with config:
-            yield kube, repo, worktree, config
-        await prune_repository_mounts_quietly(kube, timeout=timeout)
+        config = await Config.load(
+            worktree.path,
+            kube=kube,
+            repo=repo,
+            deadline=deadline,
+        )
+        async with config.activate(deadline=deadline):
+            yield kube, repo, worktree.path, config
+        await prune_repository_mounts_quietly(kube, deadline=deadline)
 
 
 async def resolve_project_worktree(
     kube: Kube,
     target: Path,
     *,
-    timeout: float,
-) -> tuple[GitRepository, Path]:
+    deadline: Deadline,
+) -> tuple[GitRepository, GitRepository.Worktree]:
     """Resolve a CLI project target to a repository and concrete worktree.
 
     Parameters
@@ -60,27 +65,27 @@ async def resolve_project_worktree(
         Active Kubernetes API context.
     target : Path
         User-provided repository or worktree path.
-    timeout : float
-        Maximum repository alias refresh budget.
+    deadline : Deadline
+        Operation deadline for repository alias refresh.
 
     Returns
     -------
-    tuple[GitRepository, Path]
-        Resolved repository and concrete worktree path. Repository-root targets use
-        the worktree attached to HEAD.
+    tuple[GitRepository, GitRepository.Worktree]
+        Resolved repository and concrete worktree. Repository-root targets use the
+        worktree attached to HEAD.
 
     Raises
     ------
     OSError
         If no initialized repository is found or HEAD cannot identify a worktree.
     """
-    repo, worktree = await resolve_project_scope(kube, target, timeout=timeout)
-    if not repo:
+    repo, worktree = await resolve_project_scope(kube, target, deadline=deadline)
+    if not await repo.exists(deadline=deadline):
         msg = f"no initialized Git repository found for target: {target}"
         raise OSError(msg)
-    if worktree != Path():
-        return repo, repo.root / worktree
-    head = await repo.head_worktree()
+    if worktree is not None:
+        return repo, worktree
+    head = await repo.head_worktree(deadline=deadline)
     if head is None:
         msg = (
             f"repository HEAD for {repo.root} must be attached to a local worktree; "
@@ -88,15 +93,15 @@ async def resolve_project_worktree(
             "running this command."
         )
         raise OSError(msg)
-    return repo, head.path
+    return repo, head
 
 
 async def resolve_project_scope(
     kube: Kube,
     target: Path,
     *,
-    timeout: float,
-) -> tuple[GitRepository, Path]:
+    deadline: Deadline,
+) -> tuple[GitRepository, GitRepository.Worktree | None]:
     """Resolve a CLI project target without substituting repository roots through HEAD.
 
     Parameters
@@ -105,24 +110,24 @@ async def resolve_project_scope(
         Active Kubernetes API context.
     target : Path
         User-provided repository or worktree path.
-    timeout : float
-        Maximum repository alias refresh budget.
+    deadline : Deadline
+        Operation deadline for repository alias refresh.
 
     Returns
     -------
-    tuple[GitRepository, Path]
-        Resolved repository and relative worktree path. Repository roots return
-        `Path()`.
+    tuple[GitRepository, GitRepository.Worktree | None]
+        Resolved repository and explicit worktree, if the target points to one.
+        Repository roots return None.
     """
     raw = abspath(target)
-    await refresh_repository_alias_for_path(kube, raw, timeout=timeout)
-    return await GitRepository.resolve(raw.resolve())
+    await refresh_repository_alias_for_path(kube, raw, deadline=deadline)
+    return await GitRepository.resolve(raw.resolve(), deadline=deadline)
 
 
 async def prune_repository_mounts_quietly(
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Run opportunistic repository mount pruning without masking command success.
 
@@ -130,10 +135,10 @@ async def prune_repository_mounts_quietly(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
-        Maximum prune budget.
+    deadline : Deadline
+        Operation deadline for mount pruning.
     """
     try:
-        await prune_repository_mounts(kube, timeout=timeout)
+        await prune_repository_mounts(kube, deadline=deadline)
     except (OSError, TimeoutError, ValueError) as err:
         warn(f"repository mount pruning did not converge: {err}")

@@ -35,13 +35,13 @@ async def _pod_logs(
     include_headers: bool,
 ) -> str:
     ordered = tuple(sorted(pods, key=lambda pod: (pod.namespace, pod.name)))
-    if not ordered or deadline.remaining() <= 0:
+    if not ordered or deadline.remaining <= 0:
         return ""
     results = await asyncio.gather(
         *(
             pod.logs(
                 kube,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 tail_lines=tail_lines,
             )
             for pod in ordered
@@ -214,7 +214,7 @@ class Job(
         name: str,
         labels: Mapping[str, str],
         pod_template: PodTemplateSpec,
-        timeout: float,
+        deadline: Deadline,
         backoff_limit: int = 0,
         ttl_seconds_after_finished: int | None = 3600,
         annotations: Mapping[str, str] | None = None,
@@ -237,7 +237,7 @@ class Job(
             Labels to apply to the Job and pod template.
         pod_template : PodTemplateSpec
             Pod template to render into the Job.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         backoff_limit : int, optional
             Kubernetes Job retry limit.
@@ -299,7 +299,7 @@ class Job(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
                 malformed_message=(
                     f"malformed Kubernetes Job payload while creating {name!r}"
                 ),
@@ -422,14 +422,14 @@ class Job(
         """
         return self.failure_message
 
-    async def pods(self, kube: Kube, *, timeout: float) -> builtins.list[Pod]:
+    async def pods(self, kube: Kube, *, deadline: Deadline) -> builtins.list[Pod]:
         """List Pods owned by this Job.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
@@ -442,7 +442,7 @@ class Job(
             kube,
             namespaces=(namespace,),
             labels={"batch.kubernetes.io/job-name": name},
-            timeout=timeout,
+            deadline=deadline,
         )
         if pods:
             return pods
@@ -450,17 +450,17 @@ class Job(
             kube,
             namespaces=(namespace,),
             labels={"job-name": name},
-            timeout=timeout,
+            deadline=deadline,
         )
 
-    async def wait_complete(self, kube: Kube, *, timeout: float) -> Self:
+    async def wait_complete(self, kube: Kube, *, deadline: Deadline) -> Self:
         """Wait until this Job succeeds or fails.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum wait time in seconds. Must be positive.
 
         Returns
@@ -476,7 +476,7 @@ class Job(
         namespace, name = self._require_namespace_name("wait for Job completion")
         current: Self = self
 
-        async def complete(remaining: float) -> Self:
+        async def complete(attempt_deadline: Deadline) -> Self:
             nonlocal current
             if current.succeeded > 0:
                 return current
@@ -484,7 +484,7 @@ class Job(
             if failed_condition is not None:
                 msg = f"Job {namespace}/{name} failed: {failed_condition}"
                 raise OSError(msg)
-            refreshed = await current.refresh(kube, timeout=remaining)
+            refreshed = await current.refresh(kube, deadline=attempt_deadline)
             if refreshed is None:
                 msg = f"Job {namespace}/{name} disappeared while waiting for completion"
                 raise OSError(msg)
@@ -501,9 +501,8 @@ class Job(
         try:
             return await until(
                 complete,
-                timeout=timeout,
-                interval=JOB_WAIT_POLL_INTERVAL_SECONDS,
-                action=f"waiting for Job {namespace}/{name} completion",
+                deadline=deadline,
+                delay=JOB_WAIT_POLL_INTERVAL_SECONDS,
             )
         except TimeoutError as err:
             msg = f"timed out waiting for Job {namespace}/{name} completion"
@@ -513,7 +512,7 @@ class Job(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         tail_lines: int,
         failure_label: str,
         include_headers: bool = False,
@@ -524,7 +523,7 @@ class Job(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum diagnostic budget in seconds.
         tail_lines : int
             Number of log lines to request from each pod.
@@ -538,14 +537,10 @@ class Job(
         str
             Collected pod logs, or a diagnostic placeholder if logs cannot be read.
         """
-        if timeout <= 0:
+        if deadline.remaining <= 0:
             return ""
         try:
-            deadline = Deadline.from_timeout(
-                timeout,
-                message="Job log collection timeout must be positive",
-            )
-            pods = await self.pods(kube, timeout=deadline.remaining())
+            pods = await self.pods(kube, deadline=deadline)
             return await _pod_logs(
                 kube,
                 pods,
@@ -560,7 +555,7 @@ class Job(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         failure_label: str,
     ) -> str:
         """Collect status diagnostics from pods owned by this Job.
@@ -569,7 +564,7 @@ class Job(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum diagnostic budget in seconds.
         failure_label : str
             Human-readable label for diagnostic failures.
@@ -580,10 +575,10 @@ class Job(
             Newline-separated pod status diagnostics, or a diagnostic placeholder if
             pod status cannot be read.
         """
-        if timeout <= 0:
+        if deadline.remaining <= 0:
             return ""
         try:
-            pods = await self.pods(kube, timeout=timeout)
+            pods = await self.pods(kube, deadline=deadline)
             return _pod_diagnostics(pods)
         except (OSError, TimeoutError, ValueError) as err:
             return f"<failed to read {failure_label}: {err}>"
@@ -592,7 +587,7 @@ class Job(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         wait: bool = False,
     ) -> None:
         """Delete this Job, ignoring cleanup failures.
@@ -601,25 +596,21 @@ class Job(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum cleanup budget in seconds.
         wait : bool, optional
             Whether to wait for the Job to disappear after deletion.
         """
-        if timeout <= 0:
+        if deadline.remaining <= 0:
             return
         try:
-            deadline = Deadline.from_timeout(
-                timeout,
-                message="Job cleanup timeout must be positive",
-            )
             await self.delete(
                 kube,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 propagation_policy="Foreground",
             )
             if wait:
-                await self.wait_deleted(kube, timeout=deadline.remaining())
+                await self.wait_deleted(kube, deadline=deadline)
         except (OSError, TimeoutError):
             return
 
@@ -627,13 +618,13 @@ class Job(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         failure_context: str,
         log_heading: str,
         log_failure_label: str,
         tail_lines: int,
-        diagnostic_timeout: float,
-        cleanup_timeout: float,
+        diagnostic_deadline: Deadline,
+        cleanup_deadline: Deadline,
         include_log_headers: bool = False,
     ) -> Self:
         """Wait for this Job and enrich failures with logs and cleanup.
@@ -642,7 +633,7 @@ class Job(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum completion budget in seconds.
         failure_context : str
             Failure message prefix used if the Job fails or times out.
@@ -652,9 +643,9 @@ class Job(
             Label used when diagnostic log collection itself fails.
         tail_lines : int
             Number of pod log lines to collect on failure.
-        diagnostic_timeout : float
+        diagnostic_deadline : Deadline
             Maximum budget for failure log collection.
-        cleanup_timeout : float
+        cleanup_deadline : Deadline
             Maximum budget for failed Job cleanup.
         include_log_headers : bool, optional
             Whether diagnostic logs should include pod headers.
@@ -672,23 +663,19 @@ class Job(
             If the Job fails or disappears while waiting.
         """
         try:
-            return await self.wait_complete(kube, timeout=timeout)
+            return await self.wait_complete(kube, deadline=deadline)
         except (OSError, TimeoutError) as err:
             logs = ""
             diagnostics = ""
-            if diagnostic_timeout > 0:
-                deadline = Deadline.from_timeout(
-                    diagnostic_timeout,
-                    message="Job diagnostic timeout must be positive",
-                )
+            if diagnostic_deadline.remaining > 0:
                 try:
-                    pods = await self.pods(kube, timeout=deadline.remaining())
+                    pods = await self.pods(kube, deadline=diagnostic_deadline)
                     diagnostics = _pod_diagnostics(pods)
                     try:
                         logs = await _pod_logs(
                             kube,
                             pods,
-                            deadline=deadline,
+                            deadline=diagnostic_deadline,
                             tail_lines=tail_lines,
                             include_headers=include_log_headers,
                         )
@@ -699,7 +686,7 @@ class Job(
                     diagnostics = (
                         f"<failed to read Job pod status diagnostics: {diagnostic_err}>"
                     )
-            await self.delete_quietly(kube, timeout=cleanup_timeout)
+            await self.delete_quietly(kube, deadline=cleanup_deadline)
             msg = f"{failure_context}: {err}"
             diagnostics = diagnostics.strip()
             if diagnostics:
@@ -715,13 +702,13 @@ class Job(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         failure_context: str,
         log_heading: str,
         log_failure_label: str,
         tail_lines: int,
-        diagnostic_timeout: float,
-        cleanup_timeout: float,
+        diagnostic_deadline: Deadline,
+        cleanup_deadline: Deadline,
         include_log_headers: bool = False,
         observer: Callable[[Self], Awaitable[None]] | None = None,
     ) -> str:
@@ -731,7 +718,7 @@ class Job(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum completion and success-log budget in seconds.
         failure_context : str
             Failure message prefix used if the Job fails or times out.
@@ -741,9 +728,9 @@ class Job(
             Label used when diagnostic or success log collection itself fails.
         tail_lines : int
             Number of pod log lines to collect.
-        diagnostic_timeout : float
+        diagnostic_deadline : Deadline
             Maximum budget for failure log collection.
-        cleanup_timeout : float
+        cleanup_deadline : Deadline
             Maximum budget for failed Job cleanup.
         include_log_headers : bool, optional
             Whether collected logs should include pod headers.
@@ -762,22 +749,18 @@ class Job(
         OSError
             If the Job fails or disappears while waiting.
         """
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="observed Job timeout must be positive",
-        )
         if observer is not None:
             await observer(self)
         try:
             await self.wait_complete_with_diagnostics(
                 kube,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 failure_context=failure_context,
                 log_heading=log_heading,
                 log_failure_label=log_failure_label,
                 tail_lines=tail_lines,
-                diagnostic_timeout=diagnostic_timeout,
-                cleanup_timeout=cleanup_timeout,
+                diagnostic_deadline=diagnostic_deadline,
+                cleanup_deadline=cleanup_deadline,
                 include_log_headers=include_log_headers,
             )
         except TimeoutError:
@@ -786,7 +769,7 @@ class Job(
             raise OSError(str(err)) from err
         return await self.logs(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             tail_lines=tail_lines,
             failure_label=log_failure_label,
             include_headers=include_log_headers,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.git.bertrand_git import WORKTREE_ID_ENV
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.workload.base import (
     WorkloadIdentity,
@@ -17,6 +16,7 @@ if TYPE_CHECKING:
     from pathlib import PurePosixPath
 
     from bertrand.env.config.bertrand import BertrandModel
+    from bertrand.env.git import Deadline
     from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.api.spec import ContainerPortManifest, PortProtocol
 
@@ -30,7 +30,7 @@ async def workload_pod_from_config(
     worktree_id: str,
     image: str,
     host_id: str | None = None,
-    timeout: float,
+    deadline: Deadline,
 ) -> WorkloadPod | None:
     """Render validated Bertrand workload config into a native pod intent.
 
@@ -51,7 +51,7 @@ async def workload_pod_from_config(
         Container image reference to run.
     host_id : str | None, optional
         Bertrand host UUID used for node-scoped capability resolution.
-    timeout : float
+    deadline : Deadline
         Maximum capability resolution budget in seconds.
 
     Returns
@@ -87,7 +87,7 @@ async def workload_pod_from_config(
         claim_owner=identity.name,
         host_id=host_id,
         node_name=config.node,
-        timeout=timeout,
+        deadline=deadline,
     )
     rendered: list[ContainerSpec] = []
     for container in containers:
@@ -128,7 +128,6 @@ async def workload_pod_from_config(
         resource_claim_capabilities_by_container=(
             capabilities.claim_capabilities_by_container
         ),
-        runtime_env={WORKTREE_ID_ENV: worktree_id},
     )
 
 

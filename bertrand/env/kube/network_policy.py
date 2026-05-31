@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Self, cast
 
 import kubernetes
 
+from bertrand.env.git import Deadline
+
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -96,7 +98,7 @@ class NetworkPolicy(
         namespace: str,
         name: str,
         pod_selector: Mapping[str, str],
-        timeout: float,
+        deadline: Deadline,
         policy_types: Collection[NetworkPolicyType] = ("Ingress",),
         ingress: Collection[Mapping[str, object]] | None = None,
         egress: Collection[Mapping[str, object]] | None = None,
@@ -115,7 +117,7 @@ class NetworkPolicy(
             NetworkPolicy name to create or patch.
         pod_selector : Mapping[str, str]
             Pod label selector for the NetworkPolicy `spec.podSelector.matchLabels`.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         policy_types : Collection[NetworkPolicyType], optional
             Network directions governed by this policy.
@@ -164,7 +166,7 @@ class NetworkPolicy(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 

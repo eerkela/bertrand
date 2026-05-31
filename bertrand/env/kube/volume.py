@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -12,7 +11,7 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 import kubernetes
 
-from bertrand.env.git import Deadline
+from bertrand.env.git import Deadline, until
 
 from .api.client import KubeApiError
 from .api.metadata import KubeMetadata, NamespacedKubeMetadata
@@ -76,7 +75,7 @@ class StorageClass(
         cls,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         preferences: Collection[str],
         require_expansion: bool = False,
     ) -> Self:
@@ -86,7 +85,7 @@ class StorageClass(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         preferences : Collection[str]
             Ordered StorageClass names to try.
@@ -114,7 +113,7 @@ class StorageClass(
             msg = "storage class preferences cannot be empty"
             raise ValueError(msg)
         for name in normalized:
-            storage = await cls.get(kube, timeout=timeout, name=name)
+            storage = await cls.get(kube, deadline=deadline, name=name)
             if storage is None:
                 continue
             if require_expansion and not storage.allow_volume_expansion:
@@ -282,7 +281,7 @@ class PersistentVolumeClaim(
         access_modes: Collection[str],
         storage_class: str,
         storage_request: str,
-        timeout: float,
+        deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
     ) -> Self:
@@ -302,7 +301,7 @@ class PersistentVolumeClaim(
             Required StorageClass name.
         storage_request : str
             Desired storage quantity. Existing claims grow upward but are not shrunk.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         labels : Mapping[str, str] | None, optional
             Labels to apply to `metadata.labels` and validate on existing claims.
@@ -328,10 +327,6 @@ class PersistentVolumeClaim(
             storage_class=storage_class,
             storage_request=storage_request,
         )
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="PVC upsert timeout must be positive",
-        )
         manifest = cls._manifest(
             namespace=namespace,
             name=name,
@@ -349,7 +344,7 @@ class PersistentVolumeClaim(
                     namespace=namespace,
                     name=name,
                     manifest=manifest,
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                     malformed_message=(
                         "malformed Kubernetes PVC payload while creating "
                         f"{namespace}/{name}"
@@ -364,7 +359,7 @@ class PersistentVolumeClaim(
         live = await cls.get(
             kube,
             namespace=namespace,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             name=name,
         )
         if live is None:
@@ -379,7 +374,7 @@ class PersistentVolumeClaim(
         return await live._grow(
             storage_request,
             kube=kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     @classmethod
@@ -393,7 +388,7 @@ class PersistentVolumeClaim(
         storage_class: str,
         storage_request: str,
         snapshot_name: str,
-        timeout: float,
+        deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
     ) -> Self:
@@ -415,7 +410,7 @@ class PersistentVolumeClaim(
             Requested storage quantity for the restored claim.
         snapshot_name : str
             Source `VolumeSnapshot` name.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         labels : Mapping[str, str] | None, optional
             Labels to apply to `metadata.labels`.
@@ -468,7 +463,7 @@ class PersistentVolumeClaim(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
                 context=(
                     "failed to create PersistentVolumeClaim "
                     f"{namespace}/{name} from VolumeSnapshot "
@@ -528,12 +523,12 @@ class PersistentVolumeClaim(
         *,
         namespace: str,
         name: str,
-        timeout: float,
+        deadline: Deadline,
     ) -> Self:
         live = await cls.get(
             kube,
             namespace=namespace,
-            timeout=timeout,
+            deadline=deadline,
             name=name,
         )
         if live is None:
@@ -546,7 +541,7 @@ class PersistentVolumeClaim(
         requested: str,
         *,
         kube: Kube,
-        timeout: float,
+        deadline: Deadline,
     ) -> Self:
         """Resize the PVC if current requested storage is below target.
 
@@ -556,7 +551,7 @@ class PersistentVolumeClaim(
             Desired storage request.
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
@@ -572,16 +567,11 @@ class PersistentVolumeClaim(
         new_size = parse_pvc_size(requested)
         namespace, name = self._require_namespace_name("resize PVC")
         patch = {"spec": {"resources": {"requests": {"storage": requested}}}}
-        deadline = Deadline.from_timeout(
-            timeout,
-            message=f"PVC {namespace}/{name} resize timeout must be positive",
-        )
-
         for attempt in range(PVC_GROW_RETRIES):
             live = await type(self)._resize_target(
                 kube,
                 namespace=namespace,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 name=name,
             )
             current_size = parse_pvc_size(live.requested_storage)
@@ -597,7 +587,7 @@ class PersistentVolumeClaim(
                             _request_timeout=request_timeout,
                         )
                     ),
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                     context=f"failed to patch PVC {name!r} during resize lifecycle",
                     missing_ok=False,
                 )
@@ -616,7 +606,7 @@ class PersistentVolumeClaim(
             live = await type(self)._resize_target(
                 kube,
                 namespace=namespace,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 name=name,
             )
             current_size = parse_pvc_size(live.requested_storage)
@@ -631,14 +621,14 @@ class PersistentVolumeClaim(
         msg = f"PVC {name!r} did not converge to requested size {requested!r}"
         raise OSError(msg)
 
-    async def wait_bound(self, kube: Kube, *, timeout: float) -> Self:
+    async def wait_bound(self, kube: Kube, *, deadline: Deadline) -> Self:
         """Wait until this PVC reaches a bound state.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum wait time in seconds. Must be positive.
 
         Returns
@@ -649,9 +639,8 @@ class PersistentVolumeClaim(
         namespace, name = self._require_namespace_name("wait for PVC binding")
         return await self._wait_until(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             predicate=lambda live: live.is_bound,
-            action=f"waiting for PVC {namespace}/{name} binding",
             pending_message=f"PVC {namespace}/{name} is not bound yet",
             missing_message=f"PVC {name!r} disappeared before binding",
             timeout_message=f"timed out waiting for PVC {namespace}/{name} binding",
@@ -787,7 +776,7 @@ class PersistentVolume(
         cls,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         name: str,
     ) -> Self:
         """Wait until a PersistentVolume exists by name.
@@ -796,7 +785,7 @@ class PersistentVolume(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum wait time in seconds. Must be positive.
         name : str
             PersistentVolume name to wait for.
@@ -809,28 +798,25 @@ class PersistentVolume(
         Raises
         ------
         TimeoutError
-            If the volume is still absent when `timeout` expires.
+            If the volume is still absent when `deadline` expires.
         """
-        deadline = Deadline.from_timeout(
-            timeout,
-            message=f"PersistentVolume {name!r} presence timeout must be positive",
-        )
-        last_error: TimeoutError | None = None
-        while True:
-            remaining = deadline.remaining()
-            if remaining <= 0:
-                msg = f"timed out waiting for PersistentVolume {name!r}"
-                raise TimeoutError(msg) from last_error
-            try:
-                live = await cls.get(kube, timeout=remaining, name=name)
-            except TimeoutError as err:
-                last_error = err
-                await asyncio.sleep(deadline.bounded(VOLUME_WAIT_POLL_INTERVAL_SECONDS))
-                continue
+
+        async def present(attempt_deadline: Deadline) -> Self:
+            live = await cls.get(kube, deadline=attempt_deadline, name=name)
             if live is not None:
                 return live
-            last_error = TimeoutError(f"PersistentVolume {name!r} is not present yet")
-            await asyncio.sleep(deadline.bounded(VOLUME_WAIT_POLL_INTERVAL_SECONDS))
+            msg = f"PersistentVolume {name!r} is not present yet"
+            raise TimeoutError(msg)
+
+        try:
+            return await until(
+                present,
+                deadline=deadline,
+                delay=VOLUME_WAIT_POLL_INTERVAL_SECONDS,
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for PersistentVolume {name!r}"
+            raise TimeoutError(msg) from err
 
     @property
     def phase(self) -> str:

@@ -1,4 +1,5 @@
 """General Bertrand utilities shared between the external and internal CLIs."""
+
 from __future__ import annotations
 
 import json
@@ -7,9 +8,12 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING
 
 from bertrand.env.git import CommandError, Deadline, TimeoutExpired
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 def emit_json(payload: object) -> None:
@@ -23,27 +27,13 @@ def emit_json(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-class CLICommand(Protocol):
-    """A command closure that can be executed by the `cli()` helper method."""
-
-    async def run(self, deadline: Deadline) -> None:
-        """Run the command.
-
-        Parameters
-        ----------
-        deadline : Deadline
-            Command execution deadline derived from the CLI timeout budget.
-        """
-
-
-async def cli(op: CLICommand, *, timeout: float) -> None:
+async def cli(op: Callable[[Deadline], Awaitable[None]], *, timeout: float) -> None:
     """Run one async CLI command and optionally wrap timeout failures.
 
     Parameters
     ----------
-    op : CLICommand
-        Command closure to run, which must conform to the `CLICommand` protocol and
-        capture any additional parameters it needs to run from the CLI argument parser.
+    op : Callable[[Deadline], Awaitable[None]]
+        Async command closure that captures any additional parser parameters.
     timeout : float
         CLI timeout used to set the `Deadline` for the command.
 
@@ -70,14 +60,15 @@ async def cli(op: CLICommand, *, timeout: float) -> None:
         )
 
     started = time.time()
+    deadline = Deadline(timeout=timeout, start=started)
     try:
-        await op.run(Deadline(started + timeout))
+        await op(deadline)
     except (TimeoutError, TimeoutExpired) as err:
         start = datetime.fromtimestamp(started, UTC)
         stop = datetime.now(UTC)
         raise TimeoutExpired(
             cmd=sys.argv,
-            timeout=timeout,
+            timeout=deadline.timeout,
             output=None,
             stderr=f"started at: {start}\nstopped at: {stop}\n",
         ) from err

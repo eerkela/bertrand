@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 import string
 import uuid
@@ -33,7 +32,7 @@ from pydantic import (
     ValidationError,
 )
 
-from bertrand.env.git import GitRepository
+from bertrand.env.git import NO_DEADLINE, Deadline, GitRepository
 from bertrand.env.kube.lock.cluster import ClusterLock
 
 if TYPE_CHECKING:
@@ -469,7 +468,13 @@ class Resource[ModelT: BaseModel]:
             return cast("ModelT", model.model_validate(fragment))
         return None
 
-    async def render(self, config: Config, *, image_build: bool) -> None:
+    async def render(
+        self,
+        config: Config,
+        *,
+        image_build: bool,
+        deadline: Deadline,
+    ) -> None:
         """Write derived content for this resource during `Config.sync()`.
 
         Parameters
@@ -481,6 +486,8 @@ class Resource[ModelT: BaseModel]:
             Whether this hook is being invoked from an image-build or dev-container
             context. Hooks must use this to choose either source-tree artifacts
             (`False`) or container-local artifacts (`True`), never both.
+        deadline : Deadline
+            Operation deadline for render hooks that touch shared cluster state.
 
         Notes
         -----
@@ -624,7 +631,6 @@ class Config:
     repo: GitRepository
     worktree: RelativePath
     kube: Kube | None = field(repr=False)
-    timeout: float
     resources: dict[ResourceName, BaseModel | None] = field(
         default_factory=lambda: {"bertrand": None}
     )
@@ -650,7 +656,7 @@ class Config:
         *,
         kube: Kube | None = None,
         repo: GitRepository | None = None,
-        timeout: float = math.inf,
+        deadline: Deadline = NO_DEADLINE,
     ) -> Self:
         """Load a worktree or standalone configuration root.
 
@@ -671,10 +677,8 @@ class Config:
             An optional parent git repository containing `root`, which determines the
             project root for the environment.  If not provided, then it will be inferred
             from `root` when possible.  Missing repositories select standalone mode.
-        timeout : float, optional
-            Maximum time to wait for acquiring the worktree lock, in seconds.  If
-            infinite, then wait indefinitely for lock acquisition.  Otherwise, if the
-            lock cannot be acquired within this time, a `TimeoutError` will be raised.
+        deadline : Deadline, optional
+            Operation deadline for acquiring the worktree metadata lock.
 
         Returns
         -------
@@ -714,16 +718,14 @@ class Config:
                     repo=GitRepository(root / ".git"),
                     worktree=Path(),
                     kube=kube,
-                    timeout=timeout,
                 )
                 self.resources.update(resources)
-                async with self._metadata_lock():
+                async with self._metadata_lock(deadline):
                     return self
 
         if not any(wt.path == root for wt in await repo.worktrees()):
             msg = (
-                f"worktree {root} is not a valid worktree for repository at "
-                f"{repo.root}"
+                f"worktree {root} is not a valid worktree for repository at {repo.root}"
             )
             raise ValueError(msg)
         if not root.is_relative_to(repo.root):
@@ -737,23 +739,22 @@ class Config:
             repo=repo,
             worktree=root.relative_to(repo.root),
             kube=kube,
-            timeout=timeout,
         )
         self.resources.update(resources)
-        async with self._metadata_lock():
+        async with self._metadata_lock(deadline):
             return self
 
     @asynccontextmanager
-    async def _metadata_lock(self) -> AsyncIterator[None]:
+    async def _metadata_lock(self, deadline: Deadline) -> AsyncIterator[None]:
         if self.kube is None:
             yield
             return
-        async with ClusterLock(
-            self.kube,
-            _metadata_lock_key(self.repo, self.root),
-            timeout=self.timeout,
-        ):
+        lock = ClusterLock(self.kube, _metadata_lock_key(self.repo, self.root))
+        await lock.lock(deadline)
+        try:
             yield
+        finally:
+            await lock.unlock(ignore_errors=True)
 
     def _merge_fragment(
         self,
@@ -882,7 +883,7 @@ class Config:
                 raise OSError(msg)
             self.resources[lookup.name] = model
 
-    async def __aenter__(self) -> Self:
+    async def _enter(self, deadline: Deadline) -> Self:
         """Parse and validate resource config data.
 
         The parsed snapshot remains valid until the outermost context is exited.
@@ -899,7 +900,7 @@ class Config:
 
         old_resources = self.resources.copy()
         try:
-            async with self._metadata_lock():
+            async with self._metadata_lock(deadline):
                 snapshot = await self._init_snapshot()
                 await self._parse_snapshot(snapshot)
                 await self._validate_snapshot(snapshot)
@@ -910,6 +911,38 @@ class Config:
             self.resources = old_resources
             self._entered = 0
             raise
+
+    async def __aenter__(self) -> Self:
+        """Parse and validate resource config data without a deadline.
+
+        Returns
+        -------
+        Self
+            The active configuration context.
+        """
+        return await self._enter(NO_DEADLINE)
+
+    @asynccontextmanager
+    async def activate(
+        self, *, deadline: Deadline = NO_DEADLINE
+    ) -> AsyncIterator[Self]:
+        """Parse and validate resource config data under an operation deadline.
+
+        Parameters
+        ----------
+        deadline : Deadline, optional
+            Operation deadline for cluster metadata locking during parse/validation.
+
+        Yields
+        ------
+        Self
+            The active configuration context.
+        """
+        await self._enter(deadline)
+        try:
+            yield self
+        finally:
+            await self.__aexit__(None, None, None)
 
     async def __aexit__(
         self,
@@ -1027,10 +1060,15 @@ class Config:
         """
         return {r.name: await r.schema() for r in sorted(RESOURCES)}
 
-    async def sync(self, *, image_build: bool = False) -> None:
+    async def sync(
+        self,
+        *,
+        image_build: bool = False,
+        deadline: Deadline = NO_DEADLINE,
+    ) -> None:
         """Render and write derived artifact resources from active context snapshot.
 
-        This requires an active config context (`async with config:`).
+        This requires an active config context (`async with config.activate(...)`).
 
         Parameters
         ----------
@@ -1038,6 +1076,8 @@ class Config:
             Whether this render pass is preparing an image-build context.  Normal
             sync calls render only worktree artifacts; image-build sync calls render
             only container-local artifacts and must not mutate source files.
+        deadline : Deadline, optional
+            Operation deadline for cluster metadata locking and render hooks.
 
         Raises
         ------
@@ -1051,11 +1091,11 @@ class Config:
             raise RuntimeError(msg)
 
         # invoke render hooks for all resources in deterministic order
-        async with self._metadata_lock():
+        async with self._metadata_lock(deadline):
             for name in sorted(self.resources):
                 r = RESOURCE_NAMES[name]
                 try:
-                    await r.render(self, image_build=image_build)
+                    await r.render(self, image_build=image_build, deadline=deadline)
                 except HOOK_ERRORS as err:
                     msg = f"failed to render resource '{r.name}': {err}"
                     raise OSError(msg) from err

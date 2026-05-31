@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import (
-    BERTRAND_ENV,
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
     BERTRAND_NAMESPACE,
     Deadline,
 )
@@ -77,7 +78,7 @@ def _build_labels() -> dict[str, str]:
     return {
         "app.kubernetes.io/name": "bertrand-build",
         "app.kubernetes.io/part-of": "bertrand",
-        BERTRAND_ENV: "1",
+        BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
         BUILD_JOB_LABEL: BUILD_JOB_LABEL_VALUE,
     }
 
@@ -184,7 +185,7 @@ async def publish_project_platforms(
     spec: BuildKitBuildSpec,
     *,
     build_name: str,
-    timeout: float,
+    deadline: Deadline,
     job_observer: Callable[[str, Job], Awaitable[None]] | None = None,
 ) -> dict[str, str]:
     """Publish one native platform image per scheduled BuildKit target.
@@ -197,7 +198,7 @@ async def publish_project_platforms(
         Build request contract to execute.
     build_name : str
         Durable build request name used for temporary source preparation.
-    timeout : float
+    deadline : Deadline
         Maximum execution budget in seconds.
     job_observer : Callable[[str, Job], Awaitable[None]] | None, optional
         Optional callback invoked with platform and Job snapshots.
@@ -212,15 +213,11 @@ async def publish_project_platforms(
     ValueError
         If a generated platform output ref is empty.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BuildKit platform image build timeout must be positive",
-    )
     async with _prepared_source(
         kube,
         spec,
         build_name=build_name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     ) as (source_volumes, source_mounts):
         (
             capability_volumes,
@@ -230,9 +227,9 @@ async def publish_project_platforms(
         ) = await _capability_mounts(
             kube,
             spec,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
-        targets = await _schedule(kube, spec, timeout=deadline.remaining())
+        targets = await _schedule(kube, spec, deadline=deadline)
         run_id = uuid.uuid4().hex[:BUILD_PLATFORM_RUN_ID_BYTES]
         results: dict[str, str] = {}
         for platform, dra_claims in sorted(targets.items()):
@@ -258,7 +255,7 @@ async def publish_project_platforms(
                     if job_observer is None
                     else lambda job, platform=platform: job_observer(platform, job)
                 ),
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             results[platform] = digest_ref(image, digest)
         return dict(sorted(results.items()))
@@ -277,13 +274,9 @@ async def _publish_target(
     capability_mounts: tuple[Mapping[str, object], ...],
     secret_paths: Mapping[str, str],
     ssh_paths: Mapping[str, str],
-    timeout: float,
+    deadline: Deadline,
     job_observer: Callable[[Job], Awaitable[None]] | None = None,
 ) -> str:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BuildKit target image build timeout must be positive",
-    )
     labels = _build_labels()
     job_name = _build_job_name(spec)
     created_claim_templates = await create_resource_claim_templates(
@@ -293,7 +286,7 @@ async def _publish_target(
         capability_ids=dra_claims,
         container_name="buildctl",
         labels=labels,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     try:
         job = await Job.create(
@@ -372,17 +365,21 @@ async def _publish_target(
                 node_selector=_platform_node_selector(platform),
             ),
             ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         logs = await job.run_observed(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             failure_context=f"BuildKit image build for {image!r} failed",
             log_heading="Build pod logs",
             log_failure_label="BuildKit build pod logs",
             tail_lines=BUILD_JOB_LOG_TAIL_LINES,
-            diagnostic_timeout=BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
-            cleanup_timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
+            diagnostic_deadline=Deadline(
+                min(BUILD_JOB_DIAGNOSTIC_TIMEOUT_SECONDS, deadline.remaining)
+            ),
+            cleanup_deadline=Deadline(
+                min(BUILD_JOB_CLEANUP_TIMEOUT_SECONDS, deadline.remaining)
+            ),
             include_log_headers=True,
             observer=job_observer,
         )
@@ -391,12 +388,17 @@ async def _publish_target(
         for template in created_claim_templates:
             if not template.namespace or not template.name:
                 continue
+            remaining = deadline.remaining
+            if remaining <= 0:
+                continue
             try:
                 await RESOURCE_CLAIM_TEMPLATE_RESOURCE.delete_by_name(
                     kube,
                     namespace=template.namespace,
                     name=template.name,
-                    timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
+                    deadline=Deadline(
+                        min(BUILD_JOB_CLEANUP_TIMEOUT_SECONDS, remaining)
+                    ),
                 )
             except (OSError, TimeoutError):
                 continue
@@ -408,18 +410,14 @@ async def _prepared_source(
     spec: BuildKitBuildSpec,
     *,
     build_name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> AsyncIterator[tuple[tuple[VolumeSpec, ...], tuple[Mapping[str, object], ...]]]:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BuildKit source preparation timeout must be positive",
-    )
     config_name: str | None = None
     async with prepared_repository_build_source(
         kube,
         repo_id=spec.repo_id,
         build_name=build_name,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     ) as repo_source:
         config_name = _dockerfile_config_name()
         await ConfigMap.upsert(
@@ -428,7 +426,7 @@ async def _prepared_source(
             name=config_name,
             labels=_build_labels(),
             data={BUILD_JOB_DOCKERFILE_KEY: spec.dockerfile},
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         try:
             yield (
@@ -457,10 +455,15 @@ async def _prepared_source(
                 ),
             )
         finally:
+            remaining = deadline.remaining
             await _delete_config_map(
                 kube,
                 name=config_name,
-                timeout=BUILD_JOB_CLEANUP_TIMEOUT_SECONDS,
+                deadline=(
+                    Deadline(min(BUILD_JOB_CLEANUP_TIMEOUT_SECONDS, remaining))
+                    if remaining > 0
+                    else None
+                ),
             )
 
 
@@ -468,17 +471,13 @@ async def _capability_mounts(
     kube: Kube,
     spec: BuildKitBuildSpec,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[
     list[VolumeSpec],
     list[Mapping[str, object]],
     dict[str, str],
     dict[str, str],
 ]:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BuildKit capability mount timeout must be positive",
-    )
     volumes: list[VolumeSpec] = []
     mounts: list[Mapping[str, object]] = []
     secret_paths: dict[str, str] = {}
@@ -500,7 +499,7 @@ async def _capability_mounts(
                 worktree_id=spec.worktree_id,
                 repo_id=spec.repo_id,
                 required=required,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             if secret is None:
                 continue
@@ -525,19 +524,15 @@ async def _schedule(
     kube: Kube,
     spec: BuildKitBuildSpec,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> dict[str, tuple[str, ...]]:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BuildKit build scheduling timeout must be positive",
-    )
     config_hash = await current_buildkit_config_hash(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     groups = await ready_buildkit_platform_nodes(
         kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         config_hash=config_hash,
     )
 
@@ -547,7 +542,7 @@ async def _schedule(
             kube,
             requests=spec.devices,
             node_names=node_names,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     return targets
 
@@ -619,18 +614,18 @@ async def _delete_config_map(
     kube: Kube,
     *,
     name: str,
-    timeout: float,
+    deadline: Deadline | None,
 ) -> None:
-    if timeout <= 0:
+    if deadline is None:
         return
     try:
         config = await ConfigMap.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=name,
-            timeout=timeout,
+            deadline=deadline,
         )
         if config is not None:
-            await config.delete(kube, timeout=timeout)
+            await config.delete(kube, deadline=deadline)
     except (OSError, TimeoutError):
         return

@@ -9,12 +9,14 @@ import os
 import re
 import shutil
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, overload
 
 from bertrand.env.git import (
+    NO_DEADLINE,
     CompletedProcess,
     Deadline,
     HostLock,
@@ -150,8 +152,8 @@ def parse_size_bytes(size: str) -> int:
     return int(normalized[:-1]) * scale
 
 
-async def _run_text(argv: list[str], *, timeout: float) -> str:
-    result = await run(argv, timeout=timeout, capture_output=True)
+async def _run_text(argv: list[str], *, deadline: Deadline) -> str:
+    result = await run(argv, deadline=deadline, capture_output=True)
     return result.stdout if isinstance(result.stdout, str) else result.stdout.decode()
 
 
@@ -177,7 +179,7 @@ def _ceph_argv(argv: list[str]) -> list[str]:
 async def ceph(
     argv: list[str],
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
     check: bool = True,
     capture_output: Literal[True],
 ) -> CompletedProcess: ...
@@ -187,7 +189,7 @@ async def ceph(
 async def ceph(
     argv: list[str],
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
     check: bool = True,
     capture_output: Literal[False] = False,
 ) -> str: ...
@@ -196,7 +198,7 @@ async def ceph(
 async def ceph(
     argv: list[str],
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
     check: bool = True,
     capture_output: bool = False,
 ) -> CompletedProcess | str:
@@ -210,11 +212,11 @@ async def ceph(
     if capture_output:
         return await run(
             _ceph_argv(argv),
-            timeout=timeout,
+            deadline=deadline,
             check=check,
             capture_output=True,
         )
-    return await _run_text(_ceph_argv(argv), timeout=timeout)
+    return await _run_text(_ceph_argv(argv), deadline=deadline)
 
 
 def _json_object(text: str, *, context: str) -> dict[str, Any]:
@@ -229,7 +231,7 @@ def _json_object(text: str, *, context: str) -> dict[str, Any]:
     return payload
 
 
-async def ceph_df(*, timeout: float) -> CephCapacitySnapshot:
+async def ceph_df(*, deadline: Deadline) -> CephCapacitySnapshot:
     """Inspect raw Ceph cluster capacity.
 
     Returns
@@ -243,7 +245,7 @@ async def ceph_df(*, timeout: float) -> CephCapacitySnapshot:
         If the Ceph CLI output is malformed or reports no capacity.
     """
     payload = _json_object(
-        str(await ceph(["df", "--format", "json"], timeout=timeout)),
+        str(await ceph(["df", "--format", "json"], deadline=deadline)),
         context="ceph df",
     )
     stats = payload.get("stats")
@@ -262,7 +264,7 @@ async def ceph_df(*, timeout: float) -> CephCapacitySnapshot:
     )
 
 
-async def ceph_health(*, timeout: float) -> tuple[bool, str, str]:
+async def ceph_health(*, deadline: Deadline) -> tuple[bool, str, str]:
     """Inspect Ceph health and recovery state.
 
     Returns
@@ -276,7 +278,7 @@ async def ceph_health(*, timeout: float) -> tuple[bool, str, str]:
         If the Ceph CLI output is malformed.
     """
     payload = _json_object(
-        str(await ceph(["status", "--format", "json"], timeout=timeout)),
+        str(await ceph(["status", "--format", "json"], deadline=deadline)),
         context="ceph status",
     )
     health = payload.get("health")
@@ -293,7 +295,7 @@ async def ceph_health(*, timeout: float) -> tuple[bool, str, str]:
     return clean, detail or states, status
 
 
-async def ceph_osds(*, timeout: float) -> tuple[CephOSD, ...]:
+async def ceph_osds(*, deadline: Deadline) -> tuple[CephOSD, ...]:
     """Inspect live Ceph OSD inventory.
 
     Returns
@@ -307,7 +309,7 @@ async def ceph_osds(*, timeout: float) -> tuple[CephOSD, ...]:
         If the Ceph CLI output is malformed.
     """
     payload = _json_object(
-        str(await ceph(["osd", "tree", "--format", "json"], timeout=timeout)),
+        str(await ceph(["osd", "tree", "--format", "json"], deadline=deadline)),
         context="ceph osd tree",
     )
     nodes = payload.get("nodes")
@@ -342,9 +344,9 @@ async def ceph_osds(*, timeout: float) -> tuple[CephOSD, ...]:
     return tuple(sorted(osds, key=lambda osd: osd.osd_id))
 
 
-async def _host_json(argv: list[str], *, timeout: float) -> dict[str, Any]:
+async def _host_json(argv: list[str], *, deadline: Deadline) -> dict[str, Any]:
     command = _host_argv(argv)
-    payload = await _run_text(command, timeout=timeout)
+    payload = await _run_text(command, deadline=deadline)
     return _json_object(payload, context=" ".join(argv))
 
 
@@ -360,8 +362,8 @@ def _host_argv(argv: list[str]) -> list[str]:
     return argv
 
 
-async def _host_text(argv: list[str], *, timeout: float) -> str:
-    return await _run_text(_host_argv(argv), timeout=timeout)
+async def _host_text(argv: list[str], *, deadline: Deadline) -> str:
+    return await _run_text(_host_argv(argv), deadline=deadline)
 
 
 def _local_path(path: Path) -> Path:
@@ -370,8 +372,14 @@ def _local_path(path: Path) -> Path:
     return path
 
 
-def _host_lock(timeout: float) -> HostLock:
-    return HostLock(_local_path(OSD_LOCK_FILE), timeout=timeout)
+@contextlib.asynccontextmanager
+async def _host_lock(deadline: Deadline) -> AsyncIterator[HostLock]:
+    lock = HostLock(_local_path(OSD_LOCK_FILE))
+    await lock.lock(deadline)
+    try:
+        yield lock
+    finally:
+        await lock.unlock(ignore_errors=True)
 
 
 def host_id_from_host_state() -> str:
@@ -434,7 +442,7 @@ def _fallback_loop_active(path: Path = LOOP_FALLBACK_STORAGE_PATH) -> bool:
     return any(root.glob("*.img")) if root.exists() else False
 
 
-async def _lvm_inventory(*, timeout: float = 5.0) -> tuple[_LvmPV, ...]:
+async def _lvm_inventory(*, deadline: Deadline = NO_DEADLINE) -> tuple[_LvmPV, ...]:
     """Return concrete PV inventory for the `bertrand` LVM VG.
 
     Returns
@@ -456,7 +464,7 @@ async def _lvm_inventory(*, timeout: float = 5.0) -> tuple[_LvmPV, ...]:
                 "--options",
                 "pv_name,pv_uuid,vg_name,pv_size,pv_free",
             ],
-            timeout=timeout,
+            deadline=deadline,
         )
     except (OSError, TimeoutError):
         return ()
@@ -489,7 +497,7 @@ async def _lvm_inventory(*, timeout: float = 5.0) -> tuple[_LvmPV, ...]:
 async def host_capacity_snapshot(
     path: Path = LOOP_FALLBACK_STORAGE_PATH,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> dict[str, object]:
     """Inspect host capacity from async controller code.
 
@@ -501,7 +509,7 @@ async def host_capacity_snapshot(
     root = _local_path(path)
     root.mkdir(parents=True, exist_ok=True)
     stats = os.statvfs(root)
-    lvm_pvs = await _lvm_inventory(timeout=timeout)
+    lvm_pvs = await _lvm_inventory(deadline=deadline)
     return {
         "free_bytes": stats.f_bavail * stats.f_frsize,
         "path": path.as_posix(),
@@ -522,7 +530,7 @@ async def host_capacity_snapshot(
     }
 
 
-async def _lvm_lv_inventory(*, timeout: float) -> tuple[_LvmLV, ...]:
+async def _lvm_lv_inventory(*, deadline: Deadline) -> tuple[_LvmLV, ...]:
     payload = await _host_json(
         [
             "lvs",
@@ -535,7 +543,7 @@ async def _lvm_lv_inventory(*, timeout: float) -> tuple[_LvmLV, ...]:
             "--options",
             "lv_name,vg_name,lv_path,lv_size,devices,seg_pe_ranges,lv_tags",
         ],
-        timeout=timeout,
+        deadline=deadline,
     )
     reports = payload.get("report")
     rows: list[dict[str, object]] = []
@@ -617,7 +625,7 @@ async def prepare_lvm_osd(
     target_bytes: int,
     pv_name: str,
     lv_name: str | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> PreparedOSD:
     """Expand or create a PV-pinned LVM block substrate for a Rook OSD.
 
@@ -640,18 +648,14 @@ async def prepare_lvm_osd(
     if not pv_name:
         msg = "LVM OSD allocation requires a concrete PV name"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="LVM OSD preparation timeout must be positive",
-    )
-    async with _host_lock(deadline.remaining()):
-        inventory = await _lvm_inventory(timeout=deadline.remaining())
+    async with _host_lock(deadline):
+        inventory = await _lvm_inventory(deadline=deadline)
         pv = next((item for item in inventory if item.pv_name == pv_name), None)
         if pv is None:
             msg = f"PV {pv_name!r} is not part of the {BERTRAND_LVM_VG!r} VG"
             raise OSError(msg)
         lv_name = (lv_name or f"bertrand-osd-{_safe_name(name)[-32:]}").strip()
-        lvs = await _lvm_lv_inventory(timeout=deadline.remaining())
+        lvs = await _lvm_lv_inventory(deadline=deadline)
         existing = next((lv for lv in lvs if lv.lv_name == lv_name), None)
         if existing is None:
             if pv.free_bytes < target_bytes:
@@ -677,7 +681,7 @@ async def prepare_lvm_osd(
                     BERTRAND_LVM_VG,
                     pv_name,
                 ],
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         else:
             current = existing.size_bytes
@@ -697,9 +701,9 @@ async def prepare_lvm_osd(
                         existing.lv_path,
                         pv_name,
                     ],
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
-        lvs = await _lvm_lv_inventory(timeout=deadline.remaining())
+        lvs = await _lvm_lv_inventory(deadline=deadline)
         live = next((lv for lv in lvs if lv.lv_name == lv_name), None)
         if live is None:
             msg = f"Bertrand OSD LV {lv_name!r} disappeared after allocation"
@@ -718,7 +722,9 @@ async def prepare_lvm_osd(
         )
 
 
-async def discover_lvm_osds(*, timeout: float) -> tuple[tuple[str, PreparedOSD], ...]:
+async def discover_lvm_osds(
+    *, deadline: Deadline
+) -> tuple[tuple[str, PreparedOSD], ...]:
     """Discover Bertrand-tagged LVM OSD substrates on this host.
 
     Returns
@@ -726,15 +732,11 @@ async def discover_lvm_osds(*, timeout: float) -> tuple[tuple[str, PreparedOSD],
     tuple[tuple[str, PreparedOSD], ...]
         Prepared LVM OSD substrates recovered from host LVM tags.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="LVM OSD discovery timeout must be positive",
-    )
-    async with _host_lock(deadline.remaining()):
-        pvs = await _lvm_inventory(timeout=deadline.remaining())
+    async with _host_lock(deadline):
+        pvs = await _lvm_inventory(deadline=deadline)
         inventory = {item.pv_name: item for item in pvs}
         discoveries: list[tuple[str, PreparedOSD]] = []
-        for lv in await _lvm_lv_inventory(timeout=deadline.remaining()):
+        for lv in await _lvm_lv_inventory(deadline=deadline):
             if LVM_TAG not in lv.tags:
                 continue
             name = lv.tag_value("bertrand.osd")
@@ -764,11 +766,11 @@ async def discover_lvm_osds(*, timeout: float) -> tuple[tuple[str, PreparedOSD],
         return tuple(sorted(discoveries, key=lambda item: item[0]))
 
 
-async def _loop_inventory(*, timeout: float) -> tuple[_LoopDevice, ...]:
+async def _loop_inventory(*, deadline: Deadline) -> tuple[_LoopDevice, ...]:
     try:
         payload = await _host_json(
             ["losetup", "--json", "--list", "--output", "NAME,BACK-FILE"],
-            timeout=timeout,
+            deadline=deadline,
         )
     except OSError:
         return ()
@@ -786,8 +788,8 @@ async def _loop_inventory(*, timeout: float) -> tuple[_LoopDevice, ...]:
     return tuple(sorted(out, key=lambda item: item.name))
 
 
-async def _loop_device_for_file(path: Path, *, timeout: float) -> str | None:
-    for item in await _loop_inventory(timeout=timeout):
+async def _loop_device_for_file(path: Path, *, deadline: Deadline) -> str | None:
+    for item in await _loop_inventory(deadline=deadline):
         if item.back_file == path.as_posix():
             return item.name
     return None
@@ -797,7 +799,7 @@ async def prepare_loop_fallback_osd(
     *,
     name: str,
     target_bytes: int,
-    timeout: float,
+    deadline: Deadline,
 ) -> PreparedOSD:
     """Expand or create the node's single loop-backed fallback block substrate.
 
@@ -816,28 +818,24 @@ async def prepare_loop_fallback_osd(
     if target_bytes <= 0:
         msg = "loop fallback OSD target size must be positive"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="loop fallback OSD preparation timeout must be positive",
-    )
-    async with _host_lock(deadline.remaining()):
+    async with _host_lock(deadline):
         file_path = LOOP_FALLBACK_STORAGE_PATH / f"{_safe_name(name)}.img"
         local_file = _local_path(file_path)
         local_file.parent.mkdir(parents=True, exist_ok=True)
         with local_file.open("ab") as handle:
             handle.truncate(target_bytes)
-        device = await _loop_device_for_file(file_path, timeout=deadline.remaining())
+        device = await _loop_device_for_file(file_path, deadline=deadline)
         if device is None:
             device = (
                 await _host_text(
                     ["losetup", "--find", "--show", file_path.as_posix()],
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
             ).strip()
         else:
             await _host_text(
                 ["losetup", "--set-capacity", device],
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         if not device:
             msg = f"failed to create loop device for {file_path}"
@@ -855,7 +853,7 @@ async def prepare_loop_fallback_osd(
 async def discover_loop_fallback_osd(
     *,
     name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> PreparedOSD | None:
     """Discover and reattach this host's deterministic loop fallback OSD.
 
@@ -874,22 +872,24 @@ async def discover_loop_fallback_osd(
     return await prepare_loop_fallback_osd(
         name=name,
         target_bytes=target_bytes,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
-async def drain_ceph_osd(osd_id: int, *, timeout: float) -> None:
-    """Mark an OSD out and wait until Ceph says it is safe to destroy."""
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="Ceph OSD drain timeout must be positive",
-    )
-    await ceph(["osd", "out", str(osd_id)], timeout=deadline.remaining())
+async def drain_ceph_osd(osd_id: int, *, deadline: Deadline) -> None:
+    """Mark an OSD out and wait until Ceph says it is safe to destroy.
 
-    async def safe_to_destroy(remaining: float) -> None:
+    Raises
+    ------
+    TimeoutError
+        If Ceph does not report the OSD safe to destroy before `deadline`.
+    """
+    await ceph(["osd", "out", str(osd_id)], deadline=deadline)
+
+    async def safe_to_destroy(attempt_deadline: Deadline) -> None:
         result = await ceph(
             ["osd", "safe-to-destroy", str(osd_id)],
-            timeout=remaining,
+            deadline=attempt_deadline,
             check=False,
             capture_output=True,
         )
@@ -898,19 +898,18 @@ async def drain_ceph_osd(osd_id: int, *, timeout: float) -> None:
             msg = f"osd.{osd_id} is not safe to destroy: {detail}".strip()
             raise TimeoutError(msg)
 
-    await until(
-        safe_to_destroy,
-        timeout=deadline.remaining(),
-        interval=5.0,
-        action=f"waiting for osd.{osd_id} to become safe to destroy",
-    )
+    try:
+        await until(safe_to_destroy, deadline=deadline, delay=5.0)
+    except TimeoutError as err:
+        msg = f"waiting for osd.{osd_id} to become safe to destroy timed out"
+        raise TimeoutError(msg) from err
 
 
-async def purge_ceph_osd(osd_id: int, *, timeout: float) -> None:
+async def purge_ceph_osd(osd_id: int, *, deadline: Deadline) -> None:
     """Purge an OSD after Rook has stopped owning it."""
     await ceph(
         ["osd", "purge", str(osd_id), "--yes-i-really-mean-it"],
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -918,7 +917,7 @@ async def delete_lvm_osd_substrate(
     *,
     lv_name: str,
     block_path: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Remove a retired Bertrand-tagged LVM OSD substrate.
 
@@ -933,12 +932,8 @@ async def delete_lvm_osd_substrate(
     if not lv_name:
         msg = "LVM OSD deletion requires a non-empty LV name"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="LVM OSD substrate deletion timeout must be positive",
-    )
-    async with _host_lock(deadline.remaining()):
-        lvs = await _lvm_lv_inventory(timeout=deadline.remaining())
+    async with _host_lock(deadline):
+        lvs = await _lvm_lv_inventory(deadline=deadline)
         lv = next((item for item in lvs if item.lv_name == lv_name), None)
         if lv is not None:
             if LVM_TAG not in lv.tags:
@@ -946,7 +941,7 @@ async def delete_lvm_osd_substrate(
                 raise OSError(msg)
             await _host_text(
                 ["lvremove", "--yes", lv.lv_path],
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         if block_path.strip():
             with contextlib.suppress(OSError):
@@ -958,26 +953,21 @@ async def delete_loop_fallback_substrate(
     loop_file: str,
     loop_device: str,
     block_path: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Detach and remove a retired loop fallback substrate."""
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="loop fallback OSD substrate deletion timeout must be positive",
-    )
-    async with _host_lock(deadline.remaining()):
+    async with _host_lock(deadline):
         device = loop_device.strip()
         loop_file = loop_file.strip()
         file_path = Path(loop_file) if loop_file else None
         if file_path is not None:
             device = device or (
-                await _loop_device_for_file(file_path, timeout=deadline.remaining())
-                or ""
+                await _loop_device_for_file(file_path, deadline=deadline) or ""
             )
         if device:
             await _host_text(
                 ["losetup", "--detach", device],
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         if block_path.strip():
             with contextlib.suppress(OSError):
@@ -991,7 +981,7 @@ async def bind_block_device(
     *,
     block_path: str,
     target_path: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Bind-mount a host block device path to a kubelet CSI target path.
 
@@ -1007,11 +997,7 @@ async def bind_block_device(
     if not block or not target:
         msg = "block device bind mount requires non-empty source and target paths"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="block device bind mount timeout must be positive",
-    )
-    async with _host_lock(deadline.remaining()):
+    async with _host_lock(deadline):
         local_target = _local_path(Path(target))
         local_target.parent.mkdir(parents=True, exist_ok=True)
         local_target.touch(exist_ok=True)
@@ -1026,7 +1012,7 @@ async def bind_block_device(
                         "--target",
                         target,
                     ],
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
             ).strip()
         except (OSError, TimeoutError):
@@ -1035,13 +1021,13 @@ async def bind_block_device(
             expected = (
                 await _host_text(
                     ["readlink", "-f", block],
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
             ).strip()
             observed = (
                 await _host_text(
                     ["readlink", "-f", mounted_source],
-                    timeout=deadline.remaining(),
+                    deadline=deadline,
                 )
             ).strip()
             if observed == expected:
@@ -1053,11 +1039,11 @@ async def bind_block_device(
             raise OSError(msg)
         await _host_text(
             ["mount", "--bind", block, target],
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
 
-async def unbind_block_device(*, target_path: str, timeout: float) -> None:
+async def unbind_block_device(*, target_path: str, deadline: Deadline) -> None:
     """Unmount and remove a kubelet CSI raw block target path if present.
 
     Raises
@@ -1069,12 +1055,8 @@ async def unbind_block_device(*, target_path: str, timeout: float) -> None:
     if not target:
         msg = "block device unmount requires a non-empty target path"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="block device unmount timeout must be positive",
-    )
-    async with _host_lock(deadline.remaining()):
+    async with _host_lock(deadline):
         with contextlib.suppress(OSError, TimeoutError):
-            await _host_text(["umount", target], timeout=deadline.remaining())
+            await _host_text(["umount", target], deadline=deadline)
         with contextlib.suppress(OSError):
             _local_path(Path(target)).unlink()

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import packaging.version
 
 from bertrand.env.build_args import normalize_image_build_args
-from bertrand.env.git import WORKTREE_MOUNT
+from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_IMAGE, WORKTREE_MOUNT
 from bertrand.env.version import VERSION
 
 if TYPE_CHECKING:
@@ -80,18 +80,22 @@ def _render_containerfile(model: BertrandModel) -> str:
 
     lines = [
         (
-            "ARG BERTRAND="
+            "ARG BERTRAND_VERSION="
             f"{bertrand_version.major}.{bertrand_version.minor}."
             f"{bertrand_version.micro}"
         ),
         "ARG DEBUG=true",
         "ARG DEV=true",
         "ARG CPUS=0",
-        (f"FROM bertrand:${{BERTRAND}}.${{DEBUG}}.${{DEV}}.${{CPUS}}.{page_size_kib}"),
+        (
+            "FROM bertrand:"
+            f"${{BERTRAND_VERSION}}.${{DEBUG}}.${{DEV}}.${{CPUS}}.{page_size_kib}"
+        ),
     ]
     lines.extend(f"ARG {key}" for key in build_args)
     lines.extend(
         (
+            f"ENV {BERTRAND_LABEL}={BERTRAND_LABEL_IMAGE}",
             "ENV PIP_DISABLE_PIP_VERSION_CHECK=1",
             f"WORKDIR {WORKTREE_MOUNT}",
             f"COPY . {WORKTREE_MOUNT}",

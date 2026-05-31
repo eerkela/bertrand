@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
 
 import kubernetes
 
-from bertrand.env.git import Deadline
+from bertrand.env.git import Deadline, until
 
 from .client import KubeApiError
 from .watch import WatchEvent
@@ -135,7 +134,7 @@ class BuiltinResource[PayloadT]:
         kube: Kube,
         *,
         name: str,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         context: str | None = None,
     ) -> PayloadT | None:
@@ -147,7 +146,7 @@ class BuiltinResource[PayloadT]:
             Active Kubernetes API context.
         name : str
             Resource name.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds.
         namespace : str | None, optional
             Namespace for namespaced resources.
@@ -166,7 +165,7 @@ class BuiltinResource[PayloadT]:
             operation="read",
             namespace=namespace,
             name=name,
-            timeout=timeout,
+            deadline=deadline,
             context=context or f"failed to read {self.kind} {label!r}",
             missing_ok=True,
         )
@@ -178,7 +177,7 @@ class BuiltinResource[PayloadT]:
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
@@ -190,7 +189,7 @@ class BuiltinResource[PayloadT]:
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds.
         namespace : str | None, optional
             Optional single namespace filter.
@@ -209,7 +208,7 @@ class BuiltinResource[PayloadT]:
         selected = self._list_namespaces(namespace=namespace, namespaces=namespaces)
         payloads = await self._list_payloads(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             namespaces=selected,
             label_selector=_label_selector(labels),
             field_selector=self._field_selector(field_selector),
@@ -223,7 +222,7 @@ class BuiltinResource[PayloadT]:
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         labels: Mapping[str, str] | None = None,
         field_selector: str | None = None,
@@ -244,7 +243,7 @@ class BuiltinResource[PayloadT]:
         async for event in kube_watch(
             watch_fn,
             wrapper=lambda payload: self._typed(payload, context=f"{self.kind} watch"),
-            timeout=timeout,
+            deadline=deadline,
             context=context,
             resource_version=resource_version,
             label_selector=_label_selector(labels),
@@ -258,7 +257,7 @@ class BuiltinResource[PayloadT]:
         kube: Kube,
         *,
         manifest: Mapping[str, object],
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         name: str | None = None,
         context: str | None = None,
@@ -273,7 +272,7 @@ class BuiltinResource[PayloadT]:
             Active Kubernetes API context.
         manifest : Mapping[str, object]
             Complete Kubernetes manifest.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds.
         namespace : str | None, optional
             Namespace for namespaced resources.
@@ -302,7 +301,7 @@ class BuiltinResource[PayloadT]:
             operation="create",
             namespace=namespace,
             body=manifest,
-            timeout=timeout,
+            deadline=deadline,
             context=context or f"failed to create {self.kind} {label}",
             missing_ok=missing_ok,
         )
@@ -314,7 +313,7 @@ class BuiltinResource[PayloadT]:
         *,
         name: str,
         manifest: Mapping[str, object],
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
     ) -> PayloadT:
         """Create or patch one resource from a complete Kubernetes manifest.
@@ -327,7 +326,7 @@ class BuiltinResource[PayloadT]:
             Resource name.
         manifest : Mapping[str, object]
             Complete Kubernetes manifest.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds.
         namespace : str | None, optional
             Namespace for namespaced resources.
@@ -353,7 +352,7 @@ class BuiltinResource[PayloadT]:
                 operation="create",
                 namespace=namespace,
                 body=manifest,
-                timeout=timeout,
+                deadline=deadline,
                 context=f"failed to create {self.kind} {label}",
                 missing_ok=False,
             )
@@ -366,7 +365,7 @@ class BuiltinResource[PayloadT]:
                 namespace=namespace,
                 name=name,
                 body=manifest,
-                timeout=timeout,
+                deadline=deadline,
                 context=f"failed to patch {self.kind} {label}",
                 missing_ok=False,
             )
@@ -377,7 +376,7 @@ class BuiltinResource[PayloadT]:
         kube: Kube,
         *,
         name: str,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         propagation_policy: DeletionPropagationPolicy | None = None,
         grace_period_seconds: int | None = None,
@@ -390,7 +389,7 @@ class BuiltinResource[PayloadT]:
             Active Kubernetes API context.
         name : str
             Resource name.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds.
         namespace : str | None, optional
             Namespace for namespaced resources.
@@ -417,7 +416,7 @@ class BuiltinResource[PayloadT]:
             namespace=namespace,
             name=name,
             body=delete_options,
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to delete {self.kind} {label}",
             missing_ok=True,
         )
@@ -440,13 +439,28 @@ class BuiltinResource[PayloadT]:
             Deadline for the resource to be deleted.
         refresh : Callable[[Deadline], Awaitable[object | None]]
             Callback that returns the live object, or `None` when absent.
+
+        Raises
+        ------
+        TimeoutError
+            If the resource still exists when `deadline` expires.
         """
-        await deadline.call(
-            refresh,
-            msg=f"timed out waiting for {label} deletion",
-            timeout=math.inf,
-            delay=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
-        )
+
+        async def deleted(attempt_deadline: Deadline) -> None:
+            if await refresh(attempt_deadline) is None:
+                return
+            msg = f"{label} still exists"
+            raise TimeoutError(msg)
+
+        try:
+            await until(
+                deleted,
+                deadline=deadline,
+                delay=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for {label} deletion"
+            raise TimeoutError(msg) from err
 
     async def _run_request(
         self,
@@ -454,7 +468,7 @@ class BuiltinResource[PayloadT]:
         *,
         operation: _BuiltinOperation,
         namespace: str | None,
-        timeout: float,
+        deadline: Deadline,
         context: str,
         missing_ok: bool,
         name: str | None = None,
@@ -473,7 +487,7 @@ class BuiltinResource[PayloadT]:
                 field_selector=field_selector,
                 request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=context,
             missing_ok=missing_ok,
         )
@@ -482,7 +496,7 @@ class BuiltinResource[PayloadT]:
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         namespaces: Collection[str] | None,
         label_selector: str | None,
         field_selector: str | None,
@@ -493,7 +507,7 @@ class BuiltinResource[PayloadT]:
                     kube,
                     operation="list",
                     namespace=None,
-                    timeout=timeout,
+                    deadline=deadline,
                     label_selector=label_selector,
                     field_selector=field_selector,
                     context=self._list_all_context(all_namespaces=False),
@@ -507,7 +521,7 @@ class BuiltinResource[PayloadT]:
                     kube,
                     operation="list",
                     namespace=None,
-                    timeout=timeout,
+                    deadline=deadline,
                     label_selector=label_selector,
                     field_selector=field_selector,
                     context=self._list_all_context(all_namespaces=True),
@@ -521,7 +535,7 @@ class BuiltinResource[PayloadT]:
                         kube,
                         operation="list",
                         namespace=namespace,
-                        timeout=timeout,
+                        deadline=deadline,
                         label_selector=label_selector,
                         field_selector=field_selector,
                         context=(
@@ -705,7 +719,7 @@ class BuiltinResourceObject[PayloadT]:
         kube: Kube,
         *,
         name: str,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
     ) -> Self | None:
         """Read one Kubernetes resource by name.
@@ -719,7 +733,7 @@ class BuiltinResourceObject[PayloadT]:
             kube,
             name=name,
             namespace=namespace,
-            timeout=timeout,
+            deadline=deadline,
         )
         wrapper = cast("Callable[..., Self]", cls)
         return None if payload is None else wrapper(_obj=payload)
@@ -729,7 +743,7 @@ class BuiltinResourceObject[PayloadT]:
         cls,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
@@ -744,7 +758,7 @@ class BuiltinResourceObject[PayloadT]:
         """
         payloads = await cls.resource.list(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             namespace=namespace,
             namespaces=namespaces,
             labels=labels,
@@ -758,7 +772,7 @@ class BuiltinResourceObject[PayloadT]:
         cls,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         labels: Mapping[str, str] | None = None,
         field_selector: str | None = None,
@@ -773,7 +787,7 @@ class BuiltinResourceObject[PayloadT]:
         """
         async for event in cls.resource.watch(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             namespace=namespace,
             labels=labels,
             field_selector=field_selector,
@@ -786,7 +800,7 @@ class BuiltinResourceObject[PayloadT]:
                 raw_type=event.raw_type,
             )
 
-    async def refresh(self, kube: Kube, *, timeout: float) -> Self | None:
+    async def refresh(self, kube: Kube, *, deadline: Deadline) -> Self | None:
         """Re-read this resource by its metadata identity.
 
         Returns
@@ -797,7 +811,7 @@ class BuiltinResourceObject[PayloadT]:
         resource = type(self).resource
         if resource.scope == "cluster":
             name = _resource_name(self, f"refresh {type(self).__name__}")
-            return await type(self).get(kube, name=name, timeout=timeout)
+            return await type(self).get(kube, name=name, deadline=deadline)
         namespace, name = _resource_namespace_name(
             self,
             f"refresh {type(self).__name__}",
@@ -806,14 +820,14 @@ class BuiltinResourceObject[PayloadT]:
             kube,
             namespace=namespace,
             name=name,
-            timeout=timeout,
+            deadline=deadline,
         )
 
     async def delete(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         propagation_policy: DeletionPropagationPolicy | None = "Background",
         grace_period_seconds: int | None = None,
     ) -> None:
@@ -823,7 +837,7 @@ class BuiltinResourceObject[PayloadT]:
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds.
         propagation_policy : {"Background", "Foreground", "Orphan"} | None, optional
             Optional Kubernetes deletion propagation policy. Defaults to
@@ -837,7 +851,7 @@ class BuiltinResourceObject[PayloadT]:
             await resource.delete_by_name(
                 kube,
                 name=name,
-                timeout=timeout,
+                deadline=deadline,
                 propagation_policy=propagation_policy,
                 grace_period_seconds=grace_period_seconds,
             )
@@ -850,19 +864,19 @@ class BuiltinResourceObject[PayloadT]:
             kube,
             namespace=namespace,
             name=name,
-            timeout=timeout,
+            deadline=deadline,
             propagation_policy=propagation_policy,
             grace_period_seconds=grace_period_seconds,
         )
 
-    async def wait_deleted(self, kube: Kube, *, timeout: float) -> None:
+    async def wait_deleted(self, kube: Kube, *, deadline: Deadline) -> None:
         """Wait until this resource is deleted from the cluster.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum wait budget in seconds.
         """
         resource = type(self).resource
@@ -879,50 +893,43 @@ class BuiltinResourceObject[PayloadT]:
             )
         await resource.wait_deleted(
             label=_resource_label(self, name=name, namespace=namespace),
-            timeout=timeout,
-            refresh=lambda remaining: self.refresh(kube, timeout=remaining),
+            deadline=deadline,
+            refresh=lambda remaining: self.refresh(kube, deadline=remaining),
         )
 
     async def _wait_until(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         predicate: Callable[[Self], bool],
-        action: str,
         pending_message: str,
         missing_message: str,
         timeout_message: str,
         check_current: bool = False,
     ) -> Self:
         current: Self = self
-        deadline = Deadline.from_timeout(
-            timeout,
-            message=f"{action} timeout must be positive",
-        )
-        last_error: TimeoutError | None = None
 
-        while True:
-            remaining = deadline.remaining()
-            if remaining <= 0:
-                raise TimeoutError(timeout_message) from last_error
+        async def ready(attempt_deadline: Deadline) -> Self:
+            nonlocal current
             if check_current and predicate(current):
                 return current
-            try:
-                refreshed = await current.refresh(kube, timeout=remaining)
-            except TimeoutError as err:
-                last_error = err
-                await asyncio.sleep(
-                    deadline.bounded(RESOURCE_WAIT_POLL_INTERVAL_SECONDS)
-                )
-                continue
+            refreshed = await current.refresh(kube, deadline=attempt_deadline)
             if refreshed is None:
                 raise OSError(missing_message)
             current = refreshed
             if predicate(current):
                 return current
-            last_error = TimeoutError(pending_message)
-            await asyncio.sleep(deadline.bounded(RESOURCE_WAIT_POLL_INTERVAL_SECONDS))
+            raise TimeoutError(pending_message)
+
+        try:
+            return await until(
+                ready,
+                deadline=deadline,
+                delay=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
+            )
+        except TimeoutError as err:
+            raise TimeoutError(timeout_message) from err
 
 
 def _resource_name(resource: object, action: str) -> str:

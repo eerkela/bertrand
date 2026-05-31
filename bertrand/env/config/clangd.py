@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 
-from bertrand.env.git import CONTAINER_TMP, atomic_write_text
+from bertrand.env.git import CONTAINER_TMP, Deadline, atomic_write_text
 
 from .core import Config, NoCRLF, NonEmpty, RegexPattern, Resource, dump_yaml, resource
 
@@ -426,9 +426,7 @@ class ClangdModel(BaseModel):
             _Diagnostics | None,
             Field(
                 default=None,
-                description=(
-                    "clangd diagnostics options for this conditional block."
-                ),
+                description=("clangd diagnostics options for this conditional block."),
             ),
         ]
         Completion: Annotated[
@@ -444,9 +442,7 @@ class ClangdModel(BaseModel):
             _InlayHints | None,
             Field(
                 default=None,
-                description=(
-                    "clangd inlay hints options for this conditional block."
-                ),
+                description=("clangd inlay hints options for this conditional block."),
             ),
         ]
         Hover: Annotated[
@@ -538,7 +534,13 @@ class Clangd(Resource[ClangdModel]):
     is intentionally unsupported.
     """
 
-    async def render(self, config: Config, *, image_build: bool) -> None:
+    async def render(
+        self,
+        config: Config,
+        *,
+        image_build: bool,
+        deadline: Deadline,  # noqa: ARG002
+    ) -> None:
         """Render the `.clangd` artifact."""
         model = config.get(Clangd)
         if not image_build or model is None:

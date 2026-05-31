@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import math
 import os
 import platform
 import shutil
@@ -44,6 +43,7 @@ from bertrand.env.host import (
     REPO_DIR,
     REPO_MOUNT_EXT,
     RUN_DIR,
+    ensure_host_group,
     ensure_host_state,
 )
 from bertrand.env.kube.api.bootstrap import (
@@ -52,6 +52,7 @@ from bertrand.env.kube.api.bootstrap import (
     install_microk8s,
     start_microk8s,
 )
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
 from bertrand.env.kube.build.daemon import ensure_buildkit_pool
 from bertrand.env.kube.build.repository import (
@@ -82,10 +83,9 @@ from bertrand.env.kube.network.bootstrap import ensure_network_backend
 from bertrand.env.kube.node_identity import ensure_local_bertrand_node
 
 if TYPE_CHECKING:
-    from bertrand.env.kube.api.client import Kube
+    from collections.abc import AsyncIterator
 
 INIT_LOCK = Path("/tmp/bertrand-init.lock")
-INIT_LOCK_MODE = 0o666
 INIT_PREREQS = {
     "apt": {
         "getfacl": "acl",
@@ -234,7 +234,12 @@ def _detect_host_runtime() -> tuple[str, str]:
     return User().name, manager
 
 
-async def _install_prereqs(*, package_manager: str, yes: bool) -> None:
+async def _install_prereqs(
+    *,
+    package_manager: str,
+    yes: bool,
+    deadline: Deadline,
+) -> None:
     # fail fast if no escalation path is available for package installs
     if os.geteuid() != 0 and not can_escalate():
         msg = (
@@ -277,7 +282,7 @@ async def _install_prereqs(*, package_manager: str, yes: bool) -> None:
         package_manager=package_manager,
         packages=sorted(missing),
         yes=yes,
-        timeout=math.inf,
+        deadline=deadline,
     )
 
     # verify all required tools after installation
@@ -294,25 +299,44 @@ async def _install_prereqs(*, package_manager: str, yes: bool) -> None:
         raise OSError(msg)
 
 
+def _require_active_group(*, user: str, group: str, purpose: str) -> None:
+    status = GroupStatus.get(user, group)
+    if not status.configured:
+        msg = (
+            f"user {user!r} is not in {group!r}.  Rerun `bertrand init` to "
+            f"configure {purpose}."
+        )
+        raise OSError(msg)
+    if not status.active:
+        msg = (
+            f"user {user!r} is in {group!r}, but the current session is not active "
+            f"in that group.  Run `newgrp {group}` or log out and back in, then "
+            "rerun `bertrand init`."
+        )
+        raise OSError(msg)
+
+
 def _validate_shared_runtime_groups(*, user: str) -> None:
     for group, purpose in (
         (BERTRAND_GROUP, "shared Bertrand host-state access"),
         ("microk8s", "MicroK8s runtime access"),
     ):
-        status = GroupStatus.get(user, group)
-        if not status.configured:
-            msg = (
-                f"user {user!r} is not in {group!r}.  Rerun `bertrand init` to "
-                f"configure {purpose}."
-            )
-            raise OSError(msg)
-        if not status.active:
-            msg = (
-                f"user {user!r} is in {group!r}, but the current session is not active "
-                f"in that group.  Run `newgrp {group}` or log out and back in, then "
-                "rerun `bertrand init`."
-            )
-            raise OSError(msg)
+        _require_active_group(user=user, group=group, purpose=purpose)
+
+
+async def _ensure_host_lock_group(
+    *,
+    user: str,
+    yes: bool,
+    deadline: Deadline,
+) -> None:
+    await ensure_host_group(deadline=deadline, assume_yes=yes)
+    await GroupStatus.get(user, BERTRAND_GROUP).activate(assume_yes=yes)
+    _require_active_group(
+        user=user,
+        group=BERTRAND_GROUP,
+        purpose="shared Bertrand host-state access",
+    )
 
 
 MANAGED_GIT_HOOKS: tuple[tuple[Path, Path, bool], ...] = (
@@ -377,7 +401,7 @@ class _RepoState:
     kube: Kube
     repo: GitRepository
     target: Path
-    worktree: Path
+    worktree: GitRepository.Worktree | None
     repo_id: str
     mount_alias: Path | None
     enable: set[Resource[Any]]
@@ -389,13 +413,15 @@ class _RepoState:
         self.target = abspath(self.target)
 
     @classmethod
-    def lock(cls, root: Path, timeout: float) -> HostLock:
+    @contextlib.asynccontextmanager
+    async def lock(cls, root: Path, deadline: Deadline) -> AsyncIterator[HostLock]:
         digest = hashlib.sha256(str(root).encode("utf-8"))
-        return HostLock(
-            REPO_LOCK_DIR / f"{digest.hexdigest()}.lock",
-            timeout=timeout,
-            privileges=INIT_LOCK_MODE,
-        )
+        lock = HostLock(REPO_LOCK_DIR / f"{digest.hexdigest()}.lock")
+        await lock.lock(deadline)
+        try:
+            yield lock
+        finally:
+            await lock.unlock(ignore_errors=True)
 
 
 async def _ensure_repo_storage(
@@ -404,11 +430,11 @@ async def _ensure_repo_storage(
     volumes = await list_repository_volume_claims(
         state.kube,
         state.repo_id,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
 
     # no existing claim was found: prompt before converting an unmanaged repo
-    if not volumes and state.repo:
+    if not volumes and await state.repo.exists(deadline=state.deadline):
         prompt = (
             "Bertrand found an existing unmanaged repository at "
             f"{state.repo.root}.  Do you want to convert it into a Bertrand "
@@ -427,7 +453,7 @@ async def _ensure_repo_storage(
     state.mount_alias = await ensure_repository_mount(
         state.kube,
         repo_id=state.repo_id,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
         size_request=DEFAULT_VOLUME_SIZE,
         target=state.target,
         volumes=volumes,
@@ -441,11 +467,16 @@ async def _ensure_bare_worktrees(
         msg = "bare-worktree convergence requires a mounted repository alias"
         raise OSError(msg)
     mount = GitRepository(REPO_DIR / state.repo_id / REPO_MOUNT_EXT / ".git")
-    target_branch = await _target_worktree_branch(state)
+    target_branch = _target_worktree_branch(state)
+    source_exists = await state.repo.exists(deadline=state.deadline)
 
     # new repository: initialize a bare history store and create the first worktree
-    if not state.repo:  # source repo is uninitialized or missing
-        await _ensure_new_bare_repository(mount, alias=state.mount_alias)
+    if not source_exists:
+        await _ensure_new_bare_repository(
+            mount,
+            alias=state.mount_alias,
+            deadline=state.deadline,
+        )
         state.repo = mount
         return
 
@@ -455,81 +486,84 @@ async def _ensure_bare_worktrees(
         await _mirror_source_repo(state, mount)
 
     # assert mounted directory is well-formed, then sync worktrees
-    await _assert_bare_managed_repo(mount, alias=state.mount_alias)
-    await mount.sync_worktrees()
+    await _assert_bare_managed_repo(
+        mount,
+        alias=state.mount_alias,
+        deadline=state.deadline,
+    )
+    await mount.sync_worktrees(deadline=state.deadline)
     state.repo = mount
     await _remap_target_worktree(state, target_branch=target_branch)
 
 
-async def _target_worktree_branch(state: _RepoState) -> str | None:
+def _target_worktree_branch(state: _RepoState) -> str | None:
     # specific-worktree mode: capture source branch identity before any conversion so
     # we can remap to canonical converged worktree paths afterwards.
-    if state.worktree == Path():
+    if state.worktree is None:
         return None
-    source_worktree = state.repo.root / state.worktree
-    match = next(
-        (wt for wt in await state.repo.worktrees() if wt.path == source_worktree),
-        None,
-    )
-    if match is None:
+    if state.worktree.branch is None:
         msg = (
-            f"targeted worktree {source_worktree} is not registered in source "
-            f"repository {state.repo.root}"
-        )
-        raise OSError(msg)
-    if match.branch is None:
-        msg = (
-            f"targeted worktree {source_worktree} has detached HEAD; please attach "
+            f"targeted worktree {state.worktree.path} has detached HEAD; please attach "
             "it to a branch before running `bertrand init`."
         )
         raise OSError(msg)
-    return match.branch
+    return state.worktree.branch
 
 
 async def _ensure_new_bare_repository(
     mount: GitRepository,
     *,
     alias: Path,
+    deadline: Deadline,
 ) -> None:
-    branch = await GitRepository.default_branch()
+    branch = await GitRepository.default_branch(deadline=deadline)
     default_worktree = alias / branch
     # destination repo is also uninitialized - create initial worktree
-    if not mount:
-        await mount.init(branch=branch, bare=True)
+    if not await mount.exists(deadline=deadline):
+        await mount.init(branch=branch, bare=True, deadline=deadline)
         await mount.create_worktree(
             branch,
             target=default_worktree,
             create_branch=True,
+            deadline=deadline,
         )
         return
-    if await mount.is_bare():
-        if not any(wt.branch == branch for wt in await mount.worktrees()):
+    if await mount.bare(deadline=deadline):
+        if not any(
+            wt.branch == branch for wt in await mount.worktrees(deadline=deadline)
+        ):
             await mount.create_worktree(
                 branch,
                 target=default_worktree,
                 create_branch=True,
+                deadline=deadline,
             )
-        await mount.sync_worktrees()
+        await mount.sync_worktrees(deadline=deadline)
         return
     msg = f"managed destination repository at {alias} must be bare"
     raise OSError(msg)
 
 
 async def _mirror_source_repo(state: _RepoState, mount: GitRepository) -> None:
-    if await state.repo.dirty():
+    if await state.repo.dirty(deadline=state.deadline):
         msg = (
             f"cannot convert repository at {state.repo.root}: "
             "worktree has uncommitted changes"
         )
         raise OSError(msg)
-    await mount.mirror_from(state.repo, timeout=state.deadline.remaining())
+    await mount.mirror_from(state.repo, deadline=state.deadline)
 
 
-async def _assert_bare_managed_repo(mount: GitRepository, *, alias: Path) -> None:
-    if not mount:
+async def _assert_bare_managed_repo(
+    mount: GitRepository,
+    *,
+    alias: Path,
+    deadline: Deadline,
+) -> None:
+    if not await mount.exists(deadline=deadline):
         msg = f"managed destination repository does not exist at {alias}"
         raise OSError(msg)
-    if not await mount.is_bare():
+    if not await mount.bare(deadline=deadline):
         msg = f"managed destination repository at {alias} must be bare"
         raise OSError(msg)
 
@@ -541,13 +575,21 @@ async def _remap_target_worktree(
 ) -> None:
     if target_branch is None:
         return
-    if not any(wt.branch == target_branch for wt in await state.repo.worktrees()):
+    match = next(
+        (
+            wt
+            for wt in await state.repo.worktrees(deadline=state.deadline)
+            if wt.branch == target_branch
+        ),
+        None,
+    )
+    if match is None:
         msg = (
             f"failed to map targeted source worktree branch {target_branch!r} into "
             f"converged repository at {state.repo.root}"
         )
         raise OSError(msg)
-    state.worktree = Path(target_branch)
+    state.worktree = match
 
 
 async def _ensure_repo_hooks(
@@ -626,13 +668,15 @@ async def _render_config_artifacts(
         await _sync_worktree_config(state, worktree)
 
 
-async def _config_render_targets(state: _RepoState) -> tuple[Path, ...]:
-    if state.worktree != Path():
+async def _config_render_targets(
+    state: _RepoState,
+) -> tuple[GitRepository.Worktree, ...]:
+    if state.worktree is not None:
         return (state.worktree,)
 
     # repository-level targeting converges all branch-attached in-repo worktrees;
     # detached and out-of-tree worktrees are skipped with warnings.
-    targets: list[Path] = []
+    targets: list[GitRepository.Worktree] = []
     for worktree in sorted(
         await state.repo.worktrees(),
         key=lambda wt: wt.path.as_posix(),
@@ -651,7 +695,7 @@ async def _config_render_targets(state: _RepoState) -> tuple[Path, ...]:
                 file=sys.stderr,
             )
             continue
-        targets.append(worktree.path.relative_to(state.repo.root))
+        targets.append(worktree)
     if not targets:
         msg = "repository-wide config render found no eligible branch worktrees"
         raise OSError(msg)
@@ -660,23 +704,24 @@ async def _config_render_targets(state: _RepoState) -> tuple[Path, ...]:
 
 async def _sync_worktree_config(
     state: _RepoState,
-    worktree: Path,
+    worktree: GitRepository.Worktree,
 ) -> None:
-    root = state.repo.root / worktree
+    root = worktree.path
+    relative = worktree.path.relative_to(state.repo.root)
     config = await Config.load(
         root,
         kube=state.kube,
         repo=state.repo,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
     config.resources.update({resource.name: None for resource in state.enable})
     config.init = Config.Init(
         repo=state.repo,
-        worktree=worktree,
+        worktree=relative,
     )
-    async with config:
+    async with config.activate(deadline=state.deadline):
         _remove_disabled_resource_artifacts(root, config, state.disable)
-        await config.sync()
+        await config.sync(deadline=state.deadline)
 
 
 def _remove_disabled_resource_artifacts(
@@ -706,8 +751,8 @@ async def _make_initial_commit(
 
 
 async def _initial_commit_worktree(state: _RepoState) -> Path | None:
-    if state.worktree != Path():
-        return state.repo.root / state.worktree
+    if state.worktree is not None:
+        return state.worktree.path
 
     # repository-level target: use the HEAD or first branch-attached worktree for
     # commit operations.
@@ -737,7 +782,7 @@ async def _commit_initial_changes(state: _RepoState, worktree_path: Path) -> Non
         cwd=worktree_path,
         check=False,
         capture_output=True,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
     if head.returncode == 0:
         return  # repository already has commits
@@ -750,14 +795,14 @@ async def _commit_initial_changes(state: _RepoState, worktree_path: Path) -> Non
         ["git", "add", "-A"],
         cwd=worktree_path,
         capture_output=True,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
     staged = await run(
         ["git", "diff", "--cached", "--quiet"],
         cwd=worktree_path,
         check=False,
         capture_output=True,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
     if staged.returncode == 0:
         return  # nothing staged after render
@@ -770,7 +815,7 @@ async def _commit_initial_changes(state: _RepoState, worktree_path: Path) -> Non
         ["git", "commit", "--quiet", "-m", "Initial commit"],
         cwd=worktree_path,
         capture_output=True,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
 
 
@@ -803,17 +848,17 @@ async def _finalize(
         target=target,
         alias=mount_alias,
         replace_existing=replace_existing,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
     await refresh_repository_alias_for_path(
         state.kube,
         state.mount_alias,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
     await prune_repository_mount_aliases(
         state.kube,
         repo_id=state.repo_id,
-        timeout=state.deadline.remaining(),
+        deadline=state.deadline,
     )
 
 
@@ -824,7 +869,7 @@ async def _mark_repo_failure(
     err: BaseException,
     deadline: Deadline,
 ) -> None:
-    remaining = deadline.remaining()
+    remaining = deadline.remaining
     if remaining <= 0:
         return
     with contextlib.suppress(*_INIT_FAILURE_MARK_ERRORS):
@@ -832,7 +877,7 @@ async def _mark_repo_failure(
             kube,
             repo_id=repo_id,
             last_error=str(err),
-            timeout=remaining,
+            deadline=deadline,
         )
 
 
@@ -851,7 +896,7 @@ async def _resolve_repo_target(
     path: Path,
     *,
     deadline: Deadline,
-) -> tuple[GitRepository, Path, Path, str | None]:
+) -> tuple[GitRepository, GitRepository.Worktree | None, Path, str | None]:
     raw_path = abspath(path)
 
     # run managed-alias resurrection before git path resolution so repository
@@ -859,13 +904,13 @@ async def _resolve_repo_target(
     resurrected = await resurrect_repository_mount(
         kube,
         raw_path,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     recovered_repo_id = resurrected[0] if resurrected is not None else None
 
     # search for parent Git repository on target path, and then identify the
     # ancestor symlink that points to it, if any
-    repo, worktree = await GitRepository.resolve(raw_path.resolve())
+    repo, worktree = await GitRepository.resolve(raw_path.resolve(), deadline=deadline)
     return (
         repo,
         worktree,
@@ -892,7 +937,7 @@ async def _converge_repository(
     kube: Kube,
     *,
     repo: GitRepository,
-    worktree: Path,
+    worktree: GitRepository.Worktree | None,
     target: Path,
     recovered_repo_id: str | None,
     enable: set[Resource[Any]],
@@ -902,14 +947,14 @@ async def _converge_repository(
 ) -> None:
     # synchronize uniquely for each repository path to limit global init lock
     # contention
-    async with _RepoState.lock(repo.root, timeout=deadline.remaining()):
-        await _assert_repo_clean(repo)
+    async with _RepoState.lock(repo.root, deadline=deadline):
+        await _assert_repo_clean(repo, deadline=deadline)
         state = _RepoState(
             kube=kube,
             repo=repo,
             target=target,
             worktree=worktree,
-            repo_id=recovered_repo_id or repo.repo_id,
+            repo_id=recovered_repo_id or repo.id,
             mount_alias=None,
             enable=enable,
             disable=disable,
@@ -933,8 +978,8 @@ async def _converge_repository(
             raise
 
 
-async def _assert_repo_clean(repo: GitRepository) -> None:
-    if repo and await repo.dirty():
+async def _assert_repo_clean(repo: GitRepository, *, deadline: Deadline) -> None:
+    if await repo.exists(deadline=deadline) and await repo.dirty(deadline=deadline):
         msg = (
             f"repository at {repo.root} has uncommitted changes; please "
             "commit or stash them before calling `bertrand init`."
@@ -942,13 +987,13 @@ async def _assert_repo_clean(repo: GitRepository) -> None:
         raise OSError(msg)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ExternalInit:
     """A command closure that bootstraps host prerequisites and project repositories.
 
     Attributes
     ----------
-    path : Path | None
+    path : Path | str | None
         Optional project/environment root path.  If None, only host bootstrap stages
         are run.  Otherwise, the specified path is resolved, normalizing symlinks and
         ensuring an absolute path, and then its ancestors are traversed to find a valid
@@ -967,19 +1012,29 @@ class ExternalInit:
         Whether to auto-accept prompts during host bootstrap stages.
     """
 
-    path: Path | None
+    path: Path | str | None
     enable: list[str]
     disable: list[str]
     yes: bool
 
-    async def _bootstrap_cluster(self, deadline: Deadline) -> None:
+    async def _prepare_host_lock(self, deadline: Deadline) -> tuple[str, str]:
         user, package_manager = _detect_host_runtime()
-        await _install_prereqs(package_manager=package_manager, yes=self.yes)
-        await ensure_host_state(
-            user=user,
-            assume_yes=self.yes,
-            timeout=deadline.remaining
+        await _install_prereqs(
+            package_manager=package_manager,
+            yes=self.yes,
+            deadline=deadline,
         )
+        await _ensure_host_lock_group(user=user, yes=self.yes, deadline=deadline)
+        return user, package_manager
+
+    async def _bootstrap_cluster(
+        self,
+        *,
+        user: str,
+        package_manager: str,
+        deadline: Deadline,
+    ) -> None:
+        await ensure_host_state(user=user, assume_yes=self.yes, deadline=deadline)
         await install_microk8s(
             user=user,
             package_manager=package_manager,
@@ -987,52 +1042,52 @@ class ExternalInit:
         )
         _validate_shared_runtime_groups(user=user)
         await assert_microk8s_installed(user=user)
-        await start_microk8s(timeout=deadline.remaining)
-        await ensure_microk8s_kubeconfig(timeout=deadline.remaining)
+        await start_microk8s(deadline=deadline)
+        await ensure_microk8s_kubeconfig(deadline=deadline)
 
     async def _bootstrap_control_plane(self, kube: Kube, deadline: Deadline) -> None:
-        await ensure_local_bertrand_node(kube, timeout=deadline.remaining)
-        await ensure_rook_ceph_base(kube, timeout=deadline.remaining)
+        await ensure_local_bertrand_node(kube, deadline=deadline)
+        await ensure_rook_ceph_base(kube, deadline=deadline)
         await Namespace.upsert(
             kube,
             name=BERTRAND_NAMESPACE,
-            timeout=deadline.remaining,
+            deadline=deadline,
         )
-        await ensure_image_repository(kube, timeout=deadline.remaining)
+        await ensure_image_repository(kube, deadline=deadline)
         await ensure_image_repository_node_trust(kube=kube, deadline=deadline)
         # TODO: the assertion should be built into
         # `ensure_image_repository_node_trust` rather than repeated here  It may
         # also be beneficial to centralize it in a single `ensure_image_repository`
         # and then `ensure_buildkit`, etc.
-        await assert_image_repository_node_trust(kube, timeout=deadline.remaining)
+        await assert_image_repository_node_trust(kube, deadline=deadline)
         await ensure_buildkit_pool(
             kube,
-            timeout=deadline.remaining,
+            deadline=deadline,
             config_hash=await current_buildkit_config_hash(
                 kube,
-                timeout=deadline.remaining,
+                deadline=deadline,
             ),
         )
         await ensure_buildkit_build_controller(
             kube,
             image=control_plane_image(),
-            timeout=deadline.remaining,
+            deadline=deadline,
         )
         await ensure_dra_backend(
             kube,
             image=control_plane_image(),
-            timeout=deadline.remaining,
+            deadline=deadline,
         )
-        await ensure_dev_backend(kube, timeout=deadline.remaining)
-        await ensure_network_backend(kube, timeout=deadline.remaining)
+        await ensure_dev_backend(kube, deadline=deadline)
+        await ensure_network_backend(kube, deadline=deadline)
         await ensure_ceph_storage_controller(
             kube,
             image=control_plane_image(),
-            timeout=deadline.remaining,
+            deadline=deadline,
         )
-        await wait_rook_ceph_ready(kube, timeout=deadline.remaining)
+        await wait_rook_ceph_ready(kube, deadline=deadline)
 
-    async def run(self, deadline: Deadline) -> None:
+    async def __call__(self, deadline: Deadline) -> None:
         """Run the command.
 
         Parameters
@@ -1049,7 +1104,9 @@ class ExternalInit:
             If any resource names in `enable`/`disable` are invalid, or if required
             core resources are disabled.
         """
-        if self.path is None and (self.enable or self.disable):
+        raw_path = self.path
+        path = None if raw_path is None else Path(raw_path).expanduser().resolve()
+        if path is None and (self.enable or self.disable):
             msg = (
                 "Cannot globally enable or disable resources without a worktree.  "
                 "Please specify at least a repository path to configure resources "
@@ -1058,11 +1115,16 @@ class ExternalInit:
             raise OSError(msg)
 
         # idempotently bootstrap host cluster infrastructure
-        init_lock = HostLock(INIT_LOCK, privileges=INIT_LOCK_MODE)
+        user, package_manager = await self._prepare_host_lock(deadline)
+        init_lock = HostLock(INIT_LOCK)
         await init_lock.lock(deadline=deadline)
         try:
-            await self._bootstrap_cluster(deadline=deadline)
-            kube = await Kube.external()
+            await self._bootstrap_cluster(
+                user=user,
+                package_manager=package_manager,
+                deadline=deadline,
+            )
+            kube = Kube.external()
         except:
             await init_lock.unlock(ignore_errors=True)
             raise
@@ -1079,7 +1141,7 @@ class ExternalInit:
                 await init_lock.unlock()
 
             # if no repository root is provided, then we're done
-            if self.path is None:
+            if path is None:
                 return
 
             # TODO: continue init refactor from here
@@ -1096,7 +1158,7 @@ class ExternalInit:
 
             repo, worktree, target, recovered_repo_id = await _resolve_repo_target(
                 kube,
-                self.path,
+                path,
                 deadline=deadline,
             )
             await _converge_repository(
@@ -1111,4 +1173,36 @@ class ExternalInit:
                 yes=self.yes,
             )
         finally:
-            kube.client.close()
+            kube.close()
+
+
+async def ensure_shared_runtime_installed(*, deadline: Deadline, yes: bool) -> None:
+    """Install host prerequisites and MicroK8s access without converging the cluster."""
+    user, package_manager = _detect_host_runtime()
+    await _install_prereqs(
+        package_manager=package_manager,
+        yes=yes,
+        deadline=deadline,
+    )
+    await ensure_host_state(user=user, assume_yes=yes, deadline=deadline)
+    await install_microk8s(
+        user=user,
+        package_manager=package_manager,
+        assume_yes=yes,
+    )
+    _validate_shared_runtime_groups(user=user)
+    await assert_microk8s_installed(user=user)
+
+
+async def _converge_host_cluster_runtime(
+    deadline: Deadline,
+    *,
+    start: bool,
+) -> None:
+    """Converge the local cluster control plane after host runtime installation."""
+    if start:
+        await start_microk8s(deadline=deadline)
+    await ensure_microk8s_kubeconfig(deadline=deadline)
+    runtime = ExternalInit(path=None, enable=[], disable=[], yes=False)
+    with Kube.external() as kube:
+        await runtime._bootstrap_control_plane(kube, deadline)

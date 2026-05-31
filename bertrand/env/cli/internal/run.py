@@ -2,47 +2,51 @@
 
 from __future__ import annotations
 
-import asyncio
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from bertrand.env.cli.external.run import run_configured_project
 from bertrand.env.cli.internal._helper import live_project_context
 
 if TYPE_CHECKING:
-    import argparse
+    from bertrand.env.git import Deadline
 
 
-def bertrand_run(args: argparse.Namespace) -> None:
-    """Execute the internal `bertrand run` command.
+@dataclass(frozen=True, slots=True)
+class InternalRunCommand:
+    """Internal `bertrand run` command closure."""
 
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed internal CLI arguments.
+    detach: bool
+    tty: bool | None
+    args: tuple[str, ...]
 
-    Raises
-    ------
-    ValueError
-        If the requested foreground/TTY mode is invalid.
-    """
-    if args.detach and args.tty is True:
-        msg = (
-            "`bertrand run --detach --tty` is invalid because detached runs do not "
-            "attach"
-        )
-        raise ValueError(msg)
+    async def __call__(self, deadline: Deadline) -> None:
+        """Run the command.
 
-    asyncio.run(_bertrand_run_async(args))
+        Raises
+        ------
+        ValueError
+            If the requested foreground/TTY mode is invalid.
+        """
+        if self.detach and self.tty is True:
+            msg = (
+                "`bertrand run --detach --tty` is invalid because detached runs do not "
+                "attach"
+            )
+            raise ValueError(msg)
 
-
-async def _bertrand_run_async(args: argparse.Namespace) -> None:
-    async with live_project_context("run") as (kube, config, repo_id):
-        await run_configured_project(
+        async with live_project_context("run", deadline=deadline) as (
             kube,
-            config=config,
-            repo_id=repo_id,
-            detach=args.detach,
-            tty=args.tty,
-            args=tuple(args.args),
-            ensure_build_crds=False,
-        )
+            config,
+            repo_id,
+        ):
+            await run_configured_project(
+                kube,
+                config=config,
+                repo_id=repo_id,
+                detach=self.detach,
+                tty=self.tty,
+                args=self.args,
+                ensure_build_crds=False,
+                deadline=deadline,
+            )

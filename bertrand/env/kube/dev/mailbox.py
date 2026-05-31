@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import time
 from datetime import UTC, datetime
@@ -10,7 +9,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from bertrand.env.git import BERTRAND_NAMESPACE, REPO_ID_ENV, Deadline
+from bertrand.env.git import BERTRAND_NAMESPACE, REPO_ID_LABEL, Deadline
 from bertrand.env.kube.custom_object import (
     CustomObjectMetadata,
     CustomObjectResource,
@@ -198,7 +197,7 @@ async def patch_code_open_request_status(
     phase: CodeOpenPhase,
     host_id: str = "",
     message: str = "",
-    timeout: float,
+    deadline: Deadline,
 ) -> CodeOpenRecord:
     """Patch one editor-open request status.
 
@@ -214,7 +213,7 @@ async def patch_code_open_request_status(
         Host identity servicing the request.
     message : str, optional
         Human-readable status diagnostic.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -236,7 +235,7 @@ async def patch_code_open_request_status(
         kube,
         name=record.name,
         status=status,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -244,7 +243,7 @@ async def wait_code_open_request(
     kube: Kube,
     *,
     name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> CodeOpenRecord:
     """Wait until one editor-open request reaches a terminal phase.
 
@@ -254,7 +253,7 @@ async def wait_code_open_request(
         Active Kubernetes API context.
     name : str
         Request object name.
-    timeout : float
+    deadline : Deadline
         Maximum wait budget in seconds.
 
     Returns
@@ -269,12 +268,8 @@ async def wait_code_open_request(
     OSError
         If the request disappears before completion.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message=f"timed out waiting for {CODE_OPEN_KIND} {name!r}",
-    )
     while True:
-        remaining = deadline.remaining()
+        remaining = deadline.remaining
         if remaining <= 0:
             msg = (
                 "No host Bertrand editor bridge accepted the request before the "
@@ -282,7 +277,7 @@ async def wait_code_open_request(
                 "then run `bertrand code` inside that session."
             )
             raise TimeoutError(msg)
-        record = await CODE_OPEN_RESOURCE.get(kube, name=name, timeout=remaining)
+        record = await CODE_OPEN_RESOURCE.get(kube, name=name, deadline=deadline)
         if record is None:
             msg = f"{CODE_OPEN_KIND} {name!r} disappeared before completion"
             raise OSError(msg)
@@ -294,9 +289,9 @@ async def wait_code_open_request(
                 record=record,
                 phase="Expired",
                 message="request deadline expired before a host bridge completed it",
-                timeout=remaining,
+                deadline=deadline,
             )
-        await asyncio.sleep(deadline.bounded(0.5))
+        await deadline.sleep(0.5)
 
 
 def code_open_request_labels(spec: CodeOpenSpec, host_id: str) -> dict[str, str]:
@@ -318,7 +313,7 @@ def code_open_request_labels(spec: CodeOpenSpec, host_id: str) -> dict[str, str]
         CODE_OPEN_SESSION_LABEL: _label_value(spec.session_id),
         CODE_OPEN_REQUEST_LABEL: _label_value(spec.request_id),
         CODE_OPEN_HOST_LABEL: _hash_label(host_id),
-        REPO_ID_ENV: _label_value(spec.repo_id),
+        REPO_ID_LABEL: _label_value(spec.repo_id),
     }
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Self
@@ -10,7 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 import kubernetes
 from kubernetes.stream import stream as kubernetes_stream
 
-from bertrand.env.git import Deadline
+from bertrand.env.git import Deadline, until
 
 from .api.metadata import NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
@@ -167,7 +166,7 @@ class Pod(
         name: str,
         labels: Mapping[str, str],
         pod_template: PodTemplateSpec,
-        timeout: float,
+        deadline: Deadline,
         annotations: Mapping[str, str] | None = None,
     ) -> Self:
         """Create one Kubernetes Pod from intent-level fields.
@@ -184,7 +183,7 @@ class Pod(
             Labels to apply to the Pod metadata.
         pod_template : PodTemplateSpec
             Pod template to render into the Pod.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         annotations : Mapping[str, str] | None, optional
             Annotations to apply to the Pod metadata.
@@ -217,7 +216,7 @@ class Pod(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
                 malformed_message=(
                     f"malformed Kubernetes Pod payload while creating {name!r}"
                 ),
@@ -505,7 +504,7 @@ class Pod(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         container: str | None = None,
         tail_lines: int | None = None,
     ) -> str:
@@ -515,7 +514,7 @@ class Pod(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         container : str | None, optional
             Optional container name. If omitted, Kubernetes selects the default
@@ -551,7 +550,7 @@ class Pod(
                 tail_lines=tail_lines,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to read logs for pod {namespace}/{name}",
         )
         if payload is None:
@@ -567,7 +566,7 @@ class Pod(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         container: str,
         stdin: bool = True,
         stdout: bool = True,
@@ -580,7 +579,7 @@ class Pod(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget for opening the stream in seconds. If infinite,
             wait indefinitely.
         container : str
@@ -624,18 +623,18 @@ class Pod(
                 _preload_content=False,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to attach to pod {namespace}/{name} container {container}",
         )
 
-    async def wait_terminal(self, kube: Kube, *, timeout: float) -> Self:
+    async def wait_terminal(self, kube: Kube, *, deadline: Deadline) -> Self:
         """Wait until this pod reaches a terminal phase.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
 
         Returns
@@ -646,21 +645,12 @@ class Pod(
         Raises
         ------
         TimeoutError
-            If terminal phase convergence does not complete within `timeout`.
-        OSError
-            If the pod is deleted before reaching a terminal phase.
+            If terminal phase convergence does not complete before `deadline`.
         """
         namespace, name = self._require_namespace_name("wait for pod terminal phase")
-        deadline = Deadline.from_timeout(
-            timeout,
-            message=f"pod {namespace}/{name} terminal wait timeout must be positive",
-        )
-        while True:
-            remaining = deadline.remaining()
-            if remaining <= 0:
-                msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
-                raise TimeoutError(msg)
-            live = await self.refresh(kube, timeout=remaining)
+
+        async def terminal(attempt_deadline: Deadline) -> Self:
+            live = await self.refresh(kube, deadline=attempt_deadline)
             if live is None:
                 msg = (
                     f"pod {namespace}/{name} was deleted before reaching a "
@@ -669,13 +659,24 @@ class Pod(
                 raise OSError(msg)
             if live.is_terminal:
                 return live
-            await asyncio.sleep(deadline.bounded(POD_WAIT_POLL_INTERVAL_SECONDS))
+            msg = f"pod {namespace}/{name} is not terminal yet"
+            raise TimeoutError(msg)
+
+        try:
+            return await until(
+                terminal,
+                deadline=deadline,
+                delay=POD_WAIT_POLL_INTERVAL_SECONDS,
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
+            raise TimeoutError(msg) from err
 
     async def evict(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
     ) -> None:
         """Evict this pod via the policy eviction subresource.
 
@@ -683,7 +684,7 @@ class Pod(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
         """
         namespace, name = self._require_namespace_name("evict pod")
@@ -703,6 +704,6 @@ class Pod(
                 body=body,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to evict pod {namespace}/{name}",
         )

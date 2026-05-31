@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 from bertrand.env.cli.external._helper import (
     _project_command_context,
 )
 from bertrand.env.cli.external.build import _publish_project_image
+from bertrand.env.git import Deadline
 from bertrand.env.kube.dev import (
     code_open_bridge,
     create_project_dev_session,
@@ -24,6 +24,7 @@ async def bertrand_code(
     target: Path,
     *,
     editor: str | None,
+    deadline: Deadline,
 ) -> None:
     """Open a host editor against a generated Kubernetes dev-session Pod.
 
@@ -34,6 +35,8 @@ async def bertrand_code(
         attached to HEAD.
     editor : str | None
         Optional editor alias override forwarded to internal `bertrand code`.
+    deadline : Deadline
+        Command execution deadline.
 
     Raises
     ------
@@ -44,7 +47,7 @@ async def bertrand_code(
     """
     session_id = new_session_id()
     host_id = current_host_id()
-    async with _project_command_context(target, timeout=math.inf) as (
+    async with _project_command_context(target, deadline=deadline) as (
         kube,
         _repo,
         _worktree,
@@ -53,8 +56,8 @@ async def bertrand_code(
         publication = await _publish_project_image(
             kube,
             config=config,
-            repo_id=config.repo.repo_id,
-            timeout=math.inf,
+            repo_id=config.repo.id,
+            deadline=deadline,
         )
 
         command = ["bertrand", "code", "--block"]
@@ -68,24 +71,24 @@ async def bertrand_code(
         pod, primary_container = await create_project_dev_session(
             kube,
             config=config,
-            repo_id=config.repo.repo_id,
+            repo_id=config.repo.id,
             image_ref=publication.digest_ref,
             session_id=session_id,
             host_id=host_id,
             command=command,
             interactive=False,
-            timeout=math.inf,
+            deadline=deadline,
         )
         async with code_open_bridge(kube, session_id=session_id, host_id=host_id):
             try:
                 terminal = await pod.wait_terminal(
                     kube,
-                    timeout=math.inf,
+                    deadline=deadline,
                 )
                 if terminal.phase != "Succeeded":
                     log = await terminal.logs(
                         kube,
-                        timeout=30,
+                        deadline=Deadline(30),
                         container=primary_container,
                         tail_lines=200,
                     )
@@ -98,4 +101,8 @@ async def bertrand_code(
                         msg = f"{msg}\n{detail}"
                     raise OSError(msg)
             finally:
-                await pod.delete(kube, timeout=math.inf, grace_period_seconds=1)
+                await pod.delete(
+                    kube,
+                    deadline=deadline,
+                    grace_period_seconds=1,
+                )

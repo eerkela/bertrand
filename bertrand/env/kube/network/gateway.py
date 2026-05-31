@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    BERTRAND_NAMESPACE,
+    Deadline,
+)
 from bertrand.env.kube.api.client import is_missing_api_resource
 from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
 
@@ -29,13 +33,13 @@ GATEWAY_LABELS = {
     "app.kubernetes.io/name": BERTRAND_GATEWAY,
     "app.kubernetes.io/part-of": "bertrand",
     "app.kubernetes.io/component": "gateway",
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     GATEWAY_LABEL: GATEWAY_LABEL_VALUE,
 }
 HTTP_ROUTE_LABELS = {
     "app.kubernetes.io/part-of": "bertrand",
     "app.kubernetes.io/component": "workload-route",
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     HTTP_ROUTE_LABEL: HTTP_ROUTE_LABEL_VALUE,
 }
 GATEWAY_CLASS_RESOURCE = CustomObjectResource[CustomObject](
@@ -64,7 +68,7 @@ async def upsert_gateway_class(
     *,
     name: str,
     controller_name: str,
-    timeout: float,
+    deadline: Deadline,
     labels: Mapping[str, str] | None = None,
 ) -> CustomObject:
     """Create or patch one GatewayClass.
@@ -77,7 +81,7 @@ async def upsert_gateway_class(
         GatewayClass name to create or patch.
     controller_name : str
         Gateway controller name that should reconcile the class.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
     labels : Mapping[str, str] | None, optional
         Labels to apply to the GatewayClass.
@@ -92,7 +96,7 @@ async def upsert_gateway_class(
         name=name,
         spec={"controllerName": controller_name},
         labels=labels,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -103,7 +107,7 @@ async def upsert_gateway(
     name: str,
     gateway_class: str,
     listeners: Sequence[Mapping[str, object]],
-    timeout: float,
+    deadline: Deadline,
     labels: Mapping[str, str] | None = None,
 ) -> CustomObject:
     """Create or patch one Gateway.
@@ -120,7 +124,7 @@ async def upsert_gateway(
         GatewayClass name used by the Gateway.
     listeners : Sequence[Mapping[str, object]]
         Gateway listener specs to render under `spec.listeners`.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
     labels : Mapping[str, str] | None, optional
         Labels to apply to the Gateway.
@@ -139,7 +143,7 @@ async def upsert_gateway(
             "listeners": [dict(listener) for listener in listeners],
         },
         labels=labels,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -151,7 +155,7 @@ async def upsert_http_route(
     parent_refs: Sequence[Mapping[str, object]],
     hostnames: Sequence[str],
     rules: Sequence[Mapping[str, object]],
-    timeout: float,
+    deadline: Deadline,
     labels: Mapping[str, str] | None = None,
 ) -> CustomObject:
     """Create or patch one HTTPRoute.
@@ -170,7 +174,7 @@ async def upsert_http_route(
         Hostnames matched by the route.
     rules : Sequence[Mapping[str, object]]
         HTTPRoute rules to render under `spec.rules`.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
     labels : Mapping[str, str] | None, optional
         Labels to apply to the HTTPRoute.
@@ -190,7 +194,7 @@ async def upsert_http_route(
             "rules": [dict(rule) for rule in rules],
         },
         labels=labels,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -255,14 +259,14 @@ def http_route_hostnames(route: CustomObject) -> tuple[str, ...]:
     )
 
 
-async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> CustomObject:
+async def ensure_bertrand_gateway(kube: Kube, *, deadline: Deadline) -> CustomObject:
     """Converge Bertrand's shared Gateway API substrate.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -276,15 +280,11 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> CustomObject
         If Gateway API CRDs, Envoy Gateway acceptance, or external address
         assignment are unavailable.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="Bertrand Gateway convergence timeout must be positive",
-    )
     try:
         current_class = await GATEWAY_CLASS_RESOURCE.get(
             kube,
             name=BERTRAND_GATEWAY_CLASS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         _assert_managed_gateway_resource(current_class, kind="GatewayClass")
         await upsert_gateway_class(
@@ -292,7 +292,7 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> CustomObject
             name=BERTRAND_GATEWAY_CLASS,
             controller_name=ENVOY_GATEWAY_CONTROLLER,
             labels=GATEWAY_LABELS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     except OSError as err:
         message = _gateway_api_error_message("upsert GatewayClass", err)
@@ -308,7 +308,7 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> CustomObject
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BERTRAND_GATEWAY,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         _assert_managed_gateway_resource(current_gateway, kind="Gateway")
         await upsert_gateway(
@@ -318,7 +318,7 @@ async def ensure_bertrand_gateway(kube: Kube, *, timeout: float) -> CustomObject
             gateway_class=BERTRAND_GATEWAY_CLASS,
             listeners=_bertrand_gateway_listeners(),
             labels=GATEWAY_LABELS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     except OSError as err:
         message = _gateway_api_error_message("upsert Gateway", err)
@@ -381,7 +381,7 @@ async def _wait_gateway_class_accepted(
 ) -> CustomObject:
     last: CustomObject | None = None
     while True:
-        remaining = deadline.remaining()
+        remaining = deadline.remaining
         if remaining <= 0:
             detail = (
                 f": {gateway_class_acceptance_message(last)}"
@@ -397,18 +397,18 @@ async def _wait_gateway_class_accepted(
         current = await GATEWAY_CLASS_RESOURCE.get(
             kube,
             name=BERTRAND_GATEWAY_CLASS,
-            timeout=remaining,
+            deadline=deadline,
         )
         if current is not None:
             last = current
             if gateway_class_accepted(current):
                 return current
-        await asyncio.sleep(deadline.bounded(0.5))
+        await deadline.sleep(0.5)
 
 
 async def _wait_gateway_address(kube: Kube, *, deadline: Deadline) -> CustomObject:
     while True:
-        remaining = deadline.remaining()
+        remaining = deadline.remaining
         if remaining <= 0:
             msg = (
                 f"Gateway {BERTRAND_NAMESPACE}/{BERTRAND_GATEWAY} has no external "
@@ -421,11 +421,11 @@ async def _wait_gateway_address(kube: Kube, *, deadline: Deadline) -> CustomObje
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BERTRAND_GATEWAY,
-            timeout=remaining,
+            deadline=deadline,
         )
         if current is not None and gateway_addresses(current):
             return current
-        await asyncio.sleep(deadline.bounded(0.5))
+        await deadline.sleep(0.5)
 
 
 def _gateway_api_error_message(action: str, err: OSError) -> str | None:
@@ -447,7 +447,7 @@ def _assert_managed_gateway_resource(
         return
     labels = resource.labels
     expected = {
-        BERTRAND_ENV: "1",
+        BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
         GATEWAY_LABEL: GATEWAY_LABEL_VALUE,
     }
     if all(labels.get(key) == value for key, value in expected.items()):

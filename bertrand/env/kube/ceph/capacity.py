@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import uuid
 from contextlib import asynccontextmanager, suppress
@@ -18,7 +17,12 @@ from pydantic import (
     model_validator,
 )
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    BERTRAND_NAMESPACE,
+    Deadline,
+)
 from bertrand.env.kube.ceph.api import parse_size_bytes
 from bertrand.env.kube.custom_object import (
     CustomObjectMetadata,
@@ -43,7 +47,7 @@ STORAGE_OSD_LABEL = "bertrand.dev/ceph-storage-osd"
 STORAGE_OSD_LABEL_VALUE = "v1"
 STORAGE_OSD_NAME_LABEL = "bertrand.dev/ceph-storage-osd-name"
 STORAGE_CONTROLLER_LABELS = {
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     STORAGE_CONTROLLER_LABEL: STORAGE_CONTROLLER_LABEL_VALUE,
 }
 STORAGE_ACTION_PHASES = ("Pending", "Running", "Succeeded", "Failed")
@@ -62,15 +66,6 @@ STORAGE_NODE_REPORT_MAX_AGE_SECONDS = 120
 STORAGE_TARGET_RETRY_COOLDOWN_SECONDS = 300
 STORAGE_OSD_STALE_PHASE_SECONDS = 1800
 STORAGE_ACTION_STALE_SECONDS = 1800
-
-
-def _deadline_from_budget(seconds: float) -> Deadline:
-    if seconds <= 0:
-        return Deadline(
-            expires_at=asyncio.get_running_loop().time(),
-            timeout=seconds,
-        )
-    return Deadline.from_timeout(seconds, message="")
 
 
 type _Watermark = Annotated[float, Field(gt=0.0, lt=1.0)]
@@ -617,53 +612,50 @@ _STORAGE_RESOURCES: tuple[CustomObjectResource[Any], ...] = (
 )
 
 
-async def ensure_ceph_capacity_crds(kube: Kube, *, timeout: float) -> None:
+async def ensure_ceph_capacity_crds(kube: Kube, *, deadline: Deadline) -> None:
     """Converge Ceph capacity CRDs.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="Ceph capacity CRD timeout must be positive",
-    )
     for resource in _STORAGE_RESOURCES:
-        await resource.ensure_crd(kube, timeout=deadline.remaining())
+        await resource.ensure_crd(kube, deadline=deadline)
 
 
-async def ensure_default_storage_policy(kube: Kube, *, timeout: float) -> None:
+async def ensure_default_storage_policy(kube: Kube, *, deadline: Deadline) -> None:
     """Converge the singleton collapsed Ceph storage state.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
     """
-    deadline = _deadline_from_budget(timeout)
     await STORAGE_STATE_RESOURCE.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=STORAGE_STATE_NAME,
         spec=_CephStoragePolicySpec(),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
-async def read_storage_state(kube: Kube, *, timeout: float) -> CephStorageStateRecord:
+async def read_storage_state(
+    kube: Kube, *, deadline: Deadline
+) -> CephStorageStateRecord:
     """Read and validate the singleton collapsed storage state.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -680,7 +672,7 @@ async def read_storage_state(kube: Kube, *, timeout: float) -> CephStorageStateR
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=STORAGE_STATE_NAME,
-        timeout=timeout,
+        deadline=deadline,
     )
     if record is None:
         msg = f"{STORAGE_STATE_KIND} {STORAGE_STATE_NAME!r} is missing"
@@ -697,7 +689,7 @@ async def upsert_storage_reservation(
     requested_bytes: int,
     reason: str,
     expires_at: datetime,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephStorageReservation:
     """Create or refresh a pending storage reservation.
 
@@ -711,7 +703,7 @@ async def upsert_storage_reservation(
         owner_name=owner_name,
         request_id=request_id,
     )
-    state = await read_storage_state(kube, timeout=timeout)
+    state = await read_storage_state(kube, deadline=deadline)
     entry = CephStorageReservation(
         name=name,
         owner_kind=owner_kind,
@@ -738,7 +730,7 @@ async def upsert_storage_reservation(
                 }
             },
         ),
-        timeout=timeout,
+        deadline=deadline,
     )
     return refreshed.status.reservations.get(name, entry)
 
@@ -748,7 +740,7 @@ async def patch_storage_reservation_status(
     *,
     reservation: CephStorageReservation,
     status: Mapping[str, object],
-    timeout: float,
+    deadline: Deadline,
 ) -> CephStorageReservation:
     """Patch one storage reservation status.
 
@@ -760,7 +752,7 @@ async def patch_storage_reservation_status(
     patched = CephStorageReservation.model_validate(
         {**reservation.model_dump(mode="python"), **dict(status)}
     )
-    state = await read_storage_state(kube, timeout=timeout)
+    state = await read_storage_state(kube, deadline=deadline)
     refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
@@ -773,7 +765,7 @@ async def patch_storage_reservation_status(
                 }
             },
         ),
-        timeout=timeout,
+        deadline=deadline,
     )
     return refreshed.status.reservations.get(reservation.name, patched)
 
@@ -782,7 +774,7 @@ async def release_storage_reservation(
     kube: Kube,
     *,
     reservation: CephStorageReservation,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Mark a reservation released.
 
@@ -792,7 +784,7 @@ async def release_storage_reservation(
         Active Kubernetes API context.
     reservation : CephStorageReservation
         Reservation to release.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
     """
     if reservation.phase in {"Released", "Expired", "Failed"}:
@@ -805,7 +797,7 @@ async def release_storage_reservation(
             "released_at": datetime.now(UTC).isoformat(),
             "last_error": "",
         },
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -813,7 +805,7 @@ async def wait_storage_reservation_ready(
     kube: Kube,
     *,
     reservation: CephStorageReservation,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephStorageReservation:
     """Wait until a storage reservation becomes ready.
 
@@ -833,9 +825,8 @@ async def wait_storage_reservation_ready(
         f"storage reservation {reservation.name!r} was not ready before "
         "the operation timeout; run `bertrand cluster storage doctor`"
     )
-    deadline = Deadline.from_timeout(timeout, message=msg)
-    while deadline.remaining() > 0:
-        state = await read_storage_state(kube, timeout=deadline.remaining())
+    while deadline.remaining > 0:
+        state = await read_storage_state(kube, deadline=deadline)
         fresh = state.status.reservations.get(reservation.name)
         if fresh is None:
             msg = f"storage reservation {reservation.name!r} disappeared"
@@ -846,7 +837,7 @@ async def wait_storage_reservation_ready(
             detail = fresh.last_error or f"phase is {fresh.phase}"
             msg = f"storage reservation {fresh.name!r} is not usable: {detail}"
             raise OSError(msg)
-        await asyncio.sleep(deadline.bounded(2.0))
+        await deadline.sleep(2.0)
     raise TimeoutError(msg)
 
 
@@ -859,7 +850,7 @@ async def reserve_ceph_storage(
     request_id: str,
     requested_bytes: int,
     reason: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> AsyncIterator[CephStorageReservation]:
     """Hold a hard storage reservation for one Bertrand-owned write.
 
@@ -868,7 +859,7 @@ async def reserve_ceph_storage(
     CephStorageReservation
         Ready reservation record.
     """
-    deadline = _deadline_from_budget(timeout)
+    budget = deadline.check("storage reservation timeout must be positive")
     reservation = await upsert_storage_reservation(
         kube,
         owner_kind=owner_kind,
@@ -876,29 +867,30 @@ async def reserve_ceph_storage(
         request_id=request_id,
         requested_bytes=requested_bytes,
         reason=reason,
-        expires_at=datetime.now(UTC) + timedelta(seconds=max(1.0, timeout)),
-        timeout=deadline.remaining(),
+        expires_at=datetime.now(UTC) + timedelta(seconds=max(1.0, budget)),
+        deadline=deadline,
     )
     try:
         yield await wait_storage_reservation_ready(
             kube,
             reservation=reservation,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     finally:
-        with suppress(OSError, TimeoutError, ValueError):
-            await release_storage_reservation(
-                kube,
-                reservation=reservation,
-                timeout=max(1.0, deadline.remaining()),
-            )
+        if deadline.remaining > 0:
+            with suppress(OSError, TimeoutError, ValueError):
+                await release_storage_reservation(
+                    kube,
+                    reservation=reservation,
+                    deadline=deadline,
+                )
 
 
 async def create_storage_actions(
     kube: Kube,
     *,
     actions: Collection[CephStorageActionSpec],
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Create node-scoped storage action resources.
 
@@ -908,7 +900,7 @@ async def create_storage_actions(
         Active Kubernetes API context.
     actions : Collection[CephStorageActionSpec]
         Storage action specs to create.
-    timeout : float
+    deadline : Deadline
         Maximum creation budget in seconds.
     """
     for action in actions:
@@ -917,7 +909,7 @@ async def create_storage_actions(
             namespace=BERTRAND_NAMESPACE,
             name=f"{STORAGE_STATE_NAME}-{uuid.uuid4().hex[:12]}",
             spec=action,
-            timeout=timeout,
+            deadline=deadline,
         )
 
 
@@ -927,7 +919,7 @@ async def upsert_storage_osd(
     name: str,
     spec: Mapping[str, object] | CephStorageOSD,
     phase: StorageOSDPhase,
-    timeout: float,
+    deadline: Deadline,
 ) -> CephStorageOSD:
     """Upsert one managed OSD record and refresh its phase status.
 
@@ -941,7 +933,7 @@ async def upsert_storage_osd(
         Desired OSD identity/spec payload.
     phase : StorageOSDPhase
         Lifecycle phase to publish.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -950,7 +942,7 @@ async def upsert_storage_osd(
         Converged OSD inventory record.
     """
     now = datetime.now(UTC)
-    state = await read_storage_state(kube, timeout=timeout)
+    state = await read_storage_state(kube, deadline=deadline)
     existing = state.status.osds.get(name)
     spec_payload = (
         spec.model_dump(
@@ -1002,7 +994,7 @@ async def upsert_storage_osd(
         status=state.status.model_copy(
             update={"osds": {**state.status.osds, entry.name: entry}},
         ),
-        timeout=timeout,
+        deadline=deadline,
     )
     return refreshed.status.osds.get(name, entry)
 
@@ -1012,7 +1004,7 @@ async def patch_storage_osd_status(
     *,
     osd: CephStorageOSD,
     status: Mapping[str, object],
-    timeout: float,
+    deadline: Deadline,
 ) -> CephStorageOSD:
     """Patch the status for one managed OSD record.
 
@@ -1034,7 +1026,7 @@ async def patch_storage_osd_status(
     patched = CephStorageOSD.model_validate(
         {**osd.model_dump(mode="python"), **payload}
     )
-    state = await read_storage_state(kube, timeout=timeout)
+    state = await read_storage_state(kube, deadline=deadline)
     refreshed = await STORAGE_STATE_RESOURCE.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
@@ -1042,7 +1034,7 @@ async def patch_storage_osd_status(
         status=state.status.model_copy(
             update={"osds": {**state.status.osds, patched.name: patched}},
         ),
-        timeout=timeout,
+        deadline=deadline,
     )
     return refreshed.status.osds.get(osd.name, patched)
 
@@ -1053,7 +1045,7 @@ async def upsert_storage_node_report(
     node_name: str,
     host_id: str,
     status: Mapping[str, object],
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Upsert one node report and patch its current status.
 
@@ -1067,11 +1059,11 @@ async def upsert_storage_node_report(
         Durable Bertrand host UUID reported by the agent.
     status : Mapping[str, object]
         Node report status payload.
-    timeout : float
+    deadline : Deadline
         Maximum update budget in seconds.
     """
     name = storage_node_report_name(host_id)
-    state = await read_storage_state(kube, timeout=timeout)
+    state = await read_storage_state(kube, deadline=deadline)
     entry = CephStorageNodeReport.model_validate(
         {"name": name, "node_name": node_name, "host_id": host_id, **dict(status)}
     )
@@ -1082,7 +1074,7 @@ async def upsert_storage_node_report(
         status=state.status.model_copy(
             update={"nodes": {**state.status.nodes, entry.name: entry}},
         ),
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -1090,7 +1082,7 @@ async def pending_storage_actions(
     kube: Kube,
     *,
     node_name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> list[CephStorageActionRecord]:
     """List pending storage actions assigned to one node.
 
@@ -1100,7 +1092,7 @@ async def pending_storage_actions(
         Active Kubernetes API context.
     node_name : str
         Node name to filter by.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -1111,7 +1103,7 @@ async def pending_storage_actions(
     actions = await STORAGE_ACTION_RESOURCE.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
-        timeout=timeout,
+        deadline=deadline,
     )
     pending = [
         action
@@ -1127,7 +1119,7 @@ async def patch_storage_action_status(
     *,
     action: CephStorageActionRecord,
     status: Mapping[str, object],
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Patch the status for one storage action.
 
@@ -1139,7 +1131,7 @@ async def patch_storage_action_status(
         Storage action to patch.
     status : Mapping[str, object]
         Status fields to apply.
-    timeout : float
+    deadline : Deadline
         Maximum patch budget in seconds.
     """
     await STORAGE_ACTION_RESOURCE.patch_status(
@@ -1147,5 +1139,5 @@ async def patch_storage_action_status(
         namespace=BERTRAND_NAMESPACE,
         name=action.name,
         status=status,
-        timeout=timeout,
+        deadline=deadline,
     )

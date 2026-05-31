@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    BERTRAND_NAMESPACE,
+    Deadline,
+)
 from bertrand.env.kube.configmap import ConfigMap
 
 if TYPE_CHECKING:
@@ -23,7 +28,7 @@ NETWORK_PROFILE_LABEL_VALUE = "v1"
 NETWORK_PROFILE_LABELS = {
     "app.kubernetes.io/name": NETWORK_PROFILE_NAME,
     "app.kubernetes.io/part-of": "bertrand",
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     NETWORK_PROFILE_LABEL: NETWORK_PROFILE_LABEL_VALUE,
 }
 DNS_SEARCH_DOMAIN_RE = re.compile(
@@ -170,14 +175,14 @@ class NetworkProfile(BaseModel):
         return {NETWORK_PROFILE_KEY: self.json_data}
 
     @classmethod
-    async def get(cls, kube: Kube, *, timeout: float) -> Self:
+    async def get(cls, kube: Kube, *, deadline: Deadline) -> Self:
         """Read the cluster networking profile.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
 
         Returns
@@ -195,7 +200,7 @@ class NetworkProfile(BaseModel):
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=NETWORK_PROFILE_NAME,
-            timeout=timeout,
+            deadline=deadline,
         )
         if config is None:
             return cls()
@@ -211,14 +216,14 @@ class NetworkProfile(BaseModel):
             )
             raise OSError(msg) from err
 
-    async def upsert(self, kube: Kube, *, timeout: float) -> None:
+    async def upsert(self, kube: Kube, *, deadline: Deadline) -> None:
         """Persist this profile in the cluster.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         """
         await ConfigMap.upsert(
@@ -227,5 +232,5 @@ class NetworkProfile(BaseModel):
             name=NETWORK_PROFILE_NAME,
             data=self.configmap_data(),
             labels=NETWORK_PROFILE_LABELS,
-            timeout=timeout,
+            deadline=deadline,
         )

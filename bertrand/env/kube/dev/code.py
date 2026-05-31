@@ -16,9 +16,9 @@ from bertrand.env.config.vscode import (
     VSCodeWorkspace,
 )
 from bertrand.env.git import (
-    REPO_ID_ENV,
     REPO_MOUNT,
     WORKTREE_MOUNT,
+    Deadline,
     GitRepository,
     inside_container,
 )
@@ -73,18 +73,19 @@ async def send_code_open_request(
     if remaining <= 0:
         msg = "deadline exhausted before editor request could be submitted"
         raise TimeoutError(msg)
-    with Kube.inside_cluster() as kube:
+    request_deadline = Deadline(remaining)
+    with await Kube.internal() as kube:
         record = await CODE_OPEN_RESOURCE.create(
             kube,
             name=code_open_request_name(spec.session_id, spec.request_id),
             spec=spec,
             labels=code_open_request_labels(spec, host_id),
-            timeout=remaining,
+            deadline=request_deadline,
         )
         terminal = await wait_code_open_request(
             kube,
             name=record.name,
-            timeout=max(0.001, deadline - time.time()),
+            deadline=Deadline(max(0.001, deadline - time.time())),
         )
     _raise_if_unsuccessful(terminal)
 
@@ -103,18 +104,22 @@ async def _request_spec(
         raise RuntimeError(msg)
     session_id = _required_env(DEV_SESSION_ENV)
     host_id = _required_env(DEV_HOST_ID_ENV)
-    repo_id = _required_env(REPO_ID_ENV)
     pod_name = _required_env(DEV_POD_NAME_ENV)
     primary_container = _required_env(DEV_PRIMARY_CONTAINER_ENV)
 
-    with Kube.inside_cluster() as kube:
-        async with await Config.load(
+    request_deadline = Deadline(max(0.001, deadline - time.time()))
+    repo = GitRepository(git_dir=REPO_MOUNT / ".git")
+    repo_id = repo.id
+    with await Kube.internal() as kube:
+        config = await Config.load(
             WORKTREE_MOUNT,
             kube=kube,
-            repo=GitRepository(git_dir=REPO_MOUNT / ".git"),
-        ) as config:
+            repo=repo,
+            deadline=request_deadline,
+        )
+        async with config.activate(deadline=request_deadline):
             config.resources[VSCodeWorkspace.name] = None
-            await config.sync(image_build=True)
+            await config.sync(image_build=True, deadline=request_deadline)
             bertrand = config.get(Bertrand)
             if bertrand is None:
                 msg = (
@@ -130,7 +135,7 @@ async def _request_spec(
             session_id=session_id,
             request_id=uuid.uuid4().hex,
             repo_id=repo_id,
-            worktree=worktree,
+            worktree=config.worktree.as_posix(),
             pod_name=pod_name,
             container_name=primary_container,
             workspace_path=VSCODE_WORKSPACE_FILE.as_posix(),

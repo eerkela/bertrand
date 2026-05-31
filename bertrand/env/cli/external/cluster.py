@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import math
 import socket
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -91,16 +90,20 @@ def _flatten(values: Sequence[Sequence[str]] | None) -> tuple[str, ...]:
     return tuple(item for group in values for item in group)
 
 
-async def bertrand_cluster_status(*, json_output: bool) -> None:
+async def bertrand_cluster_status(*, json_output: bool, deadline: Deadline) -> None:
     """Print shared Bertrand cluster status.
 
     Parameters
     ----------
     json_output : bool
         Whether to emit machine-readable JSON.
+    deadline : Deadline
+        Kubernetes request budget.
     """
     status: dict[str, object] = {
-        "microk8s": await _probe_bool(lambda: microk8s_cluster_ready(timeout=math.inf)),
+        "microk8s": await _probe_bool(
+            lambda: microk8s_cluster_ready(deadline=deadline)
+        ),
     }
     kube_checks = (
         ("rook_ceph", _rook_ceph_status),
@@ -112,10 +115,10 @@ async def bertrand_cluster_status(*, json_output: bool) -> None:
         ("dev", _dev_status),
     )
     try:
-        with await Kube.host(timeout=math.inf) as kube:
+        with await Kube.host(deadline=deadline) as kube:
             for name, probe in kube_checks:
                 try:
-                    status[name] = await probe(kube)
+                    status[name] = await probe(kube, deadline=deadline)
                 except (OSError, TimeoutError, RuntimeError, ValueError) as err:
                     status[name] = {"ready": False, "message": str(err)}
     except (OSError, TimeoutError, RuntimeError, ValueError) as err:
@@ -137,7 +140,7 @@ async def bertrand_cluster_invite(
     *,
     name: str | None,
     worker: bool,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Generate a sensitive Bertrand distributed-runtime join bundle.
 
@@ -147,17 +150,13 @@ async def bertrand_cluster_invite(
         Desired name for the joining node.
     worker : bool
         Whether the joining MicroK8s node should be a worker.
-    timeout : float
-        Maximum token generation budget in seconds.
+    deadline : Deadline
+        Token generation budget.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="cluster invite timeout must be positive",
-    )
     microk8s = await microk8s_join_token(
         worker=worker,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     node_name = (
         name or f"bertrand-node-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
@@ -182,7 +181,7 @@ async def bertrand_cluster_join(
     *,
     token: str,
     worker: bool,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Join this host to an existing Bertrand shared runtime cluster.
 
@@ -192,20 +191,16 @@ async def bertrand_cluster_join(
         Sensitive join bundle produced by `bertrand cluster invite`.
     worker : bool
         Whether to force MicroK8s worker join semantics.
-    timeout : float
-        Maximum join and convergence budget in seconds.
+    deadline : Deadline
+        Join and convergence budget.
 
     """
     bundle = _decode_bundle(token)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="cluster join timeout must be positive",
-    )
-    await ensure_shared_runtime_installed(timeout=deadline.remaining(), yes=False)
+    await ensure_shared_runtime_installed(deadline=deadline, yes=False)
     await join_microk8s_cluster(
         str(bundle["microk8s"]),
         worker=worker or bool(bundle.get("worker")),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await _converge_host_cluster_runtime(deadline, start=False)
     print("Bertrand cluster join complete.")
@@ -216,7 +211,7 @@ async def bertrand_cluster_device_list(
     node: str | None,
     capability_id: str | None,
     json_output: bool,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Print managed DRA inventory across the cluster.
 
@@ -228,19 +223,19 @@ async def bertrand_cluster_device_list(
         Optional device capability ID filter.
     json_output : bool
         Whether to emit machine-readable JSON.
-    timeout : float
-        Maximum Kubernetes request budget in seconds.
+    deadline : Deadline
+        Kubernetes request budget.
     """
-    with await Kube.host(timeout=timeout) as kube:
+    with await Kube.host(deadline=deadline) as kube:
         records = await list_device_inventory(
             kube,
             capability_id=capability_id,
             host_ids=None if node is None else (node,),
-            timeout=timeout,
+            deadline=deadline,
         )
         nodes = {
             item.host_id: item
-            for item in await list_bertrand_nodes(kube, timeout=timeout)
+            for item in await list_bertrand_nodes(kube, deadline=deadline)
         }
     payload = [
         _cluster_device_payload(
@@ -263,6 +258,7 @@ async def bertrand_cluster_storage_status(
     *,
     json_output: bool,
     doctor: bool = False,
+    deadline: Deadline,
 ) -> None:
     """Print cluster-wide Rook/Ceph storage status and diagnostics.
 
@@ -272,9 +268,11 @@ async def bertrand_cluster_storage_status(
         Whether to emit machine-readable JSON.
     doctor : bool
         Whether to print diagnostic guidance in addition to status.
+    deadline : Deadline
+        Kubernetes request budget.
     """
-    with await Kube.host(timeout=math.inf) as kube:
-        snapshot = await storage_cli_snapshot(kube)
+    with await Kube.host(deadline=deadline) as kube:
+        snapshot = await storage_cli_snapshot(kube, deadline=deadline)
     payload = snapshot.status_payload()
     if json_output:
         emit_json(payload)
@@ -284,35 +282,55 @@ async def bertrand_cluster_storage_status(
         print_cluster_storage_doctor(snapshot)
 
 
-async def bertrand_cluster_storage_doctor(*, json_output: bool) -> None:
+async def bertrand_cluster_storage_doctor(
+    *,
+    json_output: bool,
+    deadline: Deadline,
+) -> None:
     """Print cluster-wide Rook/Ceph storage status and diagnostics."""
-    await bertrand_cluster_storage_status(json_output=json_output, doctor=True)
+    await bertrand_cluster_storage_status(
+        json_output=json_output,
+        doctor=True,
+        deadline=deadline,
+    )
 
 
-async def bertrand_cluster_network_status(*, json_output: bool) -> None:
+async def bertrand_cluster_network_status(
+    *,
+    json_output: bool,
+    deadline: Deadline,
+) -> None:
     """Print cluster networking status.
 
     Parameters
     ----------
     json_output : bool
         Whether to emit machine-readable JSON.
+    deadline : Deadline
+        Kubernetes request budget.
     """
-    report = await _network_report()
+    report = await _network_report(deadline=deadline)
     if json_output:
         emit_json(report)
         return
     _print_network_report(report)
 
 
-async def bertrand_cluster_network_doctor(*, json_output: bool) -> None:
+async def bertrand_cluster_network_doctor(
+    *,
+    json_output: bool,
+    deadline: Deadline,
+) -> None:
     """Print actionable cluster networking diagnostics.
 
     Parameters
     ----------
     json_output : bool
         Whether to emit machine-readable JSON.
+    deadline : Deadline
+        Kubernetes request budget.
     """
-    report = await _network_report()
+    report = await _network_report(deadline=deadline)
     issues = _network_issues(report)
     if json_output:
         emit_json({"ready": not issues, "issues": issues, "status": report})
@@ -326,37 +344,39 @@ async def bertrand_cluster_network_doctor(*, json_output: bool) -> None:
         print(f"  - {issue}")
 
 
-async def bertrand_cluster_network_lb_status(*, json_output: bool) -> None:
+async def bertrand_cluster_network_lb_status(
+    *,
+    json_output: bool,
+    deadline: Deadline,
+) -> None:
     """Print MetalLB status.
 
     Parameters
     ----------
     json_output : bool
         Whether to emit machine-readable JSON.
+    deadline : Deadline
+        Kubernetes request budget.
     """
-    with await Kube.host(timeout=math.inf) as kube:
-        status = await metallb_status(kube, timeout=math.inf)
+    with await Kube.host(deadline=deadline) as kube:
+        status = await metallb_status(kube, deadline=deadline)
     if json_output:
         emit_json(status)
         return
     _print_metallb_status(status)
 
 
-async def bertrand_cluster_network_lb_install(*, timeout: float) -> None:
+async def bertrand_cluster_network_lb_install(*, deadline: Deadline) -> None:
     """Install and verify Bertrand-managed MetalLB.
 
     Parameters
     ----------
-    timeout : float
-        Maximum convergence budget in seconds.
+    deadline : Deadline
+        Convergence budget.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="MetalLB install timeout must be positive",
-    )
-    with await Kube.host(timeout=deadline.remaining()) as kube:
-        await ensure_metallb(kube, timeout=deadline.remaining())
+    with await Kube.host(deadline=deadline) as kube:
+        await ensure_metallb(kube, deadline=deadline)
     print("MetalLB installed and ready.")
 
 
@@ -365,16 +385,16 @@ async def bertrand_cluster_network_lb_pool_upsert(
     name: str,
     address: Sequence[Sequence[str]] | None,
     auto_assign: bool,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Create or patch a Bertrand-managed MetalLB IPAddressPool."""
-    with await Kube.host(timeout=timeout) as kube:
+    with await Kube.host(deadline=deadline) as kube:
         pool = await upsert_ip_address_pool(
             kube,
             name=name,
             addresses=_flatten(address),
             auto_assign=auto_assign,
-            timeout=timeout,
+            deadline=deadline,
         )
     print(f"MetalLB IPAddressPool {pool.name!r} converged.")
 
@@ -384,16 +404,16 @@ async def bertrand_cluster_network_lb_l2_upsert(
     name: str,
     pool: str,
     interface: Sequence[str],
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Create or patch a Bertrand-managed L2Advertisement."""
-    with await Kube.host(timeout=timeout) as kube:
+    with await Kube.host(deadline=deadline) as kube:
         advertisement = await upsert_l2_advertisement(
             kube,
             name=name,
             pool=pool,
             interfaces=tuple(interface or ()),
-            timeout=timeout,
+            deadline=deadline,
         )
     print(f"MetalLB L2Advertisement {advertisement.name!r} converged.")
 
@@ -407,10 +427,10 @@ async def bertrand_cluster_network_lb_bgp_peer_upsert(
     peer_port: int | None,
     source_address: str | None,
     password_secret: str | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Create or patch a Bertrand-managed BGPPeer."""
-    with await Kube.host(timeout=timeout) as kube:
+    with await Kube.host(deadline=deadline) as kube:
         peer = await upsert_bgp_peer(
             kube,
             name=name,
@@ -420,7 +440,7 @@ async def bertrand_cluster_network_lb_bgp_peer_upsert(
             peer_port=peer_port,
             source_address=source_address,
             password_secret=password_secret,
-            timeout=timeout,
+            deadline=deadline,
         )
     print(f"MetalLB BGPPeer {peer.name!r} converged.")
 
@@ -432,10 +452,10 @@ async def bertrand_cluster_network_lb_bgp_advertise_upsert(
     peer: Sequence[str],
     local_pref: int | None,
     community: Sequence[str],
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Create or patch a Bertrand-managed BGPAdvertisement."""
-    with await Kube.host(timeout=timeout) as kube:
+    with await Kube.host(deadline=deadline) as kube:
         advertisement = await upsert_bgp_advertisement(
             kube,
             name=name,
@@ -443,13 +463,13 @@ async def bertrand_cluster_network_lb_bgp_advertise_upsert(
             peers=tuple(peer or ()),
             local_pref=local_pref,
             communities=tuple(community or ()),
-            timeout=timeout,
+            deadline=deadline,
         )
     print(f"MetalLB BGPAdvertisement {advertisement.name!r} converged.")
 
 
-async def _network_report() -> dict[str, object]:
-    with await Kube.host(timeout=math.inf) as kube:
+async def _network_report(*, deadline: Deadline) -> dict[str, object]:
+    with await Kube.host(deadline=deadline) as kube:
         (
             profile,
             config_hash,
@@ -458,22 +478,23 @@ async def _network_report() -> dict[str, object]:
             cni,
             load_balancer,
         ) = await asyncio.gather(
-            NetworkProfile.get(kube, timeout=math.inf),
-            current_buildkit_config_hash(kube, timeout=math.inf),
-            image_repository_status(kube, timeout=math.inf),
-            _network_gateway_status(kube),
-            inspect_cni(kube, timeout=math.inf),
-            metallb_status(kube, timeout=math.inf),
+            NetworkProfile.get(kube, deadline=deadline),
+            current_buildkit_config_hash(kube, deadline=deadline),
+            image_repository_status(kube, deadline=deadline),
+            _network_gateway_status(kube, deadline=deadline),
+            inspect_cni(kube, deadline=deadline),
+            metallb_status(kube, deadline=deadline),
         )
         buildkit, routes = await asyncio.gather(
             buildkit_pool_status(
                 kube,
-                timeout=math.inf,
+                deadline=deadline,
                 config_hash=config_hash,
             ),
             _route_dns_status(
                 kube,
                 gateway_addresses=_object_tuple(gateway.get("addresses", ())),
+                deadline=deadline,
             ),
         )
     return {
@@ -540,19 +561,23 @@ def _print_network_report(report: Mapping[str, object]) -> None:
             print(f"    - {failure}")
 
 
-async def _network_gateway_status(kube: Kube) -> dict[str, object]:
+async def _network_gateway_status(
+    kube: Kube,
+    *,
+    deadline: Deadline,
+) -> dict[str, object]:
     try:
         gateway_class, gateway = await asyncio.gather(
             GATEWAY_CLASS_RESOURCE.get(
                 kube,
                 name=BERTRAND_GATEWAY_CLASS,
-                timeout=math.inf,
+                deadline=deadline,
             ),
             GATEWAY_RESOURCE.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=BERTRAND_GATEWAY,
-                timeout=math.inf,
+                deadline=deadline,
             ),
         )
     except OSError as err:
@@ -592,13 +617,14 @@ async def _route_dns_status(
     kube: Kube,
     *,
     gateway_addresses: tuple[str, ...],
+    deadline: Deadline,
 ) -> dict[str, object]:
     try:
         routes = await HTTP_ROUTE_RESOURCE.list(
             kube,
             namespace=BERTRAND_NAMESPACE,
             labels={HTTP_ROUTE_LABEL: HTTP_ROUTE_LABEL_VALUE},
-            timeout=math.inf,
+            deadline=deadline,
         )
     except OSError as err:
         return {
@@ -727,7 +753,7 @@ async def bertrand_cluster_network_dns_set(
     server: Sequence[Sequence[str]] | None,
     search: Sequence[Sequence[str]] | None,
     option: Sequence[Sequence[str]] | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Replace BuildKit/container DNS overrides and roll builders."""
     profile = NetworkProfile(
@@ -735,37 +761,37 @@ async def bertrand_cluster_network_dns_set(
         search_domains=_flatten(search),
         options=_flatten(option),
     )
-    await _apply_network_profile(profile, timeout=timeout)
+    await _apply_network_profile(profile, deadline=deadline)
     _print_dns_profile(profile)
 
 
-async def bertrand_cluster_network_dns_clear(*, timeout: float) -> None:
+async def bertrand_cluster_network_dns_clear(*, deadline: Deadline) -> None:
     """Clear BuildKit/container DNS overrides and roll builders."""
     cleared = NetworkProfile()
-    await _apply_network_profile(cleared, timeout=timeout)
+    await _apply_network_profile(cleared, deadline=deadline)
     _print_dns_profile(cleared)
 
 
-async def _apply_network_profile(profile: NetworkProfile, *, timeout: float) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="network convergence timeout must be positive",
-    )
-    with await Kube.host(timeout=deadline.remaining()) as kube:
+async def _apply_network_profile(
+    profile: NetworkProfile,
+    *,
+    deadline: Deadline,
+) -> None:
+    with await Kube.host(deadline=deadline) as kube:
         await Namespace.upsert(
             kube,
             name=BERTRAND_NAMESPACE,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
-        await profile.upsert(kube, timeout=deadline.remaining())
-        await ensure_image_repository(kube, timeout=deadline.remaining())
+        await profile.upsert(kube, deadline=deadline)
+        await ensure_image_repository(kube, deadline=deadline)
         config_hash = await current_buildkit_config_hash(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         await ensure_buildkit_pool(
             kube,
-            timeout=deadline.remaining(),
+            deadline=deadline,
             config_hash=config_hash,
         )
 
@@ -799,20 +825,24 @@ async def _probe_bool(fn: Callable[[], Awaitable[bool]]) -> dict[str, object]:
         return {"ready": False, "message": str(err)}
 
 
-async def _namespace_status(kube: Kube) -> dict[str, object]:
-    namespace = await Namespace.get(kube, name=BERTRAND_NAMESPACE, timeout=math.inf)
+async def _namespace_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
+    namespace = await Namespace.get(
+        kube,
+        name=BERTRAND_NAMESPACE,
+        deadline=deadline,
+    )
     return {
         "ready": namespace is not None,
         "message": "" if namespace is not None else "Bertrand namespace is missing",
     }
 
 
-async def _buildkit_status(kube: Kube) -> dict[str, object]:
-    config_hash = await current_buildkit_config_hash(kube, timeout=math.inf)
-    registry = await image_repository_status(kube, timeout=math.inf)
+async def _buildkit_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
+    config_hash = await current_buildkit_config_hash(kube, deadline=deadline)
+    registry = await image_repository_status(kube, deadline=deadline)
     buildkit = await buildkit_pool_status(
         kube,
-        timeout=math.inf,
+        deadline=deadline,
         config_hash=config_hash,
     )
     failures = [*registry.failures, *buildkit.failures]
@@ -826,12 +856,12 @@ async def _buildkit_status(kube: Kube) -> dict[str, object]:
     }
 
 
-async def _gateway_status(kube: Kube) -> dict[str, object]:
+async def _gateway_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
     deployment = await Deployment.get(
         kube,
         namespace=ENVOY_GATEWAY_NAMESPACE,
         name=ENVOY_GATEWAY_DEPLOYMENT,
-        timeout=math.inf,
+        deadline=deadline,
     )
     ready = deployment is not None and deployment.has_available_replicas()
     return {
@@ -840,16 +870,16 @@ async def _gateway_status(kube: Kube) -> dict[str, object]:
     }
 
 
-async def _rook_ceph_status(kube: Kube) -> dict[str, object]:
-    ready = await rook_ceph_ready(kube, timeout=math.inf)
+async def _rook_ceph_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
+    ready = await rook_ceph_ready(kube, deadline=deadline)
     return {
         "ready": ready,
         "message": "" if ready else "Rook Ceph substrate is not ready",
     }
 
 
-async def _ceph_csi_status(kube: Kube) -> dict[str, object]:
-    classes = await StorageClass.list(kube, timeout=math.inf)
+async def _ceph_csi_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
+    classes = await StorageClass.list(kube, deadline=deadline)
     names = [storage.name for storage in classes if storage.is_cephfs]
     return {
         "ready": bool(names),
@@ -858,8 +888,8 @@ async def _ceph_csi_status(kube: Kube) -> dict[str, object]:
     }
 
 
-async def _storage_status(kube: Kube) -> dict[str, object]:
-    storage = await read_storage_state(kube, timeout=math.inf)
+async def _storage_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
+    storage = await read_storage_state(kube, deadline=deadline)
     status = storage.policy_status
     ready = status is not None and not status.last_error
     return {
@@ -869,11 +899,11 @@ async def _storage_status(kube: Kube) -> dict[str, object]:
     }
 
 
-async def _dev_status(kube: Kube) -> dict[str, object]:
+async def _dev_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
     crd = await CustomResourceDefinition.get(
         kube,
         name=f"{CODE_OPEN_PLURAL}.{DEV_GROUP}",
-        timeout=math.inf,
+        deadline=deadline,
     )
     ready = crd is not None and crd.is_established
     return {

@@ -7,7 +7,12 @@ import uuid
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    BERTRAND_NAMESPACE,
+    Deadline,
+)
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.build.refs import (
     DIGEST_REF_RE,
@@ -49,7 +54,7 @@ async def _publish_project_image_manifest(
     *,
     spec: BuildKitBuildSpec,
     platform_refs: Mapping[str, str],
-    timeout: float,
+    deadline: Deadline,
     job_observer: Callable[[Job], Awaitable[None]] | None = None,
 ) -> _ManifestPublication:
     """Assemble and optionally copy one project image manifest.
@@ -63,7 +68,7 @@ async def _publish_project_image_manifest(
     platform_refs : Mapping[str, str]
         Digest-pinned platform image refs returned by native BuildKit executions,
         keyed by OCI platform.
-    timeout : float
+    deadline : Deadline
         Maximum runtime budget in seconds. If infinite, wait indefinitely.
     job_observer : Callable[[Job], Awaitable[None]] | None, optional
         Callback invoked after the manifest assembly Job is created.
@@ -98,16 +103,12 @@ async def _publish_project_image_manifest(
         for platform, ref in platform_refs.items()
     }
 
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image manifest publish timeout must be positive",
-    )
     auth_secret = await _resolve_auth_secret(
         kube,
         auth_id=auth_id,
         worktree_id=worktree_id,
         repo_id=repo_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     job = await _create_manifest_job(
         kube,
@@ -115,13 +116,13 @@ async def _publish_project_image_manifest(
         external_image=external_image,
         service_platform_refs=service_platform_refs,
         auth_secret=auth_secret,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     logs = await _run_manifest_job(
         kube,
         job=job,
         image=image,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         job_observer=job_observer,
     )
     return _manifest_publication_result(
@@ -138,7 +139,7 @@ async def _create_manifest_job(
     service_platform_refs: Mapping[str, str],
     external_image: str | None,
     auth_secret: str | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> Job:
     script = _manifest_script(
         image=image,
@@ -150,7 +151,7 @@ async def _create_manifest_job(
         namespace=BERTRAND_NAMESPACE,
         name=_manifest_job_name(),
         labels={
-            BERTRAND_ENV: "1",
+            BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
             MANIFEST_JOB_LABEL: MANIFEST_JOB_LABEL_VALUE,
         },
         pod_template=PodTemplateSpec(
@@ -166,7 +167,7 @@ async def _create_manifest_job(
             ],
         ),
         ttl_seconds_after_finished=MANIFEST_JOB_TTL_SECONDS,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -175,18 +176,22 @@ async def _run_manifest_job(
     *,
     job: Job,
     image: str,
-    timeout: float,
+    deadline: Deadline,
     job_observer: Callable[[Job], Awaitable[None]] | None,
 ) -> str:
     return await job.run_observed(
         kube,
-        timeout=timeout,
+        deadline=deadline,
         failure_context=f"image manifest assembly failed for {image!r}",
         log_heading="manifest Job logs",
         log_failure_label="manifest Job pod logs",
         tail_lines=MANIFEST_JOB_LOG_TAIL_LINES,
-        diagnostic_timeout=MANIFEST_JOB_DIAGNOSTIC_TIMEOUT_SECONDS,
-        cleanup_timeout=MANIFEST_JOB_CLEANUP_TIMEOUT_SECONDS,
+        diagnostic_deadline=Deadline(
+            min(MANIFEST_JOB_DIAGNOSTIC_TIMEOUT_SECONDS, deadline.remaining)
+        ),
+        cleanup_deadline=Deadline(
+            min(MANIFEST_JOB_CLEANUP_TIMEOUT_SECONDS, deadline.remaining)
+        ),
         observer=job_observer,
     )
 
@@ -238,7 +243,7 @@ async def _resolve_auth_secret(
     auth_id: str | None,
     worktree_id: str,
     repo_id: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> str | None:
     if auth_id is None:
         return None
@@ -249,7 +254,7 @@ async def _resolve_auth_secret(
         worktree_id=worktree_id,
         repo_id=repo_id,
         required=True,
-        timeout=timeout,
+        deadline=deadline,
     )
     if secret is None:
         return None

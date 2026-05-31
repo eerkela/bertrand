@@ -12,15 +12,15 @@ from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bertrand.env.git import Deadline
+from bertrand.env.git import Deadline, until
 from bertrand.env.kube.crd import CustomResourceDefinition
 
 from .api.client import KubeApiError, is_missing_api_resource
 from .api.resource import (
+    RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
     ResourceScope,
     _label_selector,
     _normalized_namespaces,
-    _wait_until_deleted,
 )
 from .api.watch import WatchEvent, WatchExpired
 from .api.watch import watch as kube_watch
@@ -273,14 +273,14 @@ class CustomObjectResource[T_co]:
         """Return the fully qualified Kubernetes API version."""
         return f"{self.group}/{self.version}"
 
-    async def ensure_crd(self, kube: Kube, *, timeout: float) -> None:
+    async def ensure_crd(self, kube: Kube, *, deadline: Deadline) -> None:
         """Converge this descriptor's CRD and wait until it is established.
 
         Parameters
         ----------
         kube : Kube
             Active Kubernetes API context.
-        timeout : float
+        deadline : Deadline
             Maximum convergence budget in seconds.
 
         Raises
@@ -292,10 +292,6 @@ class CustomObjectResource[T_co]:
         if self.singular is None or spec_schema is None:
             msg = f"{self.kind} descriptor does not own a CRD"
             raise ValueError(msg)
-        deadline = Deadline.from_timeout(
-            timeout,
-            message=f"{self.kind} CRD timeout must be positive",
-        )
         crd = await CustomResourceDefinition.upsert(
             kube,
             group=self.group,
@@ -308,16 +304,16 @@ class CustomObjectResource[T_co]:
             status_schema=self._status_schema(),
             labels=self.labels,
             scope="Cluster" if self.scope == "cluster" else "Namespaced",
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
-        await crd.wait_established(kube, timeout=deadline.remaining())
+        await crd.wait_established(kube, deadline=deadline)
 
     async def get(
         self,
         kube: Kube,
         *,
         name: str,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         context: str | None = None,
     ) -> T_co | None:
@@ -341,7 +337,7 @@ class CustomObjectResource[T_co]:
                 "get",
                 namespace=namespace,
                 name=name,
-                timeout=timeout,
+                deadline=deadline,
                 context=context or f"failed to read {self.kind} {label}",
                 missing_ok=False,
             )
@@ -359,7 +355,7 @@ class CustomObjectResource[T_co]:
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
@@ -379,7 +375,7 @@ class CustomObjectResource[T_co]:
         )
         payloads = await self._list_payloads(
             kube,
-            timeout=timeout,
+            deadline=deadline,
             namespaces=selected,
             label_selector=_label_selector(self._selector(labels)),
             field_selector=field_selector,
@@ -395,7 +391,7 @@ class CustomObjectResource[T_co]:
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         namespace: str | None = None,
         resource_version: str | None = None,
@@ -414,14 +410,10 @@ class CustomObjectResource[T_co]:
         normalized = _normalized_namespaces(selected)
         namespace = None if normalized is None else next(iter(normalized), None)
         labels = self._selector(labels)
-        deadline = Deadline.from_timeout(
-            timeout,
-            message=f"{self.kind} watch timeout must be positive",
-        )
         current_version = resource_version.strip() if resource_version else ""
         can_emit_initial = emit_initial and not current_version
         while True:
-            remaining = deadline.remaining()
+            remaining = deadline.remaining
             if remaining <= 0:
                 return
             if not current_version:
@@ -430,7 +422,7 @@ class CustomObjectResource[T_co]:
                     namespace=namespace,
                     labels=labels,
                     field_selector=field_selector,
-                    timeout=remaining,
+                    deadline=deadline,
                 )
                 if can_emit_initial:
                     for event in self._initial_watch_events(
@@ -440,7 +432,7 @@ class CustomObjectResource[T_co]:
                         yield event
                     can_emit_initial = False
 
-            remaining = deadline.remaining()
+            remaining = deadline.remaining
             if remaining <= 0:
                 return
             try:
@@ -448,7 +440,7 @@ class CustomObjectResource[T_co]:
                     kube,
                     namespace=namespace,
                     labels=labels,
-                    timeout=remaining,
+                    deadline=deadline,
                     resource_version=current_version,
                     field_selector=field_selector,
                 ):
@@ -466,7 +458,7 @@ class CustomObjectResource[T_co]:
         *,
         name: str,
         spec: _CustomObjectFragment,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
@@ -488,7 +480,7 @@ class CustomObjectResource[T_co]:
                 labels=labels,
                 annotations=annotations,
             ),
-            timeout=timeout,
+            deadline=deadline,
             namespace=namespace,
         )
 
@@ -497,7 +489,7 @@ class CustomObjectResource[T_co]:
         kube: Kube,
         *,
         manifest: Mapping[str, object],
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         name: str | None = None,
         context: str | None = None,
@@ -516,7 +508,7 @@ class CustomObjectResource[T_co]:
             "create",
             namespace=namespace,
             body=dict(manifest),
-            timeout=timeout,
+            deadline=deadline,
             context=context or f"failed to create {self.kind} {label}",
             missing_ok=True,
         )
@@ -527,7 +519,7 @@ class CustomObjectResource[T_co]:
         kube: Kube,
         *,
         name: str,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         spec: _CustomObjectFragment | None = None,
         manifest: Mapping[str, object] | None = None,
@@ -566,7 +558,7 @@ class CustomObjectResource[T_co]:
                 "create",
                 namespace=namespace,
                 body=body,
-                timeout=timeout,
+                deadline=deadline,
                 context=f"failed to create {self.kind} {label}",
                 missing_ok=False,
             )
@@ -579,7 +571,7 @@ class CustomObjectResource[T_co]:
                 namespace=namespace,
                 name=name,
                 body=body,
-                timeout=timeout,
+                deadline=deadline,
                 context=f"failed to patch {self.kind} {label}",
                 missing_ok=False,
             )
@@ -591,7 +583,7 @@ class CustomObjectResource[T_co]:
         *,
         name: str,
         body: Mapping[str, object],
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
         context: str | None = None,
     ) -> T_co:
@@ -610,7 +602,7 @@ class CustomObjectResource[T_co]:
             namespace=namespace,
             name=name,
             body=dict(body),
-            timeout=timeout,
+            deadline=deadline,
             context=context or f"failed to patch {self.kind} {label}",
             missing_ok=False,
         )
@@ -622,7 +614,7 @@ class CustomObjectResource[T_co]:
         *,
         name: str,
         status: _CustomObjectFragment,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
     ) -> T_co:
         """Patch one custom-object status payload.
@@ -641,7 +633,7 @@ class CustomObjectResource[T_co]:
             namespace=namespace,
             name=name,
             body=body,
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to patch {self.kind} status {label}",
             missing_ok=False,
         )
@@ -652,7 +644,7 @@ class CustomObjectResource[T_co]:
         kube: Kube,
         *,
         name: str,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None = None,
     ) -> None:
         """Delete one custom object by name."""
@@ -663,7 +655,7 @@ class CustomObjectResource[T_co]:
             "delete",
             namespace=namespace,
             name=name,
-            timeout=timeout,
+            deadline=deadline,
             context=f"failed to delete {self.kind} {label}",
             missing_ok=True,
         )
@@ -672,21 +664,38 @@ class CustomObjectResource[T_co]:
         self,
         *,
         label: str,
-        timeout: float,
-        refresh: Callable[[float], Awaitable[object | None]],
+        deadline: Deadline,
+        refresh: Callable[[Deadline], Awaitable[object | None]],
     ) -> None:
-        """Wait until a custom object disappears."""
-        await _wait_until_deleted(
-            label=label,
-            timeout=timeout,
-            refresh=refresh,
-        )
+        """Wait until a custom object disappears.
+
+        Raises
+        ------
+        TimeoutError
+            If the object still exists when `deadline` expires.
+        """
+
+        async def deleted(attempt_deadline: Deadline) -> None:
+            if await refresh(attempt_deadline) is None:
+                return
+            msg = f"{label} still exists"
+            raise TimeoutError(msg)
+
+        try:
+            await until(
+                deleted,
+                deadline=deadline,
+                delay=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
+            )
+        except TimeoutError as err:
+            msg = f"timed out waiting for {label} deletion"
+            raise TimeoutError(msg) from err
 
     async def _watch_once(
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         namespace: str | None,
         labels: Mapping[str, str] | None,
         resource_version: str | None,
@@ -703,7 +712,7 @@ class CustomObjectResource[T_co]:
         async for event in kube_watch(
             endpoint,
             wrapper=self._wrap_payload,
-            timeout=timeout,
+            deadline=deadline,
             context=self._collection_context("watch", namespace),
             resource_version=resource_version,
             label_selector=_label_selector(labels),
@@ -716,7 +725,7 @@ class CustomObjectResource[T_co]:
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         namespace: str | None = None,
         field_selector: str | None = None,
@@ -726,7 +735,7 @@ class CustomObjectResource[T_co]:
             namespaces=(namespace,) if namespace else None,
             label_selector=_label_selector(labels),
             field_selector=field_selector,
-            timeout=timeout,
+            deadline=deadline,
         )
         payload = payloads[0] if payloads else None
         if payload is None:
@@ -793,7 +802,7 @@ class CustomObjectResource[T_co]:
         self,
         kube: Kube,
         *,
-        timeout: float,
+        deadline: Deadline,
         namespaces: Collection[str] | None,
         label_selector: str | None,
         field_selector: str | None,
@@ -809,7 +818,7 @@ class CustomObjectResource[T_co]:
                     namespace=None,
                     label_selector=label_selector,
                     field_selector=field_selector,
-                    timeout=timeout,
+                    deadline=deadline,
                     context=self._collection_context("list", None),
                     missing_ok=False,
                 )
@@ -823,7 +832,7 @@ class CustomObjectResource[T_co]:
                         namespace=namespace,
                         label_selector=label_selector,
                         field_selector=field_selector,
-                        timeout=timeout,
+                        deadline=deadline,
                         context=self._collection_context("list", namespace),
                         missing_ok=False,
                     )
@@ -895,7 +904,7 @@ class CustomObjectResource[T_co]:
         kube: Kube,
         operation: _CustomOperation,
         *,
-        timeout: float,
+        deadline: Deadline,
         context: str,
         missing_ok: bool,
         namespace: str | None = None,
@@ -917,7 +926,7 @@ class CustomObjectResource[T_co]:
                 **api_kwargs,
                 _request_timeout=request_timeout,
             ),
-            timeout=timeout,
+            deadline=deadline,
             context=context,
             missing_ok=missing_ok,
         )

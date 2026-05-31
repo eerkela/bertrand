@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_ENV, Deadline, until
+from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline, until
 from bertrand.env.kube.api.bootstrap import kubectl
 from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.custom_object import (
@@ -35,7 +35,7 @@ METALLB_V1BETA2 = "v1beta2"
 METALLB_LABEL = "bertrand.dev/load-balancer"
 METALLB_LABEL_VALUE = "v1"
 _METALLB_MANAGED_SELECTOR = {
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     METALLB_LABEL: METALLB_LABEL_VALUE,
 }
 METALLB_LABELS = {
@@ -115,7 +115,7 @@ async def upsert_ip_address_pool(
     name: str,
     addresses: Sequence[str],
     auto_assign: bool,
-    timeout: float,
+    deadline: Deadline,
 ) -> CustomObject:
     """Create or patch one Bertrand-managed MetalLB IPAddressPool.
 
@@ -129,7 +129,7 @@ async def upsert_ip_address_pool(
         Address ranges delegated to MetalLB.
     auto_assign : bool
         Whether MetalLB may automatically allocate from this pool.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -145,7 +145,7 @@ async def upsert_ip_address_pool(
         kind="IPAddressPool",
         name=name,
         spec={"addresses": list(normalized), "autoAssign": auto_assign},
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -155,7 +155,7 @@ async def upsert_l2_advertisement(
     name: str,
     pool: str,
     interfaces: Sequence[str],
-    timeout: float,
+    deadline: Deadline,
 ) -> CustomObject:
     """Create or patch one Bertrand-managed MetalLB L2Advertisement.
 
@@ -169,7 +169,7 @@ async def upsert_l2_advertisement(
         IPAddressPool name to advertise.
     interfaces : Sequence[str]
         Optional interface names to advertise from.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -189,7 +189,7 @@ async def upsert_l2_advertisement(
         kind="L2Advertisement",
         name=name,
         spec=spec,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -203,7 +203,7 @@ async def upsert_bgp_peer(
     peer_port: int | None,
     source_address: str | None,
     password_secret: str | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> CustomObject:
     """Create or patch one Bertrand-managed MetalLB BGPPeer.
 
@@ -225,7 +225,7 @@ async def upsert_bgp_peer(
         Optional local source address.
     password_secret : str | None
         Optional same-namespace basic-auth Secret for TCP MD5.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -252,7 +252,7 @@ async def upsert_bgp_peer(
         kind="BGPPeer",
         name=name,
         spec=spec,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -264,7 +264,7 @@ async def upsert_bgp_advertisement(
     peers: Sequence[str],
     local_pref: int | None,
     communities: Sequence[str],
-    timeout: float,
+    deadline: Deadline,
 ) -> CustomObject:
     """Create or patch one Bertrand-managed MetalLB BGPAdvertisement.
 
@@ -282,7 +282,7 @@ async def upsert_bgp_advertisement(
         Optional BGP local preference.
     communities : Sequence[str]
         Optional BGP communities to attach.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -307,51 +307,47 @@ async def upsert_bgp_advertisement(
         kind="BGPAdvertisement",
         name=name,
         spec=spec,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
-async def ensure_metallb(kube: Kube, *, timeout: float) -> None:
+async def ensure_metallb(kube: Kube, *, deadline: Deadline) -> None:
     """Install and verify Bertrand-managed MetalLB.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds. If infinite, wait indefinitely.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="MetalLB convergence timeout must be positive",
-    )
-    await _ensure_managed_metallb_namespace(kube, timeout=deadline.remaining())
-    await _apply_metallb(timeout=deadline.remaining())
+    await _ensure_managed_metallb_namespace(kube, deadline=deadline)
+    await _apply_metallb(deadline=deadline)
     await asyncio.gather(
         *(
             _wait_crd_established(
                 kube,
                 name=crd_name,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             for crd_name in METALLB_CRDS
         )
     )
     await asyncio.gather(
-        _wait_controller_available(kube, timeout=deadline.remaining()),
-        _wait_speaker_available(kube, timeout=deadline.remaining()),
+        _wait_controller_available(kube, deadline=deadline),
+        _wait_speaker_available(kube, deadline=deadline),
     )
 
 
-async def metallb_status(kube: Kube, *, timeout: float) -> dict[str, object]:
+async def metallb_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
     """Return cluster MetalLB status without mutating it.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds. If infinite, wait indefinitely.
 
     Returns
@@ -360,56 +356,56 @@ async def metallb_status(kube: Kube, *, timeout: float) -> dict[str, object]:
         JSON-serializable MetalLB readiness and configuration summary.
     """
     namespace, controller, speaker = await asyncio.gather(
-        Namespace.get(kube, name=METALLB_NAMESPACE, timeout=timeout),
+        Namespace.get(kube, name=METALLB_NAMESPACE, deadline=deadline),
         Deployment.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=METALLB_CONTROLLER_DEPLOYMENT,
-            timeout=timeout,
+            deadline=deadline,
         ),
         DaemonSet.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=METALLB_SPEAKER_DAEMONSET,
-            timeout=timeout,
+            deadline=deadline,
         ),
     )
-    crds = await _crd_status(kube, timeout=timeout)
+    crds = await _crd_status(kube, deadline=deadline)
     pools, l2, peers, bgp, config_states, l2_status, bgp_status = await asyncio.gather(
         _safe_resource_list(
             _IP_ADDRESS_POOL_RESOURCE,
             kube,
-            timeout=timeout,
+            deadline=deadline,
         ),
         _safe_resource_list(
             _L2_ADVERTISEMENT_RESOURCE,
             kube,
-            timeout=timeout,
+            deadline=deadline,
         ),
         _safe_resource_list(
             _BGP_PEER_RESOURCE,
             kube,
-            timeout=timeout,
+            deadline=deadline,
         ),
         _safe_resource_list(
             _BGP_ADVERTISEMENT_RESOURCE,
             kube,
-            timeout=timeout,
+            deadline=deadline,
         ),
         _safe_resource_list(
             _CONFIGURATION_STATE_RESOURCE,
             kube,
-            timeout=timeout,
+            deadline=deadline,
         ),
         _safe_resource_list(
             _SERVICE_L2_STATUS_RESOURCE,
             kube,
-            timeout=timeout,
+            deadline=deadline,
         ),
         _safe_resource_list(
             _SERVICE_BGP_STATUS_RESOURCE,
             kube,
-            timeout=timeout,
+            deadline=deadline,
         ),
     )
     managed = _labels_managed(namespace.labels) if namespace is not None else False
@@ -457,9 +453,9 @@ async def metallb_status(kube: Kube, *, timeout: float) -> dict[str, object]:
 async def _ensure_managed_metallb_namespace(
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
-    namespace = await Namespace.get(kube, name=METALLB_NAMESPACE, timeout=timeout)
+    namespace = await Namespace.get(kube, name=METALLB_NAMESPACE, deadline=deadline)
     if namespace is not None and not _labels_managed(namespace.labels):
         msg = (
             f"Namespace {METALLB_NAMESPACE!r} exists but is not managed by "
@@ -471,12 +467,12 @@ async def _ensure_managed_metallb_namespace(
         kube,
         name=METALLB_NAMESPACE,
         labels=METALLB_NAMESPACE_LABELS,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
-async def _require_managed_metallb_namespace(kube: Kube, *, timeout: float) -> None:
-    namespace = await Namespace.get(kube, name=METALLB_NAMESPACE, timeout=timeout)
+async def _require_managed_metallb_namespace(kube: Kube, *, deadline: Deadline) -> None:
+    namespace = await Namespace.get(kube, name=METALLB_NAMESPACE, deadline=deadline)
     if namespace is None:
         msg = (
             "MetalLB is not installed by Bertrand yet. Run "
@@ -493,12 +489,12 @@ async def _require_managed_metallb_namespace(kube: Kube, *, timeout: float) -> N
         raise OSError(msg)
 
 
-async def _apply_metallb(*, timeout: float) -> None:
+async def _apply_metallb(*, deadline: Deadline) -> None:
     try:
         await kubectl(
             ["apply", "--server-side", "-f", METALLB_INSTALL_URL],
             capture_output=True,
-            timeout=timeout,
+            deadline=deadline,
         )
     except OSError as err:
         msg = f"failed to apply MetalLB install manifest {METALLB_INSTALL_URL!r}"
@@ -509,10 +505,14 @@ async def _wait_crd_established(
     kube: Kube,
     *,
     name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> CustomResourceDefinition:
-    async def established(remaining: float) -> CustomResourceDefinition:
-        crd = await CustomResourceDefinition.get(kube, name=name, timeout=remaining)
+    async def established(attempt_deadline: Deadline) -> CustomResourceDefinition:
+        crd = await CustomResourceDefinition.get(
+            kube,
+            name=name,
+            deadline=attempt_deadline,
+        )
         if crd is None:
             msg = f"MetalLB CRD {name!r} is not installed yet"
             raise TimeoutError(msg)
@@ -524,22 +524,21 @@ async def _wait_crd_established(
     try:
         return await until(
             established,
-            timeout=timeout,
-            interval=METALLB_WAIT_POLL_INTERVAL_SECONDS,
-            action=f"waiting for MetalLB CRD {name!r}",
+            deadline=deadline,
+            delay=METALLB_WAIT_POLL_INTERVAL_SECONDS,
         )
     except TimeoutError as err:
         msg = f"MetalLB CRD {name!r} did not become Established"
         raise OSError(msg) from err
 
 
-async def _wait_controller_available(kube: Kube, *, timeout: float) -> Deployment:
-    async def available(remaining: float) -> Deployment:
+async def _wait_controller_available(kube: Kube, *, deadline: Deadline) -> Deployment:
+    async def available(attempt_deadline: Deadline) -> Deployment:
         deployment = await Deployment.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=METALLB_CONTROLLER_DEPLOYMENT,
-            timeout=remaining,
+            deadline=attempt_deadline,
         )
         if deployment is None:
             msg = "MetalLB controller Deployment is not created yet"
@@ -552,22 +551,21 @@ async def _wait_controller_available(kube: Kube, *, timeout: float) -> Deploymen
     try:
         return await until(
             available,
-            timeout=timeout,
-            interval=METALLB_WAIT_POLL_INTERVAL_SECONDS,
-            action="waiting for MetalLB controller Deployment",
+            deadline=deadline,
+            delay=METALLB_WAIT_POLL_INTERVAL_SECONDS,
         )
     except TimeoutError as err:
         msg = "MetalLB controller Deployment did not become Available"
         raise OSError(msg) from err
 
 
-async def _wait_speaker_available(kube: Kube, *, timeout: float) -> DaemonSet:
-    async def available(remaining: float) -> DaemonSet:
+async def _wait_speaker_available(kube: Kube, *, deadline: Deadline) -> DaemonSet:
+    async def available(attempt_deadline: Deadline) -> DaemonSet:
         daemonset = await DaemonSet.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=METALLB_SPEAKER_DAEMONSET,
-            timeout=remaining,
+            deadline=attempt_deadline,
         )
         if daemonset is None:
             msg = "MetalLB speaker DaemonSet is not created yet"
@@ -580,19 +578,18 @@ async def _wait_speaker_available(kube: Kube, *, timeout: float) -> DaemonSet:
     try:
         return await until(
             available,
-            timeout=timeout,
-            interval=METALLB_WAIT_POLL_INTERVAL_SECONDS,
-            action="waiting for MetalLB speaker DaemonSet",
+            deadline=deadline,
+            delay=METALLB_WAIT_POLL_INTERVAL_SECONDS,
         )
     except TimeoutError as err:
         msg = "MetalLB speaker DaemonSet did not become Available"
         raise OSError(msg) from err
 
 
-async def _crd_status(kube: Kube, *, timeout: float) -> dict[str, bool]:
+async def _crd_status(kube: Kube, *, deadline: Deadline) -> dict[str, bool]:
     crds = await asyncio.gather(
         *(
-            CustomResourceDefinition.get(kube, name=name, timeout=timeout)
+            CustomResourceDefinition.get(kube, name=name, deadline=deadline)
             for name in METALLB_CRDS
         )
     )
@@ -609,14 +606,14 @@ async def _managed_upsert[T](
     kind: str,
     name: str,
     spec: Mapping[str, object],
-    timeout: float,
+    deadline: Deadline,
 ) -> T:
-    await _require_managed_metallb_namespace(kube, timeout=timeout)
+    await _require_managed_metallb_namespace(kube, deadline=deadline)
     current = await resource.get(
         kube,
         namespace=METALLB_NAMESPACE,
         name=name,
-        timeout=timeout,
+        deadline=deadline,
     )
     _assert_managed(current, kind=kind)
     return await resource.upsert(
@@ -625,7 +622,7 @@ async def _managed_upsert[T](
         name=name,
         spec=spec,
         labels=METALLB_LABELS,
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -633,10 +630,10 @@ async def _safe_resource_list[T](
     resource: CustomObjectResource[T],
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> list[T]:
     try:
-        return await resource.list(kube, namespace=METALLB_NAMESPACE, timeout=timeout)
+        return await resource.list(kube, namespace=METALLB_NAMESPACE, deadline=deadline)
     except (OSError, TimeoutError, ValueError):
         return []
 

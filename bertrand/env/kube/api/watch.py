@@ -99,7 +99,7 @@ def _watch_error_status(value: object) -> tuple[int | None, str]:
 
 def _watch_kwargs(
     *,
-    timeout: float,
+    remaining: float,
     resource_version: str | None,
     label_selector: str | None,
     field_selector: str | None,
@@ -118,8 +118,8 @@ def _watch_kwargs(
         resource_version = resource_version.strip()
         if resource_version:
             kwargs["resource_version"] = resource_version
-    if not math.isinf(timeout):
-        kwargs.setdefault("timeout_seconds", max(1, math.ceil(timeout)))
+    if not math.isinf(remaining):
+        kwargs.setdefault("timeout_seconds", max(1, math.ceil(remaining)))
     return kwargs
 
 
@@ -131,7 +131,7 @@ async def _read_watch_payload(
     iterator: Iterator[object],
     *,
     remaining: float,
-    timeout: float,
+    total_deadline: Deadline,
     context: str,
 ) -> object:
     try:
@@ -140,7 +140,7 @@ async def _read_watch_payload(
             timeout=None if math.isinf(remaining) else remaining,
         )
     except TimeoutError as err:
-        msg = f"{context} watch timed out after {timeout} seconds"
+        msg = f"{context} watch timed out after {total_deadline.timeout} seconds"
         raise TimeoutError(msg) from err
 
 
@@ -195,7 +195,7 @@ async def watch[T](
     fn: Callable[..., object],
     *,
     wrapper: Callable[[object], T],
-    timeout: float,
+    deadline: Deadline,
     context: str,
     resource_version: str | None = None,
     label_selector: str | None = None,
@@ -210,8 +210,8 @@ async def watch[T](
         Generated Kubernetes list/watch API function.
     wrapper : Callable[[object], T]
         Callback that validates and wraps each raw event object.
-    timeout : float
-        Maximum watch budget in seconds. If infinite, wait indefinitely.
+    deadline : Deadline
+        Maximum watch budget. If infinite, wait indefinitely.
     context : str
         Human-readable context for timeout and API error messages.
     resource_version : str | None, optional
@@ -235,12 +235,9 @@ async def watch[T](
     OSError
         If Kubernetes returns malformed watch data or any non-410 API failure.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message=f"{context} watch timeout must be positive",
-    )
+    remaining = deadline.check(f"{context} watch timed out before it could start")
     kwargs = _watch_kwargs(
-        timeout=timeout,
+        remaining=remaining,
         resource_version=resource_version,
         label_selector=label_selector,
         field_selector=field_selector,
@@ -251,13 +248,13 @@ async def watch[T](
     try:
         while True:
             remaining = deadline.check(
-                f"{context} watch timed out after {timeout} seconds"
+                f"{context} watch timed out after {deadline.timeout} seconds"
             )
             try:
                 payload = await _read_watch_payload(
                     iterator,
                     remaining=remaining,
-                    timeout=timeout,
+                    total_deadline=deadline,
                     context=context,
                 )
             except ApiException as err:

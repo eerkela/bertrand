@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import math
 import os
 from contextlib import suppress
 from typing import TYPE_CHECKING, Annotated
@@ -13,7 +12,13 @@ from typing import TYPE_CHECKING, Annotated
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
-from bertrand.env.git import BERTRAND_ENV, BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    BERTRAND_NAMESPACE,
+    NO_DEADLINE,
+    Deadline,
+)
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.custom_object import (
@@ -68,11 +73,11 @@ BERTRAND_DEVICE_HOST_LABEL = "bertrand.dev/dra-device-host"
 BERTRAND_DEVICE_NODE_LABEL = "bertrand.dev/dra-device-node"
 
 _DRA_LABELS = {
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     DRA_PROVIDER_LABEL: DRA_PROVIDER_LABEL_VALUE,
 }
 _BERTRAND_DEVICE_LABELS = {
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     BERTRAND_DEVICE_LABEL: BERTRAND_DEVICE_LABEL_VALUE,
 }
 
@@ -218,7 +223,7 @@ async def ensure_dra_backend(
     kube: Kube,
     *,
     image: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Converge Bertrand's backend-only DRA device publisher.
 
@@ -228,7 +233,7 @@ async def ensure_dra_backend(
         Active Kubernetes API context.
     image : str
         Bertrand control-plane image used by the node publisher.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     Raises
@@ -240,13 +245,9 @@ async def ensure_dra_backend(
     if not image:
         msg = "DRA provider image cannot be empty"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="DRA backend convergence timeout must be positive",
-    )
     await asyncio.gather(
-        ensure_dra_api(kube, timeout=deadline.remaining()),
-        BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining()),
+        ensure_dra_api(kube, deadline=deadline),
+        BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, deadline=deadline),
     )
     await asyncio.gather(
         DEVICE_CLASS_RESOURCE.upsert(
@@ -254,14 +255,14 @@ async def ensure_dra_backend(
             name=DRA_DEVICE_CLASS,
             spec=_device_class_spec(),
             labels=_DRA_LABELS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         ServiceAccount.upsert(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DRA_PROVIDER_SERVICE_ACCOUNT,
             labels=_DRA_LABELS,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
         CLUSTER_ROLE_RESOURCE.upsert(
             kube,
@@ -273,7 +274,7 @@ async def ensure_dra_backend(
                 labels=_DRA_LABELS,
                 rules=_provider_rules(),
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
         ),
     )
     await CLUSTER_ROLE_BINDING_RESOURCE.upsert(
@@ -289,7 +290,7 @@ async def ensure_dra_backend(
             service_account_namespace=BERTRAND_NAMESPACE,
             labels=_DRA_LABELS,
         ),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     daemonset = await DaemonSet.upsert(
         kube,
@@ -321,9 +322,9 @@ async def ensure_dra_backend(
             automount_service_account_token=True,
             node_selector={"kubernetes.io/os": "linux"},
         ),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
-    await daemonset.wait_rollout(kube, timeout=deadline.remaining())
+    await daemonset.wait_rollout(kube, deadline=deadline)
 
 
 async def list_device_inventory(
@@ -332,7 +333,7 @@ async def list_device_inventory(
     capability_id: str | None = None,
     host_ids: Collection[str] | None = None,
     node_names: Collection[str] | None = None,
-    timeout: float,
+    deadline: Deadline,
 ) -> list[BertrandDeviceRecord]:
     """List managed DRA device inventory records.
 
@@ -346,7 +347,7 @@ async def list_device_inventory(
         Optional Bertrand host UUID filter applied client-side.
     node_names : Collection[str] | None, optional
         Optional node-name filter applied client-side.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -365,7 +366,7 @@ async def list_device_inventory(
     records = await BERTRAND_DEVICE_RESOURCE.list(
         kube,
         labels=labels,
-        timeout=timeout,
+        deadline=deadline,
     )
     allowed_nodes = {name.strip() for name in node_names or () if name.strip()}
     if allowed_hosts:
@@ -386,7 +387,7 @@ async def upsert_device_inventory(
     node_name: str,
     device_name: str,
     cdi_selector: str,
-    timeout: float,
+    deadline: Deadline,
     attributes: Mapping[str, str] | None = None,
 ) -> BertrandDeviceRecord:
     """Create or update one managed DRA device inventory record.
@@ -405,7 +406,7 @@ async def upsert_device_inventory(
         Node-local DRA device name.
     cdi_selector : str
         CDI selector exposed after allocation.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
     attributes : Mapping[str, str] | None, optional
         Additional string attributes published on the ResourceSlice device.
@@ -436,7 +437,7 @@ async def upsert_device_inventory(
             BERTRAND_DEVICE_HOST_LABEL: _label_value(spec.host_id),
             BERTRAND_DEVICE_NODE_LABEL: _label_value(spec.node_name),
         },
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -447,7 +448,7 @@ async def delete_device_inventory(
     host_id: str,
     node_name: str,
     device_name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> bool:
     """Delete one managed DRA device inventory record.
 
@@ -463,7 +464,7 @@ async def delete_device_inventory(
         Kubernetes node that owns the concrete device.
     device_name : str
         Node-local DRA device name.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -491,7 +492,7 @@ async def delete_device_inventory(
     record = await BERTRAND_DEVICE_RESOURCE.get(
         kube,
         name=name,
-        timeout=timeout,
+        deadline=deadline,
     )
     if record is None:
         return False
@@ -505,7 +506,7 @@ async def delete_device_inventory(
     await BERTRAND_DEVICE_RESOURCE.delete_by_name(
         kube,
         name=name,
-        timeout=timeout,
+        deadline=deadline,
     )
     return True
 
@@ -514,7 +515,7 @@ async def delete_device_inventory_for_host(
     kube: Kube,
     *,
     host_id: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[BertrandDeviceRecord, ...]:
     """Delete managed DRA inventory records owned by one Bertrand host UUID.
 
@@ -524,7 +525,7 @@ async def delete_device_inventory_for_host(
         Active Kubernetes API context.
     host_id : str
         Durable Bertrand host UUID whose local inventory should be removed.
-    timeout : float
+    deadline : Deadline
         Maximum deletion budget.
 
     Returns
@@ -535,13 +536,13 @@ async def delete_device_inventory_for_host(
     records = await list_device_inventory(
         kube,
         host_ids=(_check_uuid(host_id),),
-        timeout=timeout,
+        deadline=deadline,
     )
     for record in records:
         await BERTRAND_DEVICE_RESOURCE.delete_by_name(
             kube,
             name=record.name,
-            timeout=timeout,
+            deadline=deadline,
         )
     return tuple(records)
 
@@ -550,7 +551,7 @@ async def refresh_node_resource_slice(
     kube: Kube,
     *,
     node_name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Refresh the managed ResourceSlice for one Kubernetes node.
 
@@ -560,10 +561,10 @@ async def refresh_node_resource_slice(
         Active Kubernetes API context.
     node_name : str
         Kubernetes node name whose local inventory should be published.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
     """
-    await _publish_node_slice(kube, node_name=node_name, timeout=timeout)
+    await _publish_node_slice(kube, node_name=node_name, deadline=deadline)
 
 
 async def select_device_claims(
@@ -572,7 +573,7 @@ async def select_device_claims(
     requests: Mapping[str, bool],
     host_ids: Collection[str] | None = None,
     node_names: Collection[str] | None = None,
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[str, ...]:
     """Return selected DRA device capability IDs.
 
@@ -586,7 +587,7 @@ async def select_device_claims(
         Optional Bertrand host UUID filter for preflight validation.
     node_names : Collection[str] | None, optional
         Optional candidate node filter for preflight validation.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -599,10 +600,6 @@ async def select_device_claims(
     OSError
         If a required device capability has no matching inventory.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="DRA device request resolution timeout must be positive",
-    )
     selected: list[str] = []
     for raw_id, required in sorted(requests.items()):
         capability_id = _check_kube_name(str(raw_id))
@@ -611,7 +608,7 @@ async def select_device_claims(
             capability_id=capability_id,
             host_ids=host_ids,
             node_names=node_names,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         if not inventory:
             if required:
@@ -725,7 +722,7 @@ async def create_resource_claim_templates(
     capability_ids: Collection[str],
     container_name: str | None = None,
     labels: Mapping[str, str],
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[CustomObject, ...]:
     """Create ResourceClaimTemplates for a pod or Job.
 
@@ -743,7 +740,7 @@ async def create_resource_claim_templates(
         Container that should reference the templates.
     labels : Mapping[str, str]
         Labels to apply to each template.
-    timeout : float
+    deadline : Deadline
         Maximum creation budget in seconds.
 
     Returns
@@ -754,10 +751,6 @@ async def create_resource_claim_templates(
     capability_ids = tuple(sorted(_check_kube_name(item) for item in capability_ids))
     if not capability_ids:
         return ()
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="DRA ResourceClaimTemplate creation timeout must be positive",
-    )
     created: list[CustomObject] = []
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
@@ -772,7 +765,7 @@ async def create_resource_claim_templates(
             ),
             spec={"spec": _resource_claim_spec(capability_id)},
             labels=template_labels,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         created.append(template)
     return tuple(created)
@@ -786,7 +779,7 @@ async def upsert_resource_claim_templates(
     capability_ids: Collection[str],
     container_name: str | None = None,
     labels: Mapping[str, str],
-    timeout: float,
+    deadline: Deadline,
 ) -> tuple[CustomObject, ...]:
     """Create or patch ResourceClaimTemplates for a controller-backed workload.
 
@@ -804,7 +797,7 @@ async def upsert_resource_claim_templates(
         Container that should reference the templates.
     labels : Mapping[str, str]
         Labels to apply to each template.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     Returns
@@ -815,10 +808,6 @@ async def upsert_resource_claim_templates(
     capability_ids = tuple(sorted(_check_kube_name(item) for item in capability_ids))
     if not capability_ids:
         return ()
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="DRA ResourceClaimTemplate convergence timeout must be positive",
-    )
     rendered: list[CustomObject] = []
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
@@ -833,7 +822,7 @@ async def upsert_resource_claim_templates(
             ),
             spec={"spec": _resource_claim_spec(capability_id)},
             labels=template_labels,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
         rendered.append(template)
     return tuple(rendered)
@@ -889,12 +878,12 @@ def allocated_selector_script(*, required_count: int) -> str:
     )
 
 
-async def run_dra_provider_agent(*, timeout: float = math.inf) -> None:
+async def run_dra_provider_agent(*, deadline: Deadline = NO_DEADLINE) -> None:
     """Run the ResourceSlice publisher loop for one node.
 
     Parameters
     ----------
-    timeout : float, optional
+    deadline : Deadline
         Maximum runtime budget in seconds. If infinite, run indefinitely.
 
     Raises
@@ -902,26 +891,22 @@ async def run_dra_provider_agent(*, timeout: float = math.inf) -> None:
     OSError
         If the node name cannot be resolved.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="DRA provider agent timeout must be positive",
-    )
     node_name = os.environ.get(DRA_NODE_ENV, "").strip()
     if not node_name:
         msg = "DRA provider agent requires NODE_NAME from the Downward API"
         raise OSError(msg)
-    with Kube.inside_cluster(namespace=BERTRAND_NAMESPACE) as kube:
+    with await Kube.internal(namespace=BERTRAND_NAMESPACE) as kube:
         while True:
-            remaining = deadline.remaining()
+            remaining = deadline.remaining
             if remaining <= 0:
                 return
             with suppress(OSError, TimeoutError, ValueError):
                 await _publish_node_slice(
                     kube,
                     node_name=node_name,
-                    timeout=min(DRA_SYNC_SECONDS, remaining),
+                    deadline=Deadline(min(DRA_SYNC_SECONDS, remaining)),
                 )
-            await asyncio.sleep(deadline.bounded(DRA_SYNC_SECONDS))
+            await deadline.sleep(DRA_SYNC_SECONDS)
 
 
 def main() -> int:
@@ -943,7 +928,7 @@ async def _publish_node_slice(
     kube: Kube,
     *,
     node_name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     node_name = node_name.strip()
     if not node_name:
@@ -952,14 +937,14 @@ async def _publish_node_slice(
     records = await list_device_inventory(
         kube,
         node_names=(node_name,),
-        timeout=timeout,
+        deadline=deadline,
     )
     await RESOURCE_SLICE_RESOURCE.upsert(
         kube,
         name=_resource_slice_name(node_name),
         spec=_resource_slice_spec(node_name, records),
         labels={**_DRA_LABELS, BERTRAND_DEVICE_NODE_LABEL: _label_value(node_name)},
-        timeout=timeout,
+        deadline=deadline,
     )
 
 

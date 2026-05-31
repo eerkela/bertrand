@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from bertrand.env.git import (
     CONTAINER_TMP,
     WORKTREE_MOUNT,
+    Deadline,
     atomic_write_text,
 )
 from bertrand.env.mcp.constants import (
@@ -165,6 +166,7 @@ class VSCodeWorkspace(Resource[BaseModel]):
         config: Config,  # noqa: ARG002
         *,
         image_build: bool,
+        deadline: Deadline,  # noqa: ARG002
     ) -> None:
         """Render the workspace and MCP artifacts inside image/dev contexts."""
         if not image_build:

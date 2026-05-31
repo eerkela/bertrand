@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 from kubernetes import client as kube_client
 
+from bertrand.env.git import Deadline
 from bertrand.env.kube.api.metadata import NamespacedKubeMetadata
 from bertrand.env.kube.api.resource import BuiltinResource, BuiltinResourceObject
 
@@ -82,7 +83,7 @@ class ConfigMap(
         namespace: str,
         name: str,
         data: Mapping[str, str],
-        timeout: float,
+        deadline: Deadline,
         binary_data: Mapping[str, str] | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
@@ -99,7 +100,7 @@ class ConfigMap(
             ConfigMap name to create or patch.
         data : Mapping[str, str]
             Text data to apply to `data`.
-        timeout : float
+        deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
         binary_data : Mapping[str, str] | None, optional
             Base64-encoded binary payloads to apply to `binaryData`.
@@ -139,7 +140,7 @@ class ConfigMap(
                 namespace=namespace,
                 name=name,
                 manifest=manifest,
-                timeout=timeout,
+                deadline=deadline,
             )
         )
 

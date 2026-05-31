@@ -108,7 +108,7 @@ async def ensure_ceph_osd_csi_driver(
             name=CSI_DRIVER_NAME,
             _request_timeout=request_timeout,
         ),
-        timeout=deadline.remaining(),
+        deadline=deadline,
         context=f"failed to read CSIDriver {CSI_DRIVER_NAME!r}",
     )
     if existing is None:
@@ -117,7 +117,7 @@ async def ensure_ceph_osd_csi_driver(
                 body=driver_manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
             context=f"failed to create CSIDriver {CSI_DRIVER_NAME!r}",
         )
     else:
@@ -127,7 +127,7 @@ async def ensure_ceph_osd_csi_driver(
                 body=driver_manifest,
                 _request_timeout=request_timeout,
             ),
-            timeout=deadline.remaining(),
+            deadline=deadline,
             context=f"failed to patch CSIDriver {CSI_DRIVER_NAME!r}",
         )
 
@@ -184,7 +184,7 @@ async def ensure_ceph_osd_csi_driver(
             automount_service_account_token=True,
             node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
         ),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
     plugin_dir = f"{CSI_KUBELET_DIR}/plugins/{CSI_DRIVER_NAME}"
@@ -286,11 +286,11 @@ async def ensure_ceph_osd_csi_driver(
             node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
             host_pid=True,
         ),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     await asyncio.gather(
-        deployment.wait_rollout(kube, timeout=deadline.remaining()),
-        daemonset.wait_rollout(kube, timeout=deadline.remaining()),
+        deployment.wait_rollout(kube, deadline=deadline),
+        daemonset.wait_rollout(kube, deadline=deadline),
     )
 
 
@@ -366,7 +366,7 @@ class BertrandOSDCSIDriver(
         func: Callable[[Kube], Awaitable[ResultT]],
     ) -> ResultT:
         async def invoke() -> ResultT:
-            with Kube.inside_cluster() as kube:
+            with await Kube.internal() as kube:
                 return await func(kube)
 
         try:
@@ -394,7 +394,10 @@ class BertrandOSDCSIDriver(
         volume_id: str,
     ) -> CephStorageOSD:
         volume_id = volume_id.strip()
-        storage = await read_storage_state(kube, timeout=CSI_REQUEST_TIMEOUT_SECONDS)
+        storage = await read_storage_state(
+            kube,
+            deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
+        )
         for record in storage.status.osds.values():
             if volume_id in {record.name, record.csi_volume_id}:
                 return record
@@ -489,7 +492,7 @@ class BertrandOSDCSIDriver(
                 kube,
                 namespace=pvc_namespace,
                 name=pvc_name,
-                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
             )
             if claim is None:
                 msg = f"PVC {pvc_namespace}/{pvc_name} does not exist"
@@ -503,7 +506,7 @@ class BertrandOSDCSIDriver(
                 raise PermissionError(msg)
             storage = await read_storage_state(
                 kube,
-                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
             )
             record = storage.status.osds.get(osd_name)
             if record is None:
@@ -535,7 +538,7 @@ class BertrandOSDCSIDriver(
                 name=record.name,
                 spec=bound,
                 phase=phase,
-                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
             )
             return _csi_pb2.CreateVolumeResponse(
                 volume=_volume(fresh, volume_id=volume_id)
@@ -568,14 +571,14 @@ class BertrandOSDCSIDriver(
                                 "because Bertrand has not started shrink/retirement"
                             )
                         },
-                        timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                        deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
                     )
                     return _csi_pb2.DeleteVolumeResponse()
                 await patch_storage_osd_status(
                     kube,
                     osd=record,
                     status={"last_error": ""},
-                    timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                    deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
                 )
             return _csi_pb2.DeleteVolumeResponse()
 
@@ -700,7 +703,7 @@ class BertrandOSDCSIDriver(
                 prepared = await prepare_loop_fallback_osd(
                     name=record.name,
                     target_bytes=record.target_bytes,
-                    timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                    deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
                 )
             else:
                 prepared = await prepare_lvm_osd(
@@ -708,12 +711,12 @@ class BertrandOSDCSIDriver(
                     target_bytes=record.target_bytes,
                     pv_name=record.pv_name,
                     lv_name=record.lv_name,
-                    timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                    deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
                 )
             await bind_block_device(
                 block_path=record.block_path,
                 target_path=target_path,
-                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
             )
             await patch_storage_osd_status(
                 kube,
@@ -723,7 +726,7 @@ class BertrandOSDCSIDriver(
                     "observed_bytes": prepared.observed_bytes,
                     "last_error": "",
                 },
-                timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
             )
             return _csi_pb2.NodePublishVolumeResponse()
 
@@ -747,7 +750,7 @@ class BertrandOSDCSIDriver(
             asyncio.run(
                 unbind_block_device(
                     target_path=target_path,
-                    timeout=CSI_REQUEST_TIMEOUT_SECONDS,
+                    deadline=Deadline(CSI_REQUEST_TIMEOUT_SECONDS),
                 )
             )
         except (OSError, TimeoutError, ValueError) as err:

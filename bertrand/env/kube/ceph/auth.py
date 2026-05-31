@@ -118,11 +118,11 @@ class CephMonitors(BaseModel):
         return tuple(out)
 
 
-async def _get_key(entity: str, *, timeout: float) -> str | None:
+async def _get_key(entity: str, *, deadline: Deadline) -> str | None:
     try:
         result = await ceph(
             ["auth", "get-key", entity],
-            timeout=timeout,
+            deadline=deadline,
             capture_output=True,
         )
     except CommandError as err:
@@ -145,10 +145,10 @@ async def _get_key(entity: str, *, timeout: float) -> str | None:
     return key
 
 
-async def _get_monitors(*, timeout: float) -> tuple[str, ...]:
+async def _get_monitors(*, deadline: Deadline) -> tuple[str, ...]:
     result = await ceph(
         ["mon", "dump", "-f", "json"],
-        timeout=timeout,
+        deadline=deadline,
         capture_output=True,
     )
     try:
@@ -208,7 +208,7 @@ class RepoCredentials:
         repo_id: UUIDHex,
         *,
         ceph_path: PosixPath,
-        timeout: float,
+        deadline: Deadline,
     ) -> Self:
         """Ensure per-repo Ceph credentials exist and return fresh auth material.
 
@@ -218,7 +218,7 @@ class RepoCredentials:
             Repository UUID to ensure credentials for.
         ceph_path : PosixPath
             CephFS path prefix to authorize this identity for (for example, `/myrepo`).
-        timeout : float
+        deadline : Deadline
             Maximum time to wait for the cluster to be ready and credentials to
             materialize, in seconds.  If infinite, wait indefinitely.
 
@@ -250,21 +250,16 @@ class RepoCredentials:
             raise ValueError(msg)
         if not ceph_path.is_absolute():
             ceph_path = PosixPath("/") / ceph_path
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="repository credential convergence timeout must be positive",
-        )
-
         # `fs authorize` is idempotent and converges CephX caps for this identity.
         await ceph(
             ["fs", "authorize", REPO_FS_NAME, entity, str(ceph_path), "rw"],
-            timeout=deadline.remaining(),
+            deadline=deadline,
             capture_output=True,
         )
 
         # `fs authorize` should materialize a key for this entity if it didn't already
         # exist.
-        key = await _get_key(entity, timeout=deadline.remaining())
+        key = await _get_key(entity, deadline=deadline)
         if key is None:
             msg = f"Ceph authorization did not materialize credentials for {entity!r}"
             raise OSError(msg)
@@ -272,7 +267,7 @@ class RepoCredentials:
         # retrieve current monitor endpoints; this ensures the caller has enough
         # information to confidently connect to and mount the repository using the
         # returned credentials.
-        monitors = await _get_monitors(timeout=deadline.remaining())
+        monitors = await _get_monitors(deadline=deadline)
         return cls(
             repo_id=repo_id,
             user=user,
@@ -286,7 +281,7 @@ class RepoCredentials:
         cls,
         repo_id: UUIDHex,
         *,
-        timeout: float,
+        deadline: Deadline,
     ) -> Self | None:
         """Get existing per-repo Ceph credentials without creating new identities.
 
@@ -294,7 +289,7 @@ class RepoCredentials:
         ----------
         repo_id : str
             Repository UUID to get credentials for.
-        timeout : float
+        deadline : Deadline
             Maximum time to wait for the cluster to be ready and credentials to
             materialize, in seconds.  If infinite, wait indefinitely.
 
@@ -306,18 +301,13 @@ class RepoCredentials:
 
         """
         repo_id, user, entity = cls._identity(repo_id)
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="repository credential lookup timeout must be positive",
-        )
-
         # get repository credentials if they exist
-        key = await _get_key(entity, timeout=deadline.remaining())
+        key = await _get_key(entity, deadline=deadline)
         if key is None:
             return None
 
         # retrieve current monitor endpoints
-        monitors = await _get_monitors(timeout=deadline.remaining())
+        monitors = await _get_monitors(deadline=deadline)
         return cls(
             repo_id=repo_id,
             user=user,
@@ -330,12 +320,12 @@ class RepoCredentials:
     # volume itself is gone, no active pods reference it, and local mounts/symlinks have
     # been reconciled away.
 
-    async def delete(self, *, timeout: float) -> bool:
+    async def delete(self, *, deadline: Deadline) -> bool:
         """Delete per-repo Ceph credentials if they exist.
 
         Parameters
         ----------
-        timeout : float
+        deadline : Deadline
             Maximum time to wait for the cluster to be ready and credentials to be
             deleted, in seconds.  If infinite, wait indefinitely.
 
@@ -356,14 +346,9 @@ class RepoCredentials:
         Callers should retry and revalidate on transient auth failures.
         """
         _, _, entity = self._identity(self.repo_id)
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="repository credential deletion timeout must be positive",
-        )
-
         result = await ceph(
             ["auth", "del", entity],
-            timeout=deadline.remaining(),
+            deadline=deadline,
             check=False,
             capture_output=True,
         )

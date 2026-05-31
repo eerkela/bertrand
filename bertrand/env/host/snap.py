@@ -7,11 +7,11 @@ Bertrand owns an installed snap package.
 
 from __future__ import annotations
 
-import math
 import os
 import shutil
 
 from bertrand.env.git import (
+    NO_DEADLINE,
     CommandError,
     can_escalate,
     confirm,
@@ -19,7 +19,6 @@ from bertrand.env.git import (
     run,
     sudo,
 )
-
 
 # TODO: this whole module should be deletable after moving to a k3s-based runtime
 
@@ -81,8 +80,8 @@ async def ensure_snapd(
         await install_packages(
             package_manager,
             ["snapd"],
-            assume_yes=assume_yes,
-            timeout=math.inf,
+            yes=assume_yes,
+            deadline=NO_DEADLINE,
         )
     except (CommandError, OSError, ValueError) as err:
         msg = (

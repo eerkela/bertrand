@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from bertrand.env.git import Deadline
 from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
 
 if TYPE_CHECKING:
@@ -48,14 +49,14 @@ RESOURCE_CLAIM_TEMPLATE_RESOURCE = CustomObjectResource[CustomObject](
 )
 
 
-async def ensure_dra_api(kube: Kube, *, timeout: float) -> None:
+async def ensure_dra_api(kube: Kube, *, deadline: Deadline) -> None:
     """Validate Kubernetes DRA API availability.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Raises
@@ -64,7 +65,7 @@ async def ensure_dra_api(kube: Kube, *, timeout: float) -> None:
         If the Kubernetes DRA API is unavailable.
     """
     try:
-        await DEVICE_CLASS_RESOURCE.list(kube, timeout=timeout)
+        await DEVICE_CLASS_RESOURCE.list(kube, deadline=deadline)
     except OSError as err:
         msg = (
             "Kubernetes Dynamic Resource Allocation API "

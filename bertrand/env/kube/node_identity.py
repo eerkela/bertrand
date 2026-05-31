@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bertrand.env.config.core import _check_uuid
-from bertrand.env.git import BERTRAND_ENV, Deadline
+from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline
 from bertrand.env.host import HOST_ID_FILE
 from bertrand.env.kube.custom_object import (
     CustomObjectMetadata,
@@ -35,7 +35,7 @@ BERTRAND_NODE_KUBE_LABEL = "bertrand.dev/node-kubernetes"
 BERTRAND_NODE_PHASE_LABEL = "bertrand.dev/node-phase"
 
 _BERTRAND_NODE_LABELS = {
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     BERTRAND_NODE_LABEL: BERTRAND_NODE_LABEL_VALUE,
 }
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
@@ -151,7 +151,7 @@ async def ensure_local_bertrand_node(
     *,
     host_id: str | None = None,
     display_name: str | None = None,
-    timeout: float,
+    deadline: Deadline,
 ) -> BertrandNodeRecord:
     """Create or refresh the local host's Bertrand node identity record.
 
@@ -164,7 +164,7 @@ async def ensure_local_bertrand_node(
     display_name : str | None, optional
         Replacement display name. When omitted, preserve any existing display name
         or default new records to the platform hostname.
-    timeout : float
+    deadline : Deadline
         Maximum convergence budget in seconds.
 
     Returns
@@ -173,17 +173,13 @@ async def ensure_local_bertrand_node(
         Converged local node identity record.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BertrandNode convergence timeout must be positive",
-    )
     host_id = current_host_id() if host_id is None else _check_uuid(host_id)
-    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
-    node = await Node.local(kube, timeout=deadline.remaining())
+    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, deadline=deadline)
+    node = await Node.local(kube, deadline=deadline)
     existing = await get_bertrand_node(
         kube,
         host_id=host_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     now = datetime.now(UTC)
     created_at = existing.spec.created_at if existing is not None else now
@@ -211,7 +207,7 @@ async def ensure_local_bertrand_node(
             BERTRAND_NODE_KUBE_LABEL: _hash_label(node.name),
             BERTRAND_NODE_PHASE_LABEL: "active",
         },
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -219,7 +215,7 @@ async def get_bertrand_node(
     kube: Kube,
     *,
     host_id: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> BertrandNodeRecord | None:
     """Read one Bertrand node record by host UUID.
 
@@ -231,7 +227,7 @@ async def get_bertrand_node(
     return await BERTRAND_NODE_RESOURCE.get(
         kube,
         name=bertrand_node_name(host_id),
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -239,7 +235,7 @@ async def retire_bertrand_node(
     kube: Kube,
     *,
     host_id: str | None = None,
-    timeout: float,
+    deadline: Deadline,
 ) -> BertrandNodeRecord | None:
     """Retire one Bertrand node record without deleting scoped state.
 
@@ -249,7 +245,7 @@ async def retire_bertrand_node(
         Active Kubernetes API context.
     host_id : str | None, optional
         Durable host UUID. When omitted, read it from local host state.
-    timeout : float
+    deadline : Deadline
         Maximum request budget in seconds.
 
     Returns
@@ -258,16 +254,12 @@ async def retire_bertrand_node(
         Retired record, or None when no record exists.
 
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="BertrandNode retirement timeout must be positive",
-    )
     host_id = current_host_id() if host_id is None else _check_uuid(host_id)
-    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, timeout=deadline.remaining())
+    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, deadline=deadline)
     existing = await get_bertrand_node(
         kube,
         host_id=host_id,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if existing is None:
         return None
@@ -290,7 +282,7 @@ async def retire_bertrand_node(
             BERTRAND_NODE_KUBE_LABEL: _hash_label(existing.node_name),
             BERTRAND_NODE_PHASE_LABEL: "retired",
         },
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -299,7 +291,7 @@ async def list_bertrand_nodes(
     *,
     host_ids: Collection[str] | None = None,
     node_names: Collection[str] | None = None,
-    timeout: float,
+    deadline: Deadline,
 ) -> list[BertrandNodeRecord]:
     """List Bertrand node records with optional client-side filters.
 
@@ -308,7 +300,7 @@ async def list_bertrand_nodes(
     list[BertrandNodeRecord]
         Matching Bertrand node records.
     """
-    records = await BERTRAND_NODE_RESOURCE.list(kube, timeout=timeout)
+    records = await BERTRAND_NODE_RESOURCE.list(kube, deadline=deadline)
     allowed_hosts = {_check_uuid(item) for item in host_ids or ()}
     allowed_nodes = {item.strip() for item in node_names or () if item.strip()}
     if allowed_hosts:
@@ -322,7 +314,7 @@ async def resolve_host_id_for_node(
     kube: Kube,
     *,
     node_name: str,
-    timeout: float,
+    deadline: Deadline,
 ) -> str | None:
     """Return the Bertrand host UUID for a Kubernetes node name, if known.
 
@@ -332,7 +324,7 @@ async def resolve_host_id_for_node(
         Active Kubernetes API context.
     node_name : str
         Kubernetes node name to translate.
-    timeout : float
+    deadline : Deadline
         Maximum lookup budget in seconds.
 
     Returns
@@ -351,7 +343,7 @@ async def resolve_host_id_for_node(
     records = await list_bertrand_nodes(
         kube,
         node_names=(node_name,),
-        timeout=timeout,
+        deadline=deadline,
     )
     records = [record for record in records if record.phase == "Active"]
     if not records:

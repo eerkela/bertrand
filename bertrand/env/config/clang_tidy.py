@@ -19,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from bertrand.env.git import CONTAINER_TMP, Scalar, atomic_write_text
+from bertrand.env.git import CONTAINER_TMP, Deadline, Scalar, atomic_write_text
 
 from .core import (
     Config,
@@ -198,7 +198,13 @@ class ClangTidy(Resource[ClangTidyModel]):
     to comma-separated strings.
     """
 
-    async def render(self, config: Config, *, image_build: bool) -> None:
+    async def render(
+        self,
+        config: Config,
+        *,
+        image_build: bool,
+        deadline: Deadline,  # noqa: ARG002
+    ) -> None:
         """Render the `.clang-tidy` artifact.
 
         Raises

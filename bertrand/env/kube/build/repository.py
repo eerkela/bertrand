@@ -18,8 +18,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from bertrand.env.git import (
-    BERTRAND_ENV,
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
     BERTRAND_NAMESPACE,
+    NO_DEADLINE,
     Deadline,
     run,
     sudo,
@@ -95,7 +97,7 @@ IMAGE_REPOSITORY_DELETE_SUCCESS_STATUS = frozenset({202, 404})
 IMAGE_REPOSITORY_LABELS = {
     "app.kubernetes.io/name": IMAGE_REPOSITORY_NAME,
     "app.kubernetes.io/part-of": "bertrand",
-    BERTRAND_ENV: "1",
+    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     IMAGE_REPOSITORY_LABEL: IMAGE_REPOSITORY_LABEL_VALUE,
 }
 IMAGE_REPOSITORY_SELECTOR = {
@@ -489,7 +491,7 @@ def registry_config_data(*, read_only: bool = False) -> dict[str, str]:
 async def image_repository_maintenance_status(
     kube: Kube,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
 ) -> ImageRepositoryMaintenanceStatus:
     """Read the current registry maintenance status.
 
@@ -502,7 +504,7 @@ async def image_repository_maintenance_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
-        timeout=timeout,
+        deadline=deadline,
     )
     if status is None:
         return ImageRepositoryMaintenanceStatus(active=False)
@@ -513,7 +515,7 @@ async def _write_image_repository_maintenance_status(
     kube: Kube,
     *,
     status: ImageRepositoryMaintenanceStatus,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     await ConfigMap.upsert(
         kube,
@@ -521,7 +523,7 @@ async def _write_image_repository_maintenance_status(
         name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
         labels=IMAGE_REPOSITORY_MAINTENANCE_LABELS,
         data=status.data(),
-        timeout=timeout,
+        deadline=deadline,
     )
 
 
@@ -530,7 +532,7 @@ async def start_image_repository_maintenance(
     *,
     reason: str,
     message: str,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
 ) -> None:
     """Mark registry maintenance as active.
 
@@ -542,13 +544,7 @@ async def start_image_repository_maintenance(
     if not reason.strip() or not message.strip():
         msg = "registry maintenance status requires reason and message"
         raise OSError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="registry maintenance start timeout must be positive",
-    )
-    current = await image_repository_maintenance_status(
-        kube, timeout=deadline.remaining()
-    )
+    current = await image_repository_maintenance_status(kube, deadline=deadline)
     status = current.start_maintenance(
         reason=reason,
         message=message,
@@ -557,27 +553,21 @@ async def start_image_repository_maintenance(
     await _write_image_repository_maintenance_status(
         kube,
         status=status,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
 async def clear_image_repository_maintenance(
     kube: Kube,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
 ) -> None:
     """Clear registry maintenance status."""
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="registry maintenance clear timeout must be positive",
-    )
-    current = await image_repository_maintenance_status(
-        kube, timeout=deadline.remaining()
-    )
+    current = await image_repository_maintenance_status(kube, deadline=deadline)
     await _write_image_repository_maintenance_status(
         kube,
         status=current.clear_maintenance(),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -585,7 +575,7 @@ async def mark_image_repository_storage_dirty(
     kube: Kube,
     *,
     count: int,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
 ) -> None:
     """Mark registry storage as needing garbage collection.
 
@@ -599,18 +589,12 @@ async def mark_image_repository_storage_dirty(
         raise ValueError(msg)
     if count == 0:
         return
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="registry storage dirty marker timeout must be positive",
-    )
-    current = await image_repository_maintenance_status(
-        kube, timeout=deadline.remaining()
-    )
+    current = await image_repository_maintenance_status(kube, deadline=deadline)
     status = current.mark_storage_dirty(count=count, now=datetime.now(UTC))
     await _write_image_repository_maintenance_status(
         kube,
         status=status,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
@@ -618,27 +602,21 @@ async def clear_image_repository_storage_dirty(
     kube: Kube,
     *,
     last_gc_at: datetime | None = None,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
 ) -> None:
     """Clear the durable registry storage dirty marker."""
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="registry storage dirty clear timeout must be positive",
-    )
-    current = await image_repository_maintenance_status(
-        kube, timeout=deadline.remaining()
-    )
+    current = await image_repository_maintenance_status(kube, deadline=deadline)
     await _write_image_repository_maintenance_status(
         kube,
         status=current.clear_storage_dirty(last_gc_at=last_gc_at),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
 async def current_buildkit_config_data(
     kube: Kube,
     *,
-    timeout: float,
+    deadline: Deadline,
 ) -> dict[str, str]:
     """Return BuildKit daemon ConfigMap data for the active cluster profile.
 
@@ -647,11 +625,11 @@ async def current_buildkit_config_data(
     dict[str, str]
         Data payload for the BuildKit daemon configuration ConfigMap.
     """
-    profile = await NetworkProfile.get(kube, timeout=timeout)
+    profile = await NetworkProfile.get(kube, deadline=deadline)
     return buildkit_config_data(profile)
 
 
-async def current_buildkit_config_hash(kube: Kube, *, timeout: float) -> str:
+async def current_buildkit_config_hash(kube: Kube, *, deadline: Deadline) -> str:
     """Return the expected BuildKit daemon ConfigMap hash.
 
     Returns
@@ -659,7 +637,7 @@ async def current_buildkit_config_hash(kube: Kube, *, timeout: float) -> str:
     str
         SHA-256 digest of the BuildKit daemon configuration data.
     """
-    return _config_hash(await current_buildkit_config_data(kube, timeout=timeout))
+    return _config_hash(await current_buildkit_config_data(kube, deadline=deadline))
 
 
 async def _ensure_image_repository_trust(*, deadline: Deadline) -> None:
@@ -688,16 +666,13 @@ async def _ensure_image_repository_trust(*, deadline: Deadline) -> None:
             await run(
                 sudo(["install", "-d", "-m", "0755", str(trust_dir)]),
                 capture_output=True,
-                timeout=deadline.remaining,
+                deadline=deadline,
             )
             await run(
                 sudo(["install", "-m", "0644", str(staged), str(trust_file)]),
                 capture_output=True,
-                timeout=deadline.remaining,
+                deadline=deadline,
             )
-
-
-# TODO: I should just be able to use deadline.until() to replace the loop here?
 
 
 async def _assert_image_repository_local_route(*, deadline: Deadline) -> None:
@@ -723,21 +698,19 @@ async def _assert_image_repository_local_route(*, deadline: Deadline) -> None:
             last_error = urllib.error.URLError(msg)
         except (OSError, TimeoutError, urllib.error.URLError) as err:
             last_error = err
-        await asyncio.sleep(
-            deadline.bounded(IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS),
-        )
+        await deadline.sleep(IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS)
 
 
 async def ensure_image_repository_node_trust(*, kube: Kube, deadline: Deadline) -> None:
     """Converge local registry trust and mark the local node ready."""
     await _ensure_image_repository_trust(deadline=deadline)
     await _assert_image_repository_local_route(deadline=deadline)
-    node = await Node.local(kube, timeout=deadline.remaining)
+    node = await Node.local(kube, deadline=deadline)
     await node.set_label(
         kube=kube,
         label=CLUSTER_REGISTRY_READY_LABEL,
         value=CLUSTER_REGISTRY_READY_VALUE,
-        timeout=deadline.remaining,
+        deadline=deadline,
     )
 
 
@@ -748,7 +721,7 @@ async def ensure_image_repository_node_trust(*, kube: Kube, deadline: Deadline) 
 async def assert_image_repository_node_trust(
     kube: Kube,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
 ) -> None:
     """Assert all cluster nodes are marked ready for registry pulls.
 
@@ -757,7 +730,7 @@ async def assert_image_repository_node_trust(
     OSError
         If any cluster node is missing the registry-ready label.
     """
-    nodes = await Node.list(kube=kube, timeout=timeout)
+    nodes = await Node.list(kube=kube, deadline=deadline)
     ready = {
         node.name
         for node in nodes
@@ -780,7 +753,7 @@ async def assert_image_repository_node_trust(
 async def image_repository_status(
     kube: Kube,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
 ) -> ImageRepositoryStatus:
     """Inspect repository readiness without mutating the cluster.
 
@@ -794,16 +767,12 @@ async def image_repository_status(
     OSError
         If Kubernetes read operations fail or return malformed data.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image repository status timeout must be positive",
-    )
     try:
         service_task = asyncio.create_task(
             Service.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 name=IMAGE_REPOSITORY_NAME,
             )
         )
@@ -811,7 +780,7 @@ async def image_repository_status(
             Deployment.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 name=IMAGE_REPOSITORY_NAME,
             )
         )
@@ -819,7 +788,7 @@ async def image_repository_status(
             PersistentVolumeClaim.get(
                 kube=kube,
                 namespace=BERTRAND_NAMESPACE,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 name=IMAGE_REPOSITORY_NAME,
             )
         )
@@ -827,7 +796,7 @@ async def image_repository_status(
             ConfigMap.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 name=BUILDKIT_CONFIG_NAME,
             )
         )
@@ -835,23 +804,23 @@ async def image_repository_status(
             ConfigMap.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 name=IMAGE_REPOSITORY_CONFIG_NAME,
             )
         )
         maintenance_task = asyncio.create_task(
             image_repository_maintenance_status(
                 kube,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
         )
         nodes_task = asyncio.create_task(
-            Node.list(kube=kube, timeout=deadline.remaining()),
+            Node.list(kube=kube, deadline=deadline),
         )
         desired_buildkit_config_task = asyncio.create_task(
             current_buildkit_config_data(
                 kube,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             ),
         )
         await asyncio.gather(
@@ -910,7 +879,7 @@ async def image_repository_status(
             all(
                 pvc.labels.get(key) == value
                 for key, value in {
-                    BERTRAND_ENV: "1",
+                    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
                     IMAGE_REPOSITORY_LABEL: IMAGE_REPOSITORY_LABEL_VALUE,
                 }.items()
             )
@@ -996,7 +965,9 @@ async def image_repository_status(
         raise OSError(msg) from err
 
 
-async def ensure_image_repository(kube: Kube, *, timeout: float = math.inf) -> None:
+async def ensure_image_repository(
+    kube: Kube, *, deadline: Deadline = NO_DEADLINE
+) -> None:
     """Converge Bertrand's OCI image repository resources.
 
     Raises
@@ -1007,13 +978,9 @@ async def ensure_image_repository(kube: Kube, *, timeout: float = math.inf) -> N
     """
     from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image repository timeout must be positive",
-    )
     storage = await StorageClass.select(
         kube=kube,
-        timeout=deadline.remaining(),
+        deadline=deadline,
         preferences=CEPHFS_STORAGE_CLASS_PREFERENCES,
         require_expansion=True,
     )
@@ -1032,7 +999,7 @@ async def ensure_image_repository(kube: Kube, *, timeout: float = math.inf) -> N
         storage_class=storage.name,
         storage_request=IMAGE_REPOSITORY_SIZE,
         labels=IMAGE_REPOSITORY_LABELS,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     if pvc.storage_class_name != storage.name:
         msg = (
@@ -1046,17 +1013,17 @@ async def ensure_image_repository(kube: Kube, *, timeout: float = math.inf) -> N
             "ReadWriteMany"
         )
         raise OSError(msg)
-    await pvc.wait_bound(kube, timeout=deadline.remaining())
+    await pvc.wait_bound(kube, deadline=deadline)
 
     async def upsert_buildkit_config() -> None:
-        data = await current_buildkit_config_data(kube, timeout=deadline.remaining())
+        data = await current_buildkit_config_data(kube, deadline=deadline)
         await ConfigMap.upsert(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BUILDKIT_CONFIG_NAME,
             labels=IMAGE_REPOSITORY_LABELS,
             data=data,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
 
     service_task = asyncio.create_task(
@@ -1076,7 +1043,7 @@ async def ensure_image_repository(kube: Kube, *, timeout: float = math.inf) -> N
                     node_port=IMAGE_REPOSITORY_NODE_PORT,
                 )
             ],
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
     )
     config_task = asyncio.create_task(upsert_buildkit_config())
@@ -1087,14 +1054,14 @@ async def ensure_image_repository(kube: Kube, *, timeout: float = math.inf) -> N
     await _rollout_registry_config(
         kube,
         read_only=False,
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
 
 
 async def restore_image_repository_writable(
     kube: Kube,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
 ) -> None:
     """Converge the registry Deployment back to writable mode.
 
@@ -1106,16 +1073,12 @@ async def restore_image_repository_writable(
         If `timeout` is non-positive or rollout exceeds the budget.
     """
     try:
-        deadline = Deadline.from_timeout(
-            timeout,
-            message="image repository writable restore timeout must be positive",
-        )
         await _rollout_registry_config(
             kube,
             read_only=False,
-            timeout=deadline.remaining(),
+            deadline=deadline,
         )
-        await clear_image_repository_maintenance(kube, timeout=deadline.remaining())
+        await clear_image_repository_maintenance(kube, deadline=deadline)
     except TimeoutError:
         raise
     except OSError as err:
@@ -1126,8 +1089,8 @@ async def restore_image_repository_writable(
 async def garbage_collect_image_repository_storage(
     kube: Kube,
     *,
-    timeout: float = math.inf,
-    preflight: Callable[[float], Awaitable[bool]] | None = None,
+    deadline: Deadline = NO_DEADLINE,
+    preflight: Callable[[Deadline], Awaitable[bool]] | None = None,
 ) -> bool:
     """Run registry storage garbage collection with writes disabled.
 
@@ -1143,10 +1106,6 @@ async def garbage_collect_image_repository_storage(
     TimeoutError
         If `timeout` is non-positive or GC exceeds the budget.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image repository storage GC timeout must be positive",
-    )
     restore_required = False
     try:
         try:
@@ -1154,15 +1113,15 @@ async def garbage_collect_image_repository_storage(
                 kube,
                 reason=IMAGE_REPOSITORY_MAINTENANCE_REASON_GC,
                 message=IMAGE_REPOSITORY_MAINTENANCE_MESSAGE_GC,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
-            if preflight is not None and not await preflight(deadline.remaining()):
+            if preflight is not None and not await preflight(deadline):
                 return False
             restore_required = True
             await _rollout_registry_config(
                 kube,
                 read_only=True,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             job = await Job.create(
                 kube,
@@ -1190,17 +1149,27 @@ async def garbage_collect_image_repository_storage(
                     volumes=_volumes(),
                 ),
                 ttl_seconds_after_finished=IMAGE_REPOSITORY_GC_TTL_SECONDS,
-                timeout=deadline.remaining(),
+                deadline=deadline,
             )
             await job.run_observed(
                 kube,
-                timeout=deadline.remaining(),
+                deadline=deadline,
                 failure_context="image registry storage garbage collection failed",
                 log_heading="registry GC Job logs",
                 log_failure_label="registry GC Job pod logs",
                 tail_lines=IMAGE_REPOSITORY_GC_LOG_TAIL_LINES,
-                diagnostic_timeout=IMAGE_REPOSITORY_GC_DIAGNOSTIC_TIMEOUT_SECONDS,
-                cleanup_timeout=IMAGE_REPOSITORY_GC_CLEANUP_TIMEOUT_SECONDS,
+                diagnostic_deadline=Deadline(
+                    min(
+                        IMAGE_REPOSITORY_GC_DIAGNOSTIC_TIMEOUT_SECONDS,
+                        deadline.remaining,
+                    )
+                ),
+                cleanup_deadline=Deadline(
+                    min(
+                        IMAGE_REPOSITORY_GC_CLEANUP_TIMEOUT_SECONDS,
+                        deadline.remaining,
+                    )
+                ),
             )
         except TimeoutError:
             raise
@@ -1209,35 +1178,36 @@ async def garbage_collect_image_repository_storage(
             raise OSError(msg) from err
         return True
     finally:
-        if restore_required:
-            await restore_image_repository_writable(
-                kube,
-                timeout=IMAGE_REPOSITORY_GC_RESTORE_TIMEOUT_SECONDS,
+        remaining = deadline.remaining
+        if remaining > 0:
+            restore_deadline = Deadline(
+                min(IMAGE_REPOSITORY_GC_RESTORE_TIMEOUT_SECONDS, remaining)
             )
-        else:
-            await clear_image_repository_maintenance(
-                kube,
-                timeout=IMAGE_REPOSITORY_GC_RESTORE_TIMEOUT_SECONDS,
-            )
+            if restore_required:
+                await restore_image_repository_writable(
+                    kube,
+                    deadline=restore_deadline,
+                )
+            else:
+                await clear_image_repository_maintenance(
+                    kube,
+                    deadline=restore_deadline,
+                )
 
 
 async def _rollout_registry_config(
     kube: Kube,
     *,
     read_only: bool,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image repository config rollout timeout must be positive",
-    )
     config = await ConfigMap.upsert(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=IMAGE_REPOSITORY_CONFIG_NAME,
         labels=IMAGE_REPOSITORY_LABELS,
         data=registry_config_data(read_only=read_only),
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
     deployment = await Deployment.upsert(
         kube,
@@ -1280,9 +1250,9 @@ async def _rollout_registry_config(
             },
         ),
         strategy={"type": "Recreate", "rollingUpdate": None},
-        timeout=deadline.remaining(),
+        deadline=deadline,
     )
-    await deployment.wait_rollout(kube, timeout=deadline.remaining())
+    await deployment.wait_rollout(kube, deadline=deadline)
 
 
 def _volume_mounts() -> tuple[Mapping[str, object], ...]:
@@ -1366,7 +1336,7 @@ def image_repository_pull_ref(ref: str) -> str:
 async def delete_image_manifest(
     digest_ref: str,
     *,
-    timeout: float = math.inf,
+    deadline: Deadline = NO_DEADLINE,
 ) -> None:
     """Delete one image manifest by immutable registry digest reference.
 
@@ -1379,10 +1349,6 @@ async def delete_image_manifest(
     ValueError
         If `digest_ref` is not an immutable ref in Bertrand's image repository.
     """
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="image manifest delete timeout must be positive",
-    )
     ref = digest_ref.strip()
     prefix = f"{IMAGE_REPOSITORY_PULL_HOST}/"
     if not ref.startswith(prefix):
@@ -1402,7 +1368,8 @@ async def delete_image_manifest(
     encoded_path = urllib.parse.quote(repo_path, safe="/")
     encoded_digest = urllib.parse.quote(digest, safe=":")
     url = f"{IMAGE_REPOSITORY_PULL_SERVER}/v2/{encoded_path}/manifests/{encoded_digest}"
-    request_timeout = None if math.isinf(timeout) else deadline.remaining()
+    remaining = deadline.check(f"timed out deleting image manifest {digest_ref!r}")
+    request_timeout = None if math.isinf(remaining) else remaining
     try:
         status = await asyncio.to_thread(
             _registry_manifest_delete,

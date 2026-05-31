@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import sys
 from typing import TYPE_CHECKING
 
@@ -24,11 +23,14 @@ from bertrand.env.kube.dev import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from bertrand.env.git import Deadline
+
 
 async def bertrand_enter(
     target: Path,
     *,
     shell: str | None,
+    deadline: Deadline,
 ) -> None:
     """Open an interactive shell inside a Kubernetes dev-session Pod.
 
@@ -39,6 +41,8 @@ async def bertrand_enter(
         attached to HEAD.
     shell : str | None
         Optional shell alias override. Must be recognized by Bertrand config.
+    deadline : Deadline
+        Command execution deadline.
 
     Raises
     ------
@@ -53,7 +57,7 @@ async def bertrand_enter(
 
     session_id = new_session_id()
     host_id = current_host_id()
-    async with _project_command_context(target, timeout=math.inf) as (
+    async with _project_command_context(target, deadline=deadline) as (
         kube,
         _repo,
         worktree,
@@ -73,19 +77,19 @@ async def bertrand_enter(
         publication = await _publish_project_image(
             kube,
             config=config,
-            repo_id=config.repo.repo_id,
-            timeout=math.inf,
+            repo_id=config.repo.id,
+            deadline=deadline,
         )
         pod, primary_container = await create_project_dev_session(
             kube,
             config=config,
-            repo_id=config.repo.repo_id,
+            repo_id=config.repo.id,
             image_ref=publication.digest_ref,
             session_id=session_id,
             host_id=host_id,
             command=dev_shell_cmd,
             interactive=True,
-            timeout=math.inf,
+            deadline=deadline,
         )
         async with code_open_bridge(kube, session_id=session_id, host_id=host_id):
             try:
@@ -93,7 +97,7 @@ async def bertrand_enter(
                     kube,
                     pod,
                     primary_container=primary_container,
-                    timeout=math.inf,
+                    deadline=deadline,
                 )
                 await _attach_pod(
                     kube,
@@ -101,4 +105,8 @@ async def bertrand_enter(
                     primary_container=primary_container,
                 )
             finally:
-                await pod.delete(kube, timeout=math.inf, grace_period_seconds=1)
+                await pod.delete(
+                    kube,
+                    deadline=deadline,
+                    grace_period_seconds=1,
+                )

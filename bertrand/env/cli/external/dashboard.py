@@ -27,7 +27,7 @@ async def bertrand_dashboard(
     *,
     port: int,
     open_browser: bool | None,
-    timeout: float,
+    deadline: Deadline,
 ) -> None:
     """Launch the Bertrand dashboard through a local port-forward.
 
@@ -38,7 +38,7 @@ async def bertrand_dashboard(
     open_browser : bool | None
         Whether to open the dashboard URL in a browser. `None` enables an
         automatic GUI-capability check.
-    timeout : float
+    deadline : Deadline
         Maximum backend convergence and port-forward readiness budget in seconds.
 
     Raises
@@ -49,14 +49,9 @@ async def bertrand_dashboard(
     if port < 0 or port > 65535:
         msg = "dashboard port must be between 0 and 65535"
         raise ValueError(msg)
-    deadline = Deadline.from_timeout(
-        timeout,
-        message="dashboard timeout must be positive",
-    )
-
     local_port = _free_port() if port == 0 else port
-    with await Kube.host(timeout=deadline.remaining()) as kube:
-        await ensure_dashboard_backend(kube, timeout=deadline.remaining())
+    with await Kube.host(deadline=deadline) as kube:
+        await ensure_dashboard_backend(kube, deadline=deadline)
 
     await _port_forward_dashboard(
         local_port,

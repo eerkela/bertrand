@@ -12,10 +12,12 @@ from uuid import UUID
 
 from bertrand.env.config.core import _check_kube_name
 from bertrand.env.git.bertrand_git import (
-    BERTRAND_ENV,
-    REPO_ID_ENV,
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_CONTAINER,
+    BERTRAND_LABEL_MANAGED,
+    REPO_ID_LABEL,
     REPO_MOUNT,
-    WORKTREE_ID_ENV,
+    WORKTREE_ID_LABEL,
     WORKTREE_MOUNT,
 )
 from bertrand.env.kube.api.spec import VolumeSpec
@@ -37,9 +39,6 @@ WORKLOAD_NAME_HASH_CHARS = 44
 WORKLOAD_LABEL = "bertrand.dev/workload"
 WORKLOAD_LABEL_VALUE = "v1"
 WORKLOAD_ID_LABEL = "bertrand.dev/workload-id"
-WORKLOAD_REPO_LABEL = "bertrand.dev/workload-repo"
-WORKLOAD_WORKTREE_LABEL = "bertrand.dev/workload-worktree"
-WORKLOAD_WORKTREE_ID_LABEL = "bertrand.dev/workload-worktree-id"
 
 
 @dataclass(frozen=True)
@@ -134,7 +133,7 @@ class WorkloadIdentity:
         """
         return MappingProxyType(
             {
-                BERTRAND_ENV: "1",
+                BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
                 WORKLOAD_ID_LABEL: self.workload_id,
             }
         )
@@ -170,9 +169,8 @@ class WorkloadIdentity:
             "app.kubernetes.io/part-of": "bertrand",
             "app.kubernetes.io/component": "workload",
             WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE,
-            WORKLOAD_REPO_LABEL: _label_hash(self.repo_id),
-            WORKLOAD_WORKTREE_LABEL: _label_hash(self.worktree_env),
-            WORKLOAD_WORKTREE_ID_LABEL: _label_hash(self.worktree_id),
+            REPO_ID_LABEL: self.repo_id,
+            WORKTREE_ID_LABEL: self.worktree_id,
         }
         labels.update(self.selector)
         return MappingProxyType(labels)
@@ -359,7 +357,7 @@ class WorkloadPod:
             "mountPath": REPO_MOUNT.as_posix(),
             "readOnly": self.repository_read_only,
         }
-        repository_env = _repository_env(self.identity, self.runtime_env)
+        repository_env = _repository_env(self.runtime_env)
         bootstrap = _bootstrap_script(self.identity)
         for container in self.template.containers:
             if container.name.strip() == self.primary_container:
@@ -456,14 +454,9 @@ def _runtime_env(env: Mapping[str, str]) -> MappingProxyType[str, str]:
     return MappingProxyType(out)
 
 
-def _repository_env(
-    identity: WorkloadIdentity,
-    runtime_env: Mapping[str, str],
-) -> dict[str, str]:
+def _repository_env(runtime_env: Mapping[str, str]) -> dict[str, str]:
     env = {
-        BERTRAND_ENV: "1",
-        REPO_ID_ENV: identity.repo_id,
-        WORKTREE_ID_ENV: identity.worktree_id,
+        BERTRAND_LABEL: BERTRAND_LABEL_CONTAINER,
     }
     for key, value in runtime_env.items():
         if key in env and env[key] != value:

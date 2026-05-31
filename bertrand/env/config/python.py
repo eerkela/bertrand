@@ -29,7 +29,7 @@ from pydantic import (
 )
 from tomlkit.exceptions import TOMLKitError
 
-from bertrand.env.git import atomic_write_text
+from bertrand.env.git import Deadline, atomic_write_text
 from bertrand.env.version import VERSION
 
 from .core import (
@@ -353,8 +353,7 @@ class PyProjectModel(BaseModel):
                             path.read_text(encoding="utf-8")
                         except UnicodeDecodeError as err:
                             msg = (
-                                f"license file is not UTF-8 encoded '{relative}': "
-                                f"{err}"
+                                f"license file is not UTF-8 encoded '{relative}': {err}"
                             )
                             raise OSError(msg) from err
                         seen.add(relative)
@@ -461,9 +460,7 @@ class PyProject(Resource[PyProjectModel]):
 
         return snapshot
 
-    async def validate(
-        self, config: Config, fragment: Any
-    ) -> PyProjectModel | None:
+    async def validate(self, config: Config, fragment: Any) -> PyProjectModel | None:
         """Validate pyproject configuration.
 
         Returns
@@ -475,7 +472,13 @@ class PyProject(Resource[PyProjectModel]):
         result.project.resolve_licenses(config.root)
         return result
 
-    async def render(self, config: Config, *, image_build: bool) -> None:
+    async def render(
+        self,
+        config: Config,
+        *,
+        image_build: bool,
+        deadline: Deadline,  # noqa: ARG002
+    ) -> None:
         """Render managed pyproject configuration tables.
 
         Raises
