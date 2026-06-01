@@ -24,6 +24,7 @@ from bertrand.env.git import (
     until,
 )
 from bertrand.env.host import HOST_ID_FILE
+from bertrand.env.kube.api.bootstrap import K3S_BINARY, KUBE_CONFIG_FILE
 
 HOST_ROOT = Path("/host")
 LOOP_FALLBACK_STORAGE_PATH = Path("/var/lib/bertrand/rook-loop")
@@ -160,10 +161,12 @@ async def _run_text(argv: list[str], *, deadline: Deadline) -> str:
 def _ceph_argv(argv: list[str]) -> list[str]:
     if shutil.which("ceph"):
         return ["ceph", *argv]
-    if shutil.which("microk8s"):
+    if K3S_BINARY.is_file() and KUBE_CONFIG_FILE.is_file():
         return [
-            "microk8s",
+            str(K3S_BINARY),
             "kubectl",
+            "--kubeconfig",
+            str(KUBE_CONFIG_FILE),
             "-n",
             ROOK_NAMESPACE,
             "exec",

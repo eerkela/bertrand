@@ -460,9 +460,16 @@ class External:
                 help="Display name hint for the joining Bertrand host.",
             )
             invite.add_argument(
-                "--worker",
-                action="store_true",
-                help="Generate/mark the bundle for a MicroK8s worker join.",
+                "--role",
+                choices=("server", "agent"),
+                default="agent",
+                help="k3s role for the joining Bertrand host.",
+            )
+            invite.add_argument(
+                "--server-url",
+                default=None,
+                metavar="URL",
+                help="Externally reachable k3s server URL for joining hosts.",
             )
             self._add_timeout(
                 invite,
@@ -475,7 +482,8 @@ class External:
                 timeout_scope="cluster",
                 kwargs=(
                     ("name", "name"),
-                    ("worker", "worker"),
+                    ("role", "role"),
+                    ("server_url", "server_url"),
                     ("timeout", "timeout"),
                 ),
             )
@@ -490,9 +498,10 @@ class External:
                 help="Sensitive token produced by `bertrand cluster invite`.",
             )
             join.add_argument(
-                "--worker",
-                action="store_true",
-                help="Force the MicroK8s join to use worker-node semantics.",
+                "--role",
+                choices=("server", "agent"),
+                default=None,
+                help="Override the k3s role embedded in the join token.",
             )
             self._add_timeout(
                 join,
@@ -507,7 +516,7 @@ class External:
                 timeout_scope="cluster",
                 kwargs=(
                     ("token", "token"),
-                    ("worker", "worker"),
+                    ("role", "role"),
                     ("timeout", "timeout"),
                 ),
             )
@@ -1528,9 +1537,8 @@ class External:
             """Add the 'clean' command to the parser."""
             command = self.commands.add_parser(
                 "clean",
-                help="Remove host-local Bertrand runtime state in the shared "
-                "MicroK8s/Rook-Ceph model while preserving repository PVCs and "
-                "snap installations.",
+                help="Remove this host from Bertrand's owned k3s/Rook-Ceph runtime; "
+                "the final active node also deletes durable repository volumes.",
             )
             command.add_argument(
                 "-y",

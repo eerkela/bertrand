@@ -1,10 +1,4 @@
-"""Bootstrap Bertrand's shared host runtime.
-
-Bertrand v1 uses the supported default MicroK8s snap as its shared Kubernetes
-runtime and converges Rook-managed Ceph inside that cluster.  This module may
-install or start MicroK8s when missing, but it never assumes exclusive snap
-ownership.  It also generates or configures a project repository when requested.
-"""
+"""Bootstrap Bertrand's owned host runtime and project repositories."""
 
 from __future__ import annotations
 
@@ -47,10 +41,10 @@ from bertrand.env.host import (
     ensure_host_state,
 )
 from bertrand.env.kube.api.bootstrap import (
-    assert_microk8s_installed,
-    ensure_microk8s_kubeconfig,
-    install_microk8s,
-    start_microk8s,
+    assert_k3s_installed,
+    ensure_k3s_kubeconfig,
+    install_k3s,
+    start_k3s,
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
@@ -92,6 +86,7 @@ INIT_PREREQS = {
         "setfacl": "acl",
         "groupadd": "passwd",
         "usermod": "passwd",
+        "curl": "curl",
         "install": "coreutils",
         "mount.ceph": "ceph-common",
         "pvs": "lvm2",
@@ -104,6 +99,7 @@ INIT_PREREQS = {
         "setfacl": "acl",
         "groupadd": "shadow-utils",
         "usermod": "shadow-utils",
+        "curl": "curl",
         "install": "coreutils",
         "mount.ceph": "ceph-common",
         "pvs": "lvm2",
@@ -116,6 +112,7 @@ INIT_PREREQS = {
         "setfacl": "acl",
         "groupadd": "shadow-utils",
         "usermod": "shadow-utils",
+        "curl": "curl",
         "install": "coreutils",
         "mount.ceph": "ceph-common",
         "pvs": "lvm2",
@@ -128,6 +125,7 @@ INIT_PREREQS = {
         "setfacl": "acl",
         "groupadd": "shadow",
         "usermod": "shadow",
+        "curl": "curl",
         "install": "coreutils",
         "mount.ceph": "ceph-common",
         "pvs": "lvm2",
@@ -140,6 +138,7 @@ INIT_PREREQS = {
         "setfacl": "acl",
         "groupadd": "shadow",
         "usermod": "shadow",
+        "curl": "curl",
         "install": "coreutils",
         "mount.ceph": "ceph",
         "pvs": "lvm2",
@@ -152,6 +151,7 @@ INIT_PREREQS = {
         "setfacl": "acl",
         "groupadd": "shadow",
         "usermod": "shadow",
+        "curl": "curl",
         "install": "coreutils",
         "mount.ceph": "ceph",
         "pvs": "lvm2",
@@ -165,6 +165,7 @@ INIT_CHECK_PREREQS = (
     ("setfacl", ("setfacl",)),
     ("groupadd", ("groupadd",)),
     ("usermod", ("usermod",)),
+    ("curl", ("curl",)),
     ("install", ("install",)),
     ("mount.ceph", ("mount.ceph",)),
     ("pvs", ("pvs",)),
@@ -317,10 +318,7 @@ def _require_active_group(*, user: str, group: str, purpose: str) -> None:
 
 
 def _validate_shared_runtime_groups(*, user: str) -> None:
-    for group, purpose in (
-        (BERTRAND_GROUP, "shared Bertrand host-state access"),
-        ("microk8s", "MicroK8s runtime access"),
-    ):
+    for group, purpose in ((BERTRAND_GROUP, "shared Bertrand host-state access"),):
         _require_active_group(user=user, group=group, purpose=purpose)
 
 
@@ -1030,20 +1028,12 @@ class ExternalInit:
     async def _bootstrap_cluster(
         self,
         *,
-        user: str,
-        package_manager: str,
         deadline: Deadline,
     ) -> None:
-        await ensure_host_state(user=user, assume_yes=self.yes, deadline=deadline)
-        await install_microk8s(
-            user=user,
-            package_manager=package_manager,
-            assume_yes=self.yes,
-        )
-        _validate_shared_runtime_groups(user=user)
-        await assert_microk8s_installed(user=user)
-        await start_microk8s(deadline=deadline)
-        await ensure_microk8s_kubeconfig(deadline=deadline)
+        await install_k3s(assume_yes=self.yes, deadline=deadline)
+        assert_k3s_installed()
+        await start_k3s(deadline=deadline)
+        await ensure_k3s_kubeconfig(deadline=deadline)
 
     async def _bootstrap_control_plane(self, kube: Kube, deadline: Deadline) -> None:
         await ensure_local_bertrand_node(kube, deadline=deadline)
@@ -1115,15 +1105,13 @@ class ExternalInit:
             raise OSError(msg)
 
         # idempotently bootstrap host cluster infrastructure
-        user, package_manager = await self._prepare_host_lock(deadline)
+        user, _package_manager = await self._prepare_host_lock(deadline)
         init_lock = HostLock(INIT_LOCK)
         await init_lock.lock(deadline=deadline)
         try:
-            await self._bootstrap_cluster(
-                user=user,
-                package_manager=package_manager,
-                deadline=deadline,
-            )
+            await ensure_host_state(user=user, assume_yes=self.yes, deadline=deadline)
+            _validate_shared_runtime_groups(user=user)
+            await self._bootstrap_cluster(deadline=deadline)
             kube = Kube.external()
         except:
             await init_lock.unlock(ignore_errors=True)
@@ -1177,7 +1165,7 @@ class ExternalInit:
 
 
 async def ensure_shared_runtime_installed(*, deadline: Deadline, yes: bool) -> None:
-    """Install host prerequisites and MicroK8s access without converging the cluster."""
+    """Install host prerequisites without starting or joining the k3s cluster."""
     user, package_manager = _detect_host_runtime()
     await _install_prereqs(
         package_manager=package_manager,
@@ -1185,13 +1173,7 @@ async def ensure_shared_runtime_installed(*, deadline: Deadline, yes: bool) -> N
         deadline=deadline,
     )
     await ensure_host_state(user=user, assume_yes=yes, deadline=deadline)
-    await install_microk8s(
-        user=user,
-        package_manager=package_manager,
-        assume_yes=yes,
-    )
     _validate_shared_runtime_groups(user=user)
-    await assert_microk8s_installed(user=user)
 
 
 async def _converge_host_cluster_runtime(
@@ -1201,8 +1183,8 @@ async def _converge_host_cluster_runtime(
 ) -> None:
     """Converge the local cluster control plane after host runtime installation."""
     if start:
-        await start_microk8s(deadline=deadline)
-    await ensure_microk8s_kubeconfig(deadline=deadline)
+        await start_k3s(deadline=deadline)
+    await ensure_k3s_kubeconfig(deadline=deadline)
     runtime = ExternalInit(path=None, enable=[], disable=[], yes=False)
     with Kube.external() as kube:
         await runtime._bootstrap_control_plane(kube, deadline)

@@ -22,9 +22,11 @@ from bertrand.env.cli.external.init import (
 from bertrand.env.cli.util import emit_json
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.bootstrap import (
-    join_microk8s_cluster,
-    microk8s_cluster_ready,
-    microk8s_join_token,
+    K3sRole,
+    join_k3s_cluster,
+    k3s_cluster_ready,
+    k3s_join_bundle,
+    normalize_k3s_role,
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.daemon import (
@@ -81,7 +83,7 @@ if TYPE_CHECKING:
 
     from bertrand.env.kube.capability.device import BertrandDeviceRecord
 
-JOIN_BUNDLE_VERSION = 1
+JOIN_BUNDLE_VERSION = 2
 
 
 def _flatten(values: Sequence[Sequence[str]] | None) -> tuple[str, ...]:
@@ -101,9 +103,7 @@ async def bertrand_cluster_status(*, json_output: bool, deadline: Deadline) -> N
         Kubernetes request budget.
     """
     status: dict[str, object] = {
-        "microk8s": await _probe_bool(
-            lambda: microk8s_cluster_ready(deadline=deadline)
-        ),
+        "k3s": await _probe_bool(lambda: k3s_cluster_ready(deadline=deadline)),
     }
     kube_checks = (
         ("rook_ceph", _rook_ceph_status),
@@ -139,7 +139,8 @@ async def bertrand_cluster_status(*, json_output: bool, deadline: Deadline) -> N
 async def bertrand_cluster_invite(
     *,
     name: str | None,
-    worker: bool,
+    role: str,
+    server_url: str | None,
     deadline: Deadline,
 ) -> None:
     """Generate a sensitive Bertrand distributed-runtime join bundle.
@@ -148,14 +149,17 @@ async def bertrand_cluster_invite(
     ----------
     name : str | None
         Desired name for the joining node.
-    worker : bool
-        Whether the joining MicroK8s node should be a worker.
+    role : str
+        k3s node role for the joining host.
+    server_url : str | None
+        Optional externally reachable k3s server URL.
     deadline : Deadline
         Token generation budget.
 
     """
-    microk8s = await microk8s_join_token(
-        worker=worker,
+    normalized_role: K3sRole = normalize_k3s_role(role)
+    resolved_server, token_value, kubeconfig = await k3s_join_bundle(
+        server_url=server_url,
         deadline=deadline,
     )
     node_name = (
@@ -165,22 +169,23 @@ async def bertrand_cluster_invite(
         "version": JOIN_BUNDLE_VERSION,
         "created_at": datetime.now(UTC).isoformat(),
         "node_name": node_name,
-        "worker": worker,
-        "microk8s": microk8s,
+        "role": normalized_role,
+        "server_url": resolved_server,
+        "token": token_value,
+        "kubeconfig": kubeconfig,
     }
     token = _encode_bundle(payload)
     print("Sensitive Bertrand cluster join token:")
     print(token)
     print()
     print("Run on the joining host:")
-    worker_flag = " --worker" if worker else ""
-    print(f"  bertrand cluster join {token}{worker_flag}")
+    print(f"  bertrand cluster join {token} --role {normalized_role}")
 
 
 async def bertrand_cluster_join(
     *,
     token: str,
-    worker: bool,
+    role: str | None,
     deadline: Deadline,
 ) -> None:
     """Join this host to an existing Bertrand shared runtime cluster.
@@ -189,17 +194,23 @@ async def bertrand_cluster_join(
     ----------
     token : str
         Sensitive join bundle produced by `bertrand cluster invite`.
-    worker : bool
-        Whether to force MicroK8s worker join semantics.
+    role : str | None
+        Optional k3s role override.
     deadline : Deadline
         Join and convergence budget.
 
     """
     bundle = _decode_bundle(token)
     await ensure_shared_runtime_installed(deadline=deadline, yes=False)
-    await join_microk8s_cluster(
-        str(bundle["microk8s"]),
-        worker=worker or bool(bundle.get("worker")),
+    resolved_role: K3sRole = normalize_k3s_role(
+        role or str(bundle.get("role") or "agent")
+    )
+    await join_k3s_cluster(
+        server_url=str(bundle["server_url"]),
+        token=str(bundle["token"]),
+        role=resolved_role,
+        kubeconfig=str(bundle["kubeconfig"]),
+        assume_yes=False,
         deadline=deadline,
     )
     await _converge_host_cluster_runtime(deadline, start=False)
@@ -811,10 +822,13 @@ def _decode_bundle(token: str) -> dict[str, object]:
     if not isinstance(payload, dict) or payload.get("version") != JOIN_BUNDLE_VERSION:
         msg = "unsupported Bertrand cluster join token"
         raise ValueError(msg)
-    for key in ("microk8s",):
+    for key in ("server_url", "token", "kubeconfig"):
         if not isinstance(payload.get(key), str) or not payload[key]:
             msg = f"Bertrand cluster join token is missing {key!r}"
             raise ValueError(msg)
+    if "role" in payload and not isinstance(payload["role"], str):
+        msg = "Bertrand cluster join token has invalid 'role'"
+        raise ValueError(msg)
     return payload
 
 

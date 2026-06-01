@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import json
 import math
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from bertrand.env.git import (
@@ -23,9 +20,8 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     NO_DEADLINE,
     Deadline,
-    run,
-    sudo,
 )
+from bertrand.env.kube.api.bootstrap import configure_k3s_registries
 from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
@@ -641,38 +637,10 @@ async def current_buildkit_config_hash(kube: Kube, *, deadline: Deadline) -> str
 
 
 async def _ensure_image_repository_trust(*, deadline: Deadline) -> None:
-    content = (
-        f"server = \"{IMAGE_REPOSITORY_PULL_SERVER}\"\n"
-        f"[host.\"{IMAGE_REPOSITORY_PULL_SERVER}\"]\n"
-        "  capabilities = [\"pull\", \"resolve\", \"push\"]\n"
-        "  skip_verify = true\n"
+    await configure_k3s_registries(
+        hosts=IMAGE_REPOSITORY_TRUST_HOSTS,
+        deadline=deadline,
     )
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        delete=True,
-        delete_on_close=True,
-    ) as handle:
-        handle.write(content)
-        handle.flush()
-        staged = Path(handle.name)
-        for host in IMAGE_REPOSITORY_TRUST_HOSTS:
-            trust_dir = Path(f"/var/snap/microk8s/current/args/certs.d/{host}")
-            trust_file = trust_dir / "hosts.toml"
-            if trust_file.is_file():
-                with contextlib.suppress(OSError):
-                    if trust_file.read_text(encoding="utf-8") == content:
-                        continue
-            await run(
-                sudo(["install", "-d", "-m", "0755", str(trust_dir)]),
-                capture_output=True,
-                deadline=deadline,
-            )
-            await run(
-                sudo(["install", "-m", "0644", str(staged), str(trust_file)]),
-                capture_output=True,
-                deadline=deadline,
-            )
 
 
 async def _assert_image_repository_local_route(*, deadline: Deadline) -> None:

@@ -1583,6 +1583,81 @@ async def delete_repository_snapshot_artifacts(
         await delete_volume_snapshot(kube, snapshot, deadline=deadline)
 
 
+async def delete_all_repository_volumes(
+    kube: Kube,
+    *,
+    deadline: Deadline,
+) -> list[CephRepositoryStateRecord]:
+    """Delete all managed repository volumes during final cluster teardown.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    deadline : Deadline
+        Maximum deletion budget in seconds.
+
+    Returns
+    -------
+    list[CephRepositoryStateRecord]
+        Repository state records deleted by this teardown pass.
+    """
+    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, deadline=deadline)
+    records = await REPOSITORY_STATE_RESOURCE.list(
+        kube,
+        namespace=BERTRAND_NAMESPACE,
+        deadline=deadline,
+    )
+    deleted: list[CephRepositoryStateRecord] = []
+    for record in sorted(records, key=lambda item: item.name):
+        repo_id = record.spec.repo_id
+        await delete_repository_snapshot_artifacts(
+            kube,
+            repo_id=repo_id,
+            deadline=deadline,
+        )
+        for pvc in await list_repository_volume_claims(
+            kube,
+            repo_id,
+            deadline=deadline,
+        ):
+            await delete_repository_volume_claim(
+                kube,
+                pvc=pvc,
+                deadline=deadline,
+                force=True,
+            )
+
+        credentials = await RepoCredentials.get(repo_id, deadline=deadline)
+        if credentials is not None:
+            await credentials.delete(deadline=deadline)
+
+        for worktree in sorted(
+            record.status.worktrees.values(),
+            key=lambda item: (item.worktree, item.worktree_id),
+        ):
+            await delete_capabilities_for_scope(
+                kube,
+                scope="worktree",
+                scope_value=worktree.worktree_id,
+                deadline=deadline,
+            )
+        await delete_capabilities_for_scope(
+            kube,
+            scope="repository",
+            scope_value=repo_id,
+            deadline=deadline,
+        )
+        await REPOSITORY_STATE_RESOURCE.delete_by_name(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=record.name,
+            deadline=deadline,
+        )
+        deleted.append(record)
+    return deleted
+
+
 async def gc_repository_volumes(
     kube: Kube,
     *,
