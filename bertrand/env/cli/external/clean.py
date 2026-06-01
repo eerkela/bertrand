@@ -11,20 +11,18 @@ from uuid import UUID
 
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
-    Deadline,
-    confirm,
-    symlink_points_to,
-    until,
-)
-from bertrand.env.git.bertrand_git import warn
-from bertrand.env.host import (
     HOST_ID_FILE,
     REPO_DIR,
     REPO_MOUNT_EXT,
     RUN_DIR,
     STATE_DIR,
-    disable_run_tmpfs_mount,
+    Deadline,
+    confirm,
+    symlink_points_to,
+    until,
+    warn,
 )
+from bertrand.env.host.state import disable_run_tmpfs_mount
 from bertrand.env.kube.api.bootstrap import uninstall_k3s
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.ceph.api import (

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import os
-import platform
 import shutil
 import sys
 from dataclasses import dataclass
@@ -18,27 +16,26 @@ from pydantic import ValidationError
 from bertrand.env.config.core import RESOURCE_NAMES, Config, Resource
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
+    REPO_DIR,
+    REPO_MOUNT_EXT,
     CommandError,
     Deadline,
     GitRepository,
-    GroupStatus,
     HostLock,
-    User,
     abspath,
     atomic_write_text,
-    can_escalate,
     confirm,
-    install_packages,
     run,
     symlink_points_to,
 )
-from bertrand.env.host import (
+from bertrand.env.host.package import install_prereqs
+from bertrand.env.host.state import RUN_DIR, ensure_host_state
+from bertrand.env.host.user import (
     BERTRAND_GROUP,
-    REPO_DIR,
-    REPO_MOUNT_EXT,
-    RUN_DIR,
-    ensure_host_group,
-    ensure_host_state,
+    User,
+    UserGroup,
+    ensure_bertrand_group,
+    require_bertrand_group,
 )
 from bertrand.env.kube.api.bootstrap import (
     assert_k3s_installed,
@@ -80,100 +77,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 INIT_LOCK = Path("/tmp/bertrand-init.lock")
-INIT_PREREQS = {
-    "apt": {
-        "getfacl": "acl",
-        "setfacl": "acl",
-        "groupadd": "passwd",
-        "usermod": "passwd",
-        "curl": "curl",
-        "install": "coreutils",
-        "mount.ceph": "ceph-common",
-        "pvs": "lvm2",
-        "vgs": "lvm2",
-        "lvs": "lvm2",
-        "losetup": "util-linux",
-    },
-    "dnf": {
-        "getfacl": "acl",
-        "setfacl": "acl",
-        "groupadd": "shadow-utils",
-        "usermod": "shadow-utils",
-        "curl": "curl",
-        "install": "coreutils",
-        "mount.ceph": "ceph-common",
-        "pvs": "lvm2",
-        "vgs": "lvm2",
-        "lvs": "lvm2",
-        "losetup": "util-linux",
-    },
-    "yum": {
-        "getfacl": "acl",
-        "setfacl": "acl",
-        "groupadd": "shadow-utils",
-        "usermod": "shadow-utils",
-        "curl": "curl",
-        "install": "coreutils",
-        "mount.ceph": "ceph-common",
-        "pvs": "lvm2",
-        "vgs": "lvm2",
-        "lvs": "lvm2",
-        "losetup": "util-linux",
-    },
-    "zypper": {
-        "getfacl": "acl",
-        "setfacl": "acl",
-        "groupadd": "shadow",
-        "usermod": "shadow",
-        "curl": "curl",
-        "install": "coreutils",
-        "mount.ceph": "ceph-common",
-        "pvs": "lvm2",
-        "vgs": "lvm2",
-        "lvs": "lvm2",
-        "losetup": "util-linux",
-    },
-    "pacman": {
-        "getfacl": "acl",
-        "setfacl": "acl",
-        "groupadd": "shadow",
-        "usermod": "shadow",
-        "curl": "curl",
-        "install": "coreutils",
-        "mount.ceph": "ceph",
-        "pvs": "lvm2",
-        "vgs": "lvm2",
-        "lvs": "lvm2",
-        "losetup": "util-linux",
-    },
-    "apk": {
-        "getfacl": "acl",
-        "setfacl": "acl",
-        "groupadd": "shadow",
-        "usermod": "shadow",
-        "curl": "curl",
-        "install": "coreutils",
-        "mount.ceph": "ceph",
-        "pvs": "lvm2",
-        "vgs": "lvm2",
-        "lvs": "lvm2",
-        "losetup": "util-linux",
-    },
-}
-INIT_CHECK_PREREQS = (
-    ("getfacl", ("getfacl",)),
-    ("setfacl", ("setfacl",)),
-    ("groupadd", ("groupadd",)),
-    ("usermod", ("usermod",)),
-    ("curl", ("curl",)),
-    ("install", ("install",)),
-    ("mount.ceph", ("mount.ceph",)),
-    ("pvs", ("pvs",)),
-    ("vgs", ("vgs",)),
-    ("lvs", ("lvs",)),
-    ("losetup", ("losetup",)),
-)
-_INIT_REPO_STAGE_ERRORS: tuple[type[Exception], ...] = (
+INIT_REPO_STAGE_ERRORS: tuple[type[Exception], ...] = (
     OSError,
     RuntimeError,
     TimeoutError,
@@ -181,162 +85,13 @@ _INIT_REPO_STAGE_ERRORS: tuple[type[Exception], ...] = (
     CommandError,
     ValidationError,
 )
-_INIT_FAILURE_MARK_ERRORS: tuple[type[Exception], ...] = (
+INIT_FAILURE_MARK_ERRORS: tuple[type[Exception], ...] = (
     OSError,
     RuntimeError,
     TimeoutError,
     ValueError,
     ValidationError,
 )
-
-
-# TODO: these persistent install steps should be more rigorous about how they enforce
-# deadlines during the bootstrap convergence.
-
-
-def _read_os_release() -> dict[str, str]:
-    path = Path("/etc/os-release")
-    data: dict[str, str] = {}
-    if not path.exists():
-        return data
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        data[k.strip()] = v.strip().strip('"').strip("'")
-    return data
-
-
-def _detect_host_runtime() -> tuple[str, str]:
-    system = platform.system().lower()
-    if system != "linux":
-        msg = "Unsupported platform for package manager detection"
-        raise OSError(msg)
-
-    os_release = _read_os_release()
-    distro_id = (os_release.get("ID") or "").lower() or None
-    manager: str | None = None
-    if distro_id in {"debian", "ubuntu"} and shutil.which("apt-get"):
-        manager = "apt"
-    elif shutil.which("dnf"):
-        manager = "dnf"
-    elif shutil.which("yum"):
-        manager = "yum"
-    elif shutil.which("zypper"):
-        manager = "zypper"
-    elif shutil.which("pacman"):
-        manager = "pacman"
-    elif shutil.which("apk"):
-        manager = "apk"
-    if manager is None:
-        msg = "No supported package manager found"
-        raise OSError(msg)
-    return User().name, manager
-
-
-async def _install_prereqs(
-    *,
-    package_manager: str,
-    yes: bool,
-    deadline: Deadline,
-) -> None:
-    # fail fast if no escalation path is available for package installs
-    if os.geteuid() != 0 and not can_escalate():
-        msg = (
-            "Bertrand requires root escalation to install host bootstrap dependencies, "
-            "but neither 'sudo' nor 'doas' is available.  Install one of these tools "
-            "or manually rerun `bertrand init` as root."
-        )
-        raise PermissionError(msg)
-
-    # package mapping for bootstrap-required host tools across package managers
-    packages = INIT_PREREQS.get(package_manager)
-    if packages is None:
-        msg = (
-            "Unsupported package manager for prerequisite installation: "
-            f"{package_manager!r}"
-        )
-        raise OSError(msg)
-
-    # detect missing required bootstrap tools
-    missing: set[str] = set()
-    for tool, package in packages.items():
-        if package in missing:
-            continue
-        if shutil.which(tool):
-            continue
-        missing.add(package)
-    if not missing:
-        return
-
-    # install missing tools
-    if not confirm(
-        "Bertrand requires host bootstrap tools to configure runtime "
-        f"dependencies and shared state (missing: {', '.join(missing)}).  Would "
-        "you like Bertrand to install missing packages now (requires sudo)?\n[y/N] ",
-        assume_yes=yes,
-    ):
-        msg = "Installation declined by user."
-        raise PermissionError(msg)
-    await install_packages(
-        package_manager=package_manager,
-        packages=sorted(missing),
-        yes=yes,
-        deadline=deadline,
-    )
-
-    # verify all required tools after installation
-    unresolved: list[str] = [
-        name
-        for name, cmd in INIT_CHECK_PREREQS
-        if not any(shutil.which(c) for c in cmd)
-    ]
-    if unresolved:
-        msg = (
-            "Prerequisite installation completed, but required host bootstrap tools "
-            f"are still missing: {', '.join(unresolved)}."
-        )
-        raise OSError(msg)
-
-
-def _require_active_group(*, user: str, group: str, purpose: str) -> None:
-    status = GroupStatus.get(user, group)
-    if not status.configured:
-        msg = (
-            f"user {user!r} is not in {group!r}.  Rerun `bertrand init` to "
-            f"configure {purpose}."
-        )
-        raise OSError(msg)
-    if not status.active:
-        msg = (
-            f"user {user!r} is in {group!r}, but the current session is not active "
-            f"in that group.  Run `newgrp {group}` or log out and back in, then "
-            "rerun `bertrand init`."
-        )
-        raise OSError(msg)
-
-
-def _validate_shared_runtime_groups(*, user: str) -> None:
-    for group, purpose in ((BERTRAND_GROUP, "shared Bertrand host-state access"),):
-        _require_active_group(user=user, group=group, purpose=purpose)
-
-
-async def _ensure_host_lock_group(
-    *,
-    user: str,
-    yes: bool,
-    deadline: Deadline,
-) -> None:
-    await ensure_host_group(deadline=deadline, assume_yes=yes)
-    await GroupStatus.get(user, BERTRAND_GROUP).activate(assume_yes=yes)
-    _require_active_group(
-        user=user,
-        group=BERTRAND_GROUP,
-        purpose="shared Bertrand host-state access",
-    )
-
-
 MANAGED_GIT_HOOKS: tuple[tuple[Path, Path, bool], ...] = (
     (Path("reference_transaction.py"), Path("hooks/reference-transaction"), True),
     (Path("bertrand_git.py"), Path("hooks/bertrand_git.py"), False),
@@ -422,9 +177,7 @@ class _RepoState:
             await lock.unlock(ignore_errors=True)
 
 
-async def _ensure_repo_storage(
-    state: _RepoState,
-) -> None:
+async def _ensure_repo_storage(state: _RepoState) -> None:
     volumes = await list_repository_volume_claims(
         state.kube,
         state.repo_id,
@@ -458,9 +211,7 @@ async def _ensure_repo_storage(
     )
 
 
-async def _ensure_bare_worktrees(
-    state: _RepoState,
-) -> None:
+async def _ensure_bare_worktrees(state: _RepoState) -> None:
     if state.mount_alias is None:
         msg = "bare-worktree convergence requires a mounted repository alias"
         raise OSError(msg)
@@ -590,9 +341,7 @@ async def _remap_target_worktree(
     state.worktree = match
 
 
-async def _ensure_repo_hooks(
-    state: _RepoState,
-) -> None:
+async def _ensure_repo_hooks(state: _RepoState) -> None:
     # load managed hook payloads before install; this preserves fail-fast behavior if
     # packaged hook definitions are malformed.
     for source, destination, executable in MANAGED_GIT_HOOKS:
@@ -657,9 +406,7 @@ async def _ensure_repo_hooks(
             )
 
 
-async def _render_config_artifacts(
-    state: _RepoState,
-) -> None:
+async def _render_config_artifacts(state: _RepoState) -> None:
     # render all targeted worktrees based on existing configuration (if any), then
     # apply enable/disable deltas before syncing artifacts.
     for worktree in await _config_render_targets(state):
@@ -739,9 +486,7 @@ def _remove_disabled_resource_artifacts(
                 path.unlink(missing_ok=True)
 
 
-async def _make_initial_commit(
-    state: _RepoState,
-) -> None:
+async def _make_initial_commit(state: _RepoState) -> None:
     worktree_path = await _initial_commit_worktree(state)
     if worktree_path is None:
         return
@@ -817,9 +562,7 @@ async def _commit_initial_changes(state: _RepoState, worktree_path: Path) -> Non
     )
 
 
-async def _finalize(
-    state: _RepoState,
-) -> None:
+async def _finalize(state: _RepoState) -> None:
     mount_alias = state.mount_alias
     if mount_alias is None:
         msg = "cannot finalize repository convergence without a mount alias"
@@ -870,7 +613,7 @@ async def _mark_repo_failure(
     remaining = deadline.remaining
     if remaining <= 0:
         return
-    with contextlib.suppress(*_INIT_FAILURE_MARK_ERRORS):
+    with contextlib.suppress(*INIT_FAILURE_MARK_ERRORS):
         await mark_repository_volume_failed(
             kube,
             repo_id=repo_id,
@@ -966,7 +709,7 @@ async def _converge_repository(
             await _render_config_artifacts(state)
             await _make_initial_commit(state)
             await _finalize(state)
-        except _INIT_REPO_STAGE_ERRORS as err:
+        except INIT_REPO_STAGE_ERRORS as err:
             await _mark_repo_failure(
                 state.kube,
                 repo_id=state.repo_id,
@@ -1015,15 +758,15 @@ class ExternalInit:
     disable: list[str]
     yes: bool
 
-    async def _prepare_host_lock(self, deadline: Deadline) -> tuple[str, str]:
-        user, package_manager = _detect_host_runtime()
-        await _install_prereqs(
-            package_manager=package_manager,
-            yes=self.yes,
-            deadline=deadline,
-        )
-        await _ensure_host_lock_group(user=user, yes=self.yes, deadline=deadline)
-        return user, package_manager
+    async def _prepare_host(self, deadline: Deadline) -> User:
+        user = User()
+        await install_prereqs(yes=self.yes, deadline=deadline)
+        await ensure_bertrand_group(deadline=deadline, assume_yes=self.yes)
+        group = UserGroup(user=user.name, group=BERTRAND_GROUP)
+        await group.activate(assume_yes=self.yes)
+        require_bertrand_group(group=group)
+
+        return user
 
     async def _bootstrap_cluster(
         self,
@@ -1105,12 +848,13 @@ class ExternalInit:
             raise OSError(msg)
 
         # idempotently bootstrap host cluster infrastructure
-        user, _package_manager = await self._prepare_host_lock(deadline)
+        user = await self._prepare_host(deadline)
         init_lock = HostLock(INIT_LOCK)
         await init_lock.lock(deadline=deadline)
         try:
-            await ensure_host_state(user=user, assume_yes=self.yes, deadline=deadline)
-            _validate_shared_runtime_groups(user=user)
+            # TODO: ensure_host_state should take an actual User object, rather than a
+            # user name
+            await ensure_host_state(user=user.name, assume_yes=self.yes, deadline=deadline)
             await self._bootstrap_cluster(deadline=deadline)
             kube = Kube.external()
         except:
@@ -1166,14 +910,11 @@ class ExternalInit:
 
 async def ensure_shared_runtime_installed(*, deadline: Deadline, yes: bool) -> None:
     """Install host prerequisites without starting or joining the k3s cluster."""
-    user, package_manager = _detect_host_runtime()
-    await _install_prereqs(
-        package_manager=package_manager,
-        yes=yes,
-        deadline=deadline,
-    )
+    user = User().name
+    await install_prereqs(yes=yes, deadline=deadline)
+    group = UserGroup(user=user, group=BERTRAND_GROUP)
+    require_bertrand_group(group=group)
     await ensure_host_state(user=user, assume_yes=yes, deadline=deadline)
-    _validate_shared_runtime_groups(user=user)
 
 
 async def _converge_host_cluster_runtime(

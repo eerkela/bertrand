@@ -1,4 +1,4 @@
-"""Shared host-state bootstrap for Bertrand's runtime."""
+"""Bertrand's host-local, persistent state directory."""
 
 from __future__ import annotations
 
@@ -11,30 +11,28 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from bertrand.env.git import bertrand_git as _git
-from bertrand.env.git.bertrand_git import (
-    CommandError,
+from bertrand.env.git import (
+    BERTRAND_GROUP,
+    HOST_ID_FILE,
+    HOST_MOUNTS,
+    RUN_DIR,
+    STATE_DIR,
     Deadline,
-    GroupStatus,
     atomic_write_text,
     can_escalate,
     confirm,
     run,
     sudo,
 )
+from bertrand.env.host.user import UserGroup, ensure_bertrand_group
 
-BERTRAND_GROUP = _git.BERTRAND_GROUP
-CACHE_DIR = _git.CACHE_DIR
-HOST_ID_FILE = _git.HOST_ID_FILE
-HOST_MOUNTS = _git.HOST_MOUNTS
-REPO_DIR = _git.REPO_DIR
-REPO_LOCK_EXT = _git.REPO_LOCK_EXT
-REPO_MOUNT_EXT = _git.REPO_MOUNT_EXT
-RUN_DIR = _git.RUN_DIR
-STATE_DIR = _git.STATE_DIR
 STATE_DIR_MODE = 0o2770
 RUN_TMPFS_MOUNT_UNIT_NAME = "bertrand-run.mount"
 RUN_TMPFS_MOUNT_UNIT_PATH = Path("/etc/systemd/system") / RUN_TMPFS_MOUNT_UNIT_NAME
+
+
+# TODO: review all of this when updating the `bertrand init` command, and try exporting
+# more of it publicly, once it has been sufficiently cleaned up.
 
 
 def _state_root_configured(group_gid: int) -> bool:
@@ -130,6 +128,10 @@ async def _configure_state_acl(*, deadline: Deadline, assume_yes: bool) -> None:
         ),
         deadline=deadline,
     )
+
+
+# TODO: the systemd components should be factored out into @host/systemd.py, possibly
+# alongside any systemd integrations I may need for the k0s swap.
 
 
 def _run_mount_unit_text(*, group_gid: int) -> str:
@@ -273,82 +275,12 @@ def host_state_backend_trustworthy() -> bool:
     )
 
 
-async def ensure_host_group(
-    *,
-    deadline: Deadline,
-    assume_yes: bool,
-) -> grp.struct_group:
-    """Ensure Bertrand's shared host group exists.
-
-    Parameters
-    ----------
-    deadline : Deadline
-        Maximum time in seconds to wait for required host commands.
-    assume_yes : bool
-        Whether to automatically confirm prompts for creating the shared group.
-
-    Returns
-    -------
-    grp.struct_group
-        The shared Bertrand group information.
-
-    Raises
-    ------
-    PermissionError
-        If group creation requires root privileges, but elevation is unavailable or
-        declined.
-    OSError
-        If the shared group cannot be created or verified.
-    CommandError
-        If the host group creation command fails unexpectedly.
-    """
-    try:
-        return grp.getgrnam(BERTRAND_GROUP)
-    except KeyError:
-        pass
-
-    if not confirm(
-        f"Bertrand uses a shared host group named {BERTRAND_GROUP!r} for unprivileged "
-        "access to global runtime state.  Create this system group now "
-        "(requires sudo)?\n"
-        "[y/N] ",
-        assume_yes=assume_yes,
-    ):
-        msg = "Bertrand shared-group bootstrap declined by user."
-        raise PermissionError(msg)
-    if os.geteuid() != 0 and not can_escalate():
-        msg = (
-            f"Creating group {BERTRAND_GROUP!r} requires root privileges; sudo not "
-            "available."
-        )
-        raise PermissionError(msg)
-    try:
-        await run(
-            sudo(
-                ["groupadd", "--system", BERTRAND_GROUP],
-                non_interactive=assume_yes,
-            ),
-            capture_output=True,
-            deadline=deadline,
-        )
-    except CommandError:
-        with contextlib.suppress(KeyError):
-            return grp.getgrnam(BERTRAND_GROUP)
-        raise
-
-    try:
-        return grp.getgrnam(BERTRAND_GROUP)
-    except KeyError as err:
-        msg = f"Failed to create shared Bertrand group {BERTRAND_GROUP!r}."
-        raise OSError(msg) from err
-
-
 async def ensure_host_state(
     *,
     user: str,
     assume_yes: bool,
     deadline: Deadline,
-) -> GroupStatus:
+) -> UserGroup:
     """Ensure Bertrand's shared host state and runtime directory are configured.
 
     Parameters
@@ -362,7 +294,7 @@ async def ensure_host_state(
 
     Returns
     -------
-    GroupStatus
+    UserGroup
         The user's Bertrand group membership status after host-state convergence.
 
     Raises
@@ -376,7 +308,7 @@ async def ensure_host_state(
     if os.name != "posix":
         msg = "Bertrand state bootstrap requires a POSIX host."
         raise OSError(msg)
-    group_info = await ensure_host_group(
+    group_info = await ensure_bertrand_group(
         deadline=deadline,
         assume_yes=assume_yes,
     )
@@ -460,7 +392,7 @@ async def ensure_host_state(
         )
         raise OSError(msg)
 
-    group = GroupStatus.get(user, BERTRAND_GROUP)
+    group = UserGroup(user=user, group=BERTRAND_GROUP)
     await group.activate(assume_yes=assume_yes)
     return group
 

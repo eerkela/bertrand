@@ -8,23 +8,13 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import CommandError, Deadline, TimeoutExpired
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-
-def emit_json(payload: object) -> None:
-    """Print a stable, indented JSON payload.
-
-    Parameters
-    ----------
-    payload : object
-        JSON-serializable CLI payload.
-    """
-    print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 async def cli(op: Callable[[Deadline], Awaitable[None]], *, timeout: float) -> None:
@@ -88,3 +78,14 @@ async def cli(op: Callable[[Deadline], Awaitable[None]], *, timeout: float) -> N
             output=None,
             stderr=str(err),
         ) from err
+
+
+def emit_json(payload: object) -> None:
+    """Print a stable, indented JSON payload.
+
+    Parameters
+    ----------
+    payload : object
+        JSON-serializable CLI payload.
+    """
+    print(json.dumps(payload, indent=2, sort_keys=True))
