@@ -22,11 +22,11 @@ from bertrand.env.cli.external.init import (
 from bertrand.env.cli.util import emit_json
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.bootstrap import (
-    K3sRole,
-    join_k3s_cluster,
-    k3s_cluster_ready,
-    k3s_join_bundle,
-    normalize_k3s_role,
+    K0sRole,
+    join_k0s_cluster,
+    k0s_cluster_ready,
+    k0s_join_bundle,
+    normalize_k0s_role,
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.daemon import (
@@ -103,7 +103,7 @@ async def bertrand_cluster_status(*, json_output: bool, deadline: Deadline) -> N
         Kubernetes request budget.
     """
     status: dict[str, object] = {
-        "k3s": await _probe_bool(lambda: k3s_cluster_ready(deadline=deadline)),
+        "k0s": await _probe_bool(lambda: k0s_cluster_ready(deadline=deadline)),
     }
     kube_checks = (
         ("rook_ceph", _rook_ceph_status),
@@ -150,15 +150,16 @@ async def bertrand_cluster_invite(
     name : str | None
         Desired name for the joining node.
     role : str
-        k3s node role for the joining host.
+        k0s node role for the joining host.
     server_url : str | None
-        Optional externally reachable k3s server URL.
+        Optional externally reachable k0s server URL.
     deadline : Deadline
         Token generation budget.
 
     """
-    normalized_role: K3sRole = normalize_k3s_role(role)
-    resolved_server, token_value, kubeconfig = await k3s_join_bundle(
+    normalized_role: K0sRole = normalize_k0s_role(role)
+    resolved_server, token_value, kubeconfig = await k0s_join_bundle(
+        role=normalized_role,
         server_url=server_url,
         deadline=deadline,
     )
@@ -195,17 +196,17 @@ async def bertrand_cluster_join(
     token : str
         Sensitive join bundle produced by `bertrand cluster invite`.
     role : str | None
-        Optional k3s role override.
+        Optional k0s role override.
     deadline : Deadline
         Join and convergence budget.
 
     """
     bundle = _decode_bundle(token)
     await ensure_shared_runtime_installed(deadline=deadline, yes=False)
-    resolved_role: K3sRole = normalize_k3s_role(
-        role or str(bundle.get("role") or "agent")
+    resolved_role: K0sRole = normalize_k0s_role(
+        role or str(bundle.get("role") or "worker")
     )
-    await join_k3s_cluster(
+    await join_k0s_cluster(
         server_url=str(bundle["server_url"]),
         token=str(bundle["token"]),
         role=resolved_role,

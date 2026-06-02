@@ -21,7 +21,7 @@ from bertrand.env.git import (
     NO_DEADLINE,
     Deadline,
 )
-from bertrand.env.kube.api.bootstrap import configure_k3s_registries
+from bertrand.env.kube.api.bootstrap import configure_k0s_registries
 from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
@@ -637,7 +637,7 @@ async def current_buildkit_config_hash(kube: Kube, *, deadline: Deadline) -> str
 
 
 async def _ensure_image_repository_trust(*, deadline: Deadline) -> None:
-    await configure_k3s_registries(
+    await configure_k0s_registries(
         hosts=IMAGE_REPOSITORY_TRUST_HOSTS,
         deadline=deadline,
     )

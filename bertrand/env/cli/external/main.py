@@ -461,15 +461,15 @@ class External:
             )
             invite.add_argument(
                 "--role",
-                choices=("server", "agent"),
-                default="agent",
-                help="k3s role for the joining Bertrand host.",
+                choices=("controller", "worker"),
+                default="worker",
+                help="k0s role for the joining Bertrand host.",
             )
             invite.add_argument(
                 "--server-url",
                 default=None,
                 metavar="URL",
-                help="Externally reachable k3s server URL for joining hosts.",
+                help="Externally reachable k0s controller URL for joining hosts.",
             )
             self._add_timeout(
                 invite,
@@ -499,9 +499,9 @@ class External:
             )
             join.add_argument(
                 "--role",
-                choices=("server", "agent"),
+                choices=("controller", "worker"),
                 default=None,
-                help="Override the k3s role embedded in the join token.",
+                help="Override the k0s role embedded in the join token.",
             )
             self._add_timeout(
                 join,
@@ -1537,7 +1537,7 @@ class External:
             """Add the 'clean' command to the parser."""
             command = self.commands.add_parser(
                 "clean",
-                help="Remove this host from Bertrand's owned k3s/Rook-Ceph runtime; "
+                help="Remove this host from Bertrand's owned k0s/Rook-Ceph runtime; "
                 "the final active node also deletes durable repository volumes.",
             )
             command.add_argument(

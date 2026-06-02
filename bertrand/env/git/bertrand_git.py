@@ -72,6 +72,7 @@ GIT_REQUIRE_RELATIVE_PATHS = (
     "(git 2.52+)."
 )
 LOCK_FILE_MODE = 0o660
+LOCK_DIR_MODE = 0o2770
 LOCK_GUARD = threading.RLock()
 HOST_LOCKS: dict[str, HostLock] = {}
 
@@ -962,6 +963,8 @@ class HostLock:
                 HOST_LOCKS[key] = self
         return cast("Self", self)
 
+    # TODO: review the permissions logic here before moving on.
+
     @staticmethod
     def _get_owner() -> asyncio.Task[Any]:
         try:
@@ -1004,6 +1007,45 @@ class HostLock:
             stat_info.st_gid == group_gid
             and (stat_info.st_mode & 0o777) == LOCK_FILE_MODE
         )
+
+    @staticmethod
+    def _directory_permissions_ready(
+        stat_info: os.stat_result,
+        group_gid: int,
+    ) -> bool:
+        return (
+            stat_info.st_gid == group_gid
+            and (stat_info.st_mode & 0o7777) == LOCK_DIR_MODE
+        )
+
+    def _normalize_parent_directory(self, group_gid: int) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=LOCK_DIR_MODE)
+        errors: list[OSError] = []
+        try:
+            os.chown(self.path.parent, -1, group_gid)
+        except OSError as err:
+            errors.append(err)
+        try:
+            self.path.parent.chmod(LOCK_DIR_MODE)
+        except OSError as err:
+            errors.append(err)
+
+        try:
+            stat_info = self.path.parent.stat()
+        except OSError as err:
+            msg = f"cannot inspect host lock directory {self.path.parent}"
+            raise OSError(msg) from err
+        if self._directory_permissions_ready(stat_info, group_gid):
+            return
+
+        detail = "; ".join(str(err) for err in errors)
+        msg = (
+            f"failed to secure host lock directory {self.path.parent} for group "
+            f"{BERTRAND_GROUP!r} with mode {LOCK_DIR_MODE:o}"
+        )
+        if detail:
+            msg = f"{msg}: {detail}"
+        raise OSError(msg)
 
     def _normalize_permissions(self, fd: int, group_gid: int) -> None:
         errors: list[OSError] = []
@@ -1066,7 +1108,10 @@ class HostLock:
         return fd
 
     async def _try_acquire_file(self) -> bool:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            self._normalize_parent_directory(self._lock_group_gid())
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         if self._fd is None:
             self._fd = self._open_lock_file()
 

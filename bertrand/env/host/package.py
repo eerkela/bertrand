@@ -105,8 +105,6 @@ _INSTALL_SPECS: dict[PackageManagerName, _PackageSpec] = {
 }
 PREREQS: dict[PackageManagerName, dict[str, str]] = {
     "apt": {
-        "getfacl": "acl",
-        "setfacl": "acl",
         "groupadd": "passwd",
         "usermod": "passwd",
         "curl": "curl",
@@ -118,8 +116,6 @@ PREREQS: dict[PackageManagerName, dict[str, str]] = {
         "losetup": "util-linux",
     },
     "dnf": {
-        "getfacl": "acl",
-        "setfacl": "acl",
         "groupadd": "shadow-utils",
         "usermod": "shadow-utils",
         "curl": "curl",
@@ -131,8 +127,6 @@ PREREQS: dict[PackageManagerName, dict[str, str]] = {
         "losetup": "util-linux",
     },
     "yum": {
-        "getfacl": "acl",
-        "setfacl": "acl",
         "groupadd": "shadow-utils",
         "usermod": "shadow-utils",
         "curl": "curl",
@@ -144,8 +138,6 @@ PREREQS: dict[PackageManagerName, dict[str, str]] = {
         "losetup": "util-linux",
     },
     "zypper": {
-        "getfacl": "acl",
-        "setfacl": "acl",
         "groupadd": "shadow",
         "usermod": "shadow",
         "curl": "curl",
@@ -157,8 +149,6 @@ PREREQS: dict[PackageManagerName, dict[str, str]] = {
         "losetup": "util-linux",
     },
     "pacman": {
-        "getfacl": "acl",
-        "setfacl": "acl",
         "groupadd": "shadow",
         "usermod": "shadow",
         "curl": "curl",
@@ -170,8 +160,6 @@ PREREQS: dict[PackageManagerName, dict[str, str]] = {
         "losetup": "util-linux",
     },
     "apk": {
-        "getfacl": "acl",
-        "setfacl": "acl",
         "groupadd": "shadow",
         "usermod": "shadow",
         "curl": "curl",
@@ -184,8 +172,6 @@ PREREQS: dict[PackageManagerName, dict[str, str]] = {
     },
 }
 CHECK_PREREQS = (
-    ("getfacl", ("getfacl",)),
-    ("setfacl", ("setfacl",)),
     ("groupadd", ("groupadd",)),
     ("usermod", ("usermod",)),
     ("curl", ("curl",)),

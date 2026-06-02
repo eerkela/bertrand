@@ -58,11 +58,18 @@ if any("," in opt for opt in DEFAULT_REPO_MOUNT_OPTIONS):
     msg = "internal default repository mount options cannot contain comma separators"
     raise ValueError(msg)
 REPOSITORY_MOUNT_PRUNE_LIMIT = 8
+REPO_STATE_DIR_MODE = 0o2770
 _ALIAS_LOCK_RELEASE_ERRORS: tuple[type[Exception], ...] = (
     OSError,
     RuntimeError,
     TimeoutError,
 )
+
+
+def _ensure_repo_state_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        path.chmod(REPO_STATE_DIR_MODE)
 
 
 def _current_host_id() -> str:
@@ -364,12 +371,11 @@ class MountInfo:
 
         root = REPO_DIR / repo_id
         mount_path = root / REPO_MOUNT_EXT
-        root.mkdir(parents=True, exist_ok=True)
+        _ensure_repo_state_dir(root)
 
-        async with HostLock(
-            root / REPO_LOCK_EXT,
-            deadline=deadline,
-        ):
+        lock = HostLock(root / REPO_LOCK_EXT)
+        await lock.lock(deadline)
+        try:
             mounted = cls.search(mount_path)
             if mounted is None:
                 mount_opts = [
@@ -378,7 +384,7 @@ class MountInfo:
                     f"mds_namespace={DEFAULT_REPO_FS_NAME}",
                 ]
                 mount_opts.extend(DEFAULT_REPO_MOUNT_OPTIONS)
-                mount_path.mkdir(parents=True, exist_ok=True)
+                _ensure_repo_state_dir(mount_path)
                 await run(
                     sudo(
                         [
@@ -415,6 +421,8 @@ class MountInfo:
                     f"{mounted.source!r}, expected Ceph source suffix ':{ceph_path}'"
                 )
                 raise OSError(msg)
+        finally:
+            await lock.unlock(ignore_errors=True)
 
         return mounted
 
@@ -517,7 +525,7 @@ class MountInfo:
 
             # hold the repo-local lock for the entire mutation window so alias
             # symlinks cannot drift across concurrent init/clean callers
-            self._root.mkdir(parents=True, exist_ok=True)
+            _ensure_repo_state_dir(self._root)
             self._lock = HostLock(self._root / REPO_LOCK_EXT)
             await self._lock.lock(self.deadline)  # block until acquire or deadline
 

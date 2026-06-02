@@ -38,10 +38,10 @@ from bertrand.env.host.user import (
     require_bertrand_group,
 )
 from bertrand.env.kube.api.bootstrap import (
-    assert_k3s_installed,
-    ensure_k3s_kubeconfig,
-    install_k3s,
-    start_k3s,
+    assert_k0s_installed,
+    ensure_k0s_kubeconfig,
+    install_k0s,
+    start_k0s,
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
@@ -759,13 +759,13 @@ class ExternalInit:
     yes: bool
 
     async def _prepare_host(self, deadline: Deadline) -> User:
-        user = User()
         await install_prereqs(yes=self.yes, deadline=deadline)
         await ensure_bertrand_group(deadline=deadline, assume_yes=self.yes)
+        user = User()
         group = UserGroup(user=user.name, group=BERTRAND_GROUP)
         await group.activate(assume_yes=self.yes)
+        group = UserGroup(user=user.name, group=BERTRAND_GROUP)
         require_bertrand_group(group=group)
-
         return user
 
     async def _bootstrap_cluster(
@@ -773,10 +773,10 @@ class ExternalInit:
         *,
         deadline: Deadline,
     ) -> None:
-        await install_k3s(assume_yes=self.yes, deadline=deadline)
-        assert_k3s_installed()
-        await start_k3s(deadline=deadline)
-        await ensure_k3s_kubeconfig(deadline=deadline)
+        await install_k0s(assume_yes=self.yes, deadline=deadline)
+        assert_k0s_installed()
+        await start_k0s(deadline=deadline)
+        await ensure_k0s_kubeconfig(deadline=deadline)
 
     async def _bootstrap_control_plane(self, kube: Kube, deadline: Deadline) -> None:
         await ensure_local_bertrand_node(kube, deadline=deadline)
@@ -854,7 +854,9 @@ class ExternalInit:
         try:
             # TODO: ensure_host_state should take an actual User object, rather than a
             # user name
-            await ensure_host_state(user=user.name, assume_yes=self.yes, deadline=deadline)
+            await ensure_host_state(
+                user=user.name, assume_yes=self.yes, deadline=deadline
+            )
             await self._bootstrap_cluster(deadline=deadline)
             kube = Kube.external()
         except:
@@ -909,9 +911,12 @@ class ExternalInit:
 
 
 async def ensure_shared_runtime_installed(*, deadline: Deadline, yes: bool) -> None:
-    """Install host prerequisites without starting or joining the k3s cluster."""
+    """Install host prerequisites without starting or joining the k0s cluster."""
     user = User().name
     await install_prereqs(yes=yes, deadline=deadline)
+    await ensure_bertrand_group(deadline=deadline, assume_yes=yes)
+    group = UserGroup(user=user, group=BERTRAND_GROUP)
+    await group.activate(assume_yes=yes)
     group = UserGroup(user=user, group=BERTRAND_GROUP)
     require_bertrand_group(group=group)
     await ensure_host_state(user=user, assume_yes=yes, deadline=deadline)
@@ -924,8 +929,8 @@ async def _converge_host_cluster_runtime(
 ) -> None:
     """Converge the local cluster control plane after host runtime installation."""
     if start:
-        await start_k3s(deadline=deadline)
-    await ensure_k3s_kubeconfig(deadline=deadline)
+        await start_k0s(deadline=deadline)
+    await ensure_k0s_kubeconfig(deadline=deadline)
     runtime = ExternalInit(path=None, enable=[], disable=[], yes=False)
     with Kube.external() as kube:
         await runtime._bootstrap_control_plane(kube, deadline)

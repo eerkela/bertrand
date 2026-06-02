@@ -16,8 +16,8 @@ from kubernetes.config.config_exception import ConfigException
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.bootstrap import (
     KUBE_CONFIG_FILE,
-    ensure_k3s_kubeconfig,
-    k3s_config_payload,
+    ensure_k0s_kubeconfig,
+    k0s_config_payload,
     kubeconfig_identity,
 )
 
@@ -194,7 +194,7 @@ class Kube:
         ------
         OSError
             If the kubeconfig is missing or cannot be loaded.  This constructor does
-            not run managed k3s convergence checks; use :meth:`host` for the
+            not run managed k0s convergence checks; use :meth:`host` for the
             strict Bertrand-managed path.
         """
         if config_file is None:
@@ -202,7 +202,7 @@ class Kube:
         if not config_file.is_file():
             msg = (
                 f"kubernetes config is missing at {config_file}.  Run `bertrand init` "
-                "to converge k3s API access first."
+                "to converge k0s API access first."
             )
             raise OSError(msg)
         return cls(namespace=namespace, client=_client_from_config(config_file))
@@ -252,7 +252,7 @@ class Kube:
         deadline: Deadline,
         namespace: str = BERTRAND_NAMESPACE,
     ) -> Self:
-        """Build a host-side Kubernetes client with strict local k3s identity.
+        """Build a host-side Kubernetes client with strict local k0s identity.
 
         Parameters
         ----------
@@ -272,13 +272,13 @@ class Kube:
             If managed kubeconfig convergence fails, identity proof fails, or API
             client initialization fails.
         """
-        config_file = await ensure_k3s_kubeconfig(deadline=deadline)
+        config_file = await ensure_k0s_kubeconfig(deadline=deadline)
         try:
             managed_payload = config_file.read_text(encoding="utf-8")
         except OSError as err:
             msg = f"failed to read managed kubeconfig at {config_file}: {err}"
             raise OSError(msg) from err
-        fresh_payload = k3s_config_payload()
+        fresh_payload = k0s_config_payload()
 
         managed_server, managed_ca = kubeconfig_identity(
             managed_payload,
@@ -286,11 +286,11 @@ class Kube:
         )
         local_server, local_ca = kubeconfig_identity(
             fresh_payload,
-            source="managed k3s kubeconfig",
+            source="managed k0s kubeconfig",
         )
         if managed_server != local_server or managed_ca != local_ca:
             msg = (
-                "managed kubeconfig identity does not match local k3s identity; "
+                "managed kubeconfig identity does not match local k0s identity; "
                 "run `bertrand init` to reconverge host kube access."
             )
             raise OSError(msg)

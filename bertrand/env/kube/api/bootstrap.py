@@ -1,11 +1,13 @@
-"""k3s bootstrap helpers for Bertrand's owned Kubernetes API substrate."""
+"""k0s bootstrap helpers for Bertrand's owned Kubernetes API substrate."""
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import ipaddress
 import json
 import os
+import platform
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -16,40 +18,52 @@ from urllib.parse import urlparse, urlunparse
 import yaml
 
 from bertrand.env.git import (
+    BERTRAND_GROUP,
     BERTRAND_LABEL,
     BERTRAND_LABEL_MANAGED,
     BERTRAND_NAMESPACE,
+    HOST_ID_FILE,
     NO_DEADLINE,
+    RUN_DIR,
+    STATE_DIR,
     CommandError,
     CompletedProcess,
     Deadline,
     HostLock,
     TimeoutExpired,
-    atomic_write_text,
     confirm,
     run,
     sudo,
     until,
 )
-from bertrand.env.host import BERTRAND_GROUP, HOST_ID_FILE, RUN_DIR, STATE_DIR
+from bertrand.env.host.state import (
+    STATE_DIR_MODE,
+    install_state_dir,
+    normalize_state_executable,
+    normalize_state_file,
+    write_state_file,
+)
 
-type K3sRole = Literal["server", "agent"]
+type K0sRole = Literal["controller", "worker"]
 
 KUBE_CONFIG_FILE = STATE_DIR / "kubeconfig"
-K3S_CONTEXT = "bertrand"
-K3S_INSTALL_URL = "https://get.k3s.io"
-K3S_CHANNEL = "stable"
-K3S_SERVICE_BASENAME = "bertrand"
-K3S_SERVICE_NAME = "k3s-bertrand"
-K3S_API_PORT = 16443
-K3S_BIN_DIR = STATE_DIR / "bin"
-K3S_BINARY = K3S_BIN_DIR / "k3s"
-K3S_UNINSTALL = K3S_BIN_DIR / f"{K3S_SERVICE_NAME}-uninstall.sh"
-K3S_DATA_DIR = STATE_DIR / "k3s"
-K3S_REGISTRIES_FILE = STATE_DIR / "k3s-registries.yaml"
-K3S_ROLE_FILE = STATE_DIR / "k3s.role"
-KUBE_LOCK_FILE = RUN_DIR / "k3s.lock"
-K3S_ROLES: tuple[K3sRole, ...] = ("server", "agent")
+K0S_CONTEXT = "bertrand"
+K0S_VERSION = "v1.35.4+k0s.0"
+K0S_SERVICE_NAME = "bertrand-k0s"
+K0S_API_PORT = 16443
+K0S_CONTROLLER_API_PORT = 19443
+K0S_BIN_DIR = STATE_DIR / "bin"
+K0S_BINARY = K0S_BIN_DIR / "k0s"
+K0S_DATA_DIR = STATE_DIR / "k0s"
+K0S_CONFIG_FILE = STATE_DIR / "k0s.yaml"
+K0S_ROLE_FILE = STATE_DIR / "k0s.role"
+K0S_JOIN_TOKEN_FILE = STATE_DIR / "k0s.join-token"
+K0S_RUNTIME_DIR = RUN_DIR / "k0s"
+K0S_CONTAINERD_DROPIN_DIR = Path("/etc/k0s/containerd.d")
+K0S_CONTAINERD_CERTS_DIR = K0S_CONTAINERD_DROPIN_DIR / "certs.d"
+K0S_REGISTRY_DROPIN_FILE = K0S_CONTAINERD_DROPIN_DIR / "bertrand-registry.toml"
+KUBE_LOCK_FILE = RUN_DIR / "k0s.lock"
+K0S_ROLES: tuple[K0sRole, ...] = ("controller", "worker")
 
 
 def kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
@@ -70,7 +84,7 @@ def kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
     Raises
     ------
     OSError
-        If the payload is malformed or does not describe Bertrand's k3s context.
+        If the payload is malformed or does not describe Bertrand's k0s context.
     """
     try:
         raw = yaml.safe_load(payload)
@@ -85,9 +99,9 @@ def kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
     if not current_context:
         msg = f"{source} kubeconfig is missing 'current-context'"
         raise OSError(msg)
-    if current_context != K3S_CONTEXT:
+    if current_context != K0S_CONTEXT:
         msg = (
-            f"{source} kubeconfig must use current-context {K3S_CONTEXT!r}, "
+            f"{source} kubeconfig must use current-context {K0S_CONTEXT!r}, "
             f"got {current_context!r}"
         )
         raise OSError(msg)
@@ -147,38 +161,38 @@ def kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
     return server, ca_data
 
 
-def normalize_k3s_role(role: str) -> K3sRole:
-    """Return a normalized k3s node role.
+def normalize_k0s_role(role: str) -> K0sRole:
+    """Return a normalized k0s node role.
 
     Returns
     -------
-    K3sRole
-        Normalized k3s role.
+    K0sRole
+        Normalized k0s role.
 
     Raises
     ------
     ValueError
-        If the role is neither `server` nor `agent`.
+        If the role is not supported.
     """
     normalized = role.strip().lower()
-    if normalized in K3S_ROLES:
-        return cast("K3sRole", normalized)
-    msg = f"k3s role must be one of {', '.join(K3S_ROLES)}, got {role!r}"
+    if normalized in K0S_ROLES:
+        return cast("K0sRole", normalized)
+    msg = f"k0s role must be one of {', '.join(K0S_ROLES)}, got {role!r}"
     raise ValueError(msg)
 
 
-def k3s_node_name() -> str:
+def k0s_node_name() -> str:
     """Return the deterministic Kubernetes node name for this host.
 
     Returns
     -------
     str
-        Kubernetes node name derived from the local Bertrand host ID.
+        Kubernetes node name derived from the host ID.
 
     Raises
     ------
     OSError
-        If the local host ID file is missing or empty.
+        If the host ID is missing or empty.
     """
     try:
         host_id = HOST_ID_FILE.read_text(encoding="utf-8").strip()
@@ -191,13 +205,13 @@ def k3s_node_name() -> str:
     return f"bertrand-{host_id[:32]}"
 
 
-def k3s_config_payload(*, source: str = "managed kubeconfig") -> str:
-    """Return the current Bertrand-managed k3s kubeconfig payload.
+def k0s_config_payload(*, source: str = "managed kubeconfig") -> str:
+    """Return the current Bertrand-managed k0s kubeconfig payload.
 
     Returns
     -------
     str
-        Kubeconfig YAML payload.
+        Kubeconfig payload.
 
     Raises
     ------
@@ -227,28 +241,7 @@ async def kubectl(
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
 ) -> CompletedProcess:
-    """Invoke the Bertrand-owned k3s kubectl client.
-
-    Parameters
-    ----------
-    argv : list[str]
-        `kubectl` arguments without the `k3s kubectl` prefix.
-    check : bool, optional
-        Whether nonzero command exits raise `CommandError`.
-    capture_output : bool | None, optional
-        Whether to capture, inherit, or tee subprocess output.
-    stdin : str | None, optional
-        Optional text to pass to command stdin.
-    deadline : Deadline, optional
-        Maximum command runtime.
-    attempts : int, optional
-        Number of command attempts.
-    delay : float, optional
-        Delay between attempts in seconds.
-    cwd : Path | None, optional
-        Optional working directory.
-    env : Mapping[str, str] | None, optional
-        Optional environment overrides.
+    """Invoke the Bertrand-owned k0s kubectl client.
 
     Returns
     -------
@@ -258,14 +251,14 @@ async def kubectl(
     Raises
     ------
     OSError
-        If the managed k3s binary is not installed.
+        If the managed k0s binary is missing.
     """
-    if not K3S_BINARY.is_file():
-        msg = f"Bertrand k3s binary is missing at {K3S_BINARY}; run `bertrand init`"
+    if not K0S_BINARY.is_file():
+        msg = f"Bertrand k0s binary is missing at {K0S_BINARY}; run `bertrand init`"
         raise OSError(msg)
     return await run(
         [
-            str(K3S_BINARY),
+            str(K0S_BINARY),
             "kubectl",
             "--kubeconfig",
             str(KUBE_CONFIG_FILE),
@@ -295,35 +288,35 @@ async def _systemctl(
     )
 
 
-async def k3s_service_active(*, deadline: Deadline) -> bool:
-    """Return whether Bertrand's k3s systemd service is active.
+async def k0s_service_active(*, deadline: Deadline) -> bool:
+    """Return whether Bertrand's k0s systemd service is active.
 
     Returns
     -------
     bool
-        Whether the managed k3s systemd unit is active.
+        Whether the managed k0s unit is active.
     """
     if not shutil.which("systemctl"):
         return False
     result = await _systemctl(
         "is-active",
         "--quiet",
-        K3S_SERVICE_NAME,
+        K0S_SERVICE_NAME,
         check=False,
         deadline=deadline,
     )
     return result.returncode == 0
 
 
-async def k3s_cluster_ready(*, deadline: Deadline) -> bool:
-    """Return whether the managed k3s API reports ready.
+async def k0s_cluster_ready(*, deadline: Deadline) -> bool:
+    """Return whether the managed k0s API reports ready.
 
     Returns
     -------
     bool
-        Whether the managed k3s API responds successfully to `/readyz`.
+        Whether the managed k0s API responds successfully to `/readyz`.
     """
-    if not K3S_BINARY.is_file() or not KUBE_CONFIG_FILE.is_file():
+    if not K0S_BINARY.is_file() or not KUBE_CONFIG_FILE.is_file():
         return False
     return (
         await kubectl(
@@ -335,7 +328,7 @@ async def k3s_cluster_ready(*, deadline: Deadline) -> bool:
     ).returncode == 0
 
 
-async def _wait_k3s_ready(
+async def _wait_k0s_ready(
     *,
     deadline: Deadline,
     interval: float,
@@ -343,7 +336,9 @@ async def _wait_k3s_ready(
     action: str,
 ) -> None:
     async def ready(attempt_deadline: Deadline) -> None:
-        if await k3s_cluster_ready(deadline=attempt_deadline):
+        if await k0s_service_active(
+            deadline=attempt_deadline
+        ) and await k0s_cluster_ready(deadline=attempt_deadline):
             return
         raise TimeoutError(message)
 
@@ -376,17 +371,17 @@ async def _add_bertrand_kube_namespace(*, deadline: Deadline) -> None:
 def _normalize_server_url(value: str) -> str:
     text = value.strip()
     if not text:
-        msg = "k3s server URL cannot be empty"
+        msg = "k0s server URL cannot be empty"
         raise ValueError(msg)
     if "://" not in text:
         text = f"https://{text}"
     parsed = urlparse(text)
     if parsed.scheme != "https" or not parsed.hostname:
-        msg = f"k3s server URL must be an HTTPS host:port URL, got {value!r}"
+        msg = f"k0s server URL must be an HTTPS host:port URL, got {value!r}"
         raise ValueError(msg)
     netloc = parsed.netloc
     if parsed.port is None:
-        netloc = f"{parsed.hostname}:{K3S_API_PORT}"
+        netloc = f"{parsed.hostname}:{K0S_API_PORT}"
     return urlunparse(("https", netloc, "", "", "", ""))
 
 
@@ -415,207 +410,347 @@ def _kubeconfig_with_server(payload: str, server_url: str) -> str:
         cluster = entry.get("cluster")
         if isinstance(cluster, dict):
             cluster["server"] = server_url
-    raw["current-context"] = K3S_CONTEXT
+    raw["current-context"] = K0S_CONTEXT
     return yaml.safe_dump(raw, sort_keys=False)
 
 
-async def _normalize_file_permissions(path: Path, *, deadline: Deadline) -> None:
-    if not path.exists():
-        return
-    await run(
-        sudo(["chgrp", BERTRAND_GROUP, str(path)]),
-        check=False,
-        capture_output=True,
-        deadline=deadline,
+def _token_with_server(token: str, server_url: str) -> str:
+    token = token.strip()
+    try:
+        decoded = base64.b64decode(
+            token + "=" * (-len(token) % 4),
+            validate=False,
+        ).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as err:
+        msg = "k0s join token must be a base64-encoded kubeconfig"
+        raise OSError(msg) from err
+    rewritten = _kubeconfig_with_server(decoded, server_url)
+    return base64.b64encode(rewritten.encode("utf-8")).decode("ascii")
+
+
+def _k0s_cluster_config_payload() -> str:
+    payload = {
+        "apiVersion": "k0s.k0sproject.io/v1beta1",
+        "kind": "ClusterConfig",
+        "metadata": {"name": "bertrand"},
+        "spec": {
+            "api": {
+                "port": K0S_API_PORT,
+                "k0sApiPort": K0S_CONTROLLER_API_PORT,
+            },
+            "storage": {"type": "etcd"},
+            "network": {"provider": "calico"},
+        },
+    }
+    return yaml.safe_dump(payload, sort_keys=False)
+
+
+def _machine_arch() -> str:
+    arch = platform.machine().lower()
+    if arch in {"x86_64", "amd64"}:
+        return "amd64"
+    if arch in {"aarch64", "arm64"}:
+        return "arm64"
+    if arch in {"armv7l", "armv7", "armhf", "arm"}:
+        return "arm"
+    msg = f"unsupported architecture for k0s binary download: {arch!r}"
+    raise OSError(msg)
+
+
+def _k0s_download_url() -> str:
+    return (
+        "https://github.com/k0sproject/k0s/releases/download/"
+        f"{K0S_VERSION}/k0s-{K0S_VERSION}-{_machine_arch()}"
     )
-    await run(
-        sudo(["chmod", "0640", str(path)]),
-        check=False,
-        capture_output=True,
-        deadline=deadline,
-    )
 
 
-async def _normalize_kubeconfig_permissions(*, deadline: Deadline) -> None:
-    await _normalize_file_permissions(KUBE_CONFIG_FILE, deadline=deadline)
-
-
-def _k3s_exec_args(
+async def _install_root_file(
+    path: Path,
+    payload: str,
     *,
-    role: K3sRole,
-    node_name: str,
-    server_url: str | None,
-    token: str | None,
-) -> list[str]:
-    common = [
-        "--node-name",
-        node_name,
-        "--data-dir",
-        str(K3S_DATA_DIR),
-        "--private-registry",
-        str(K3S_REGISTRIES_FILE),
-    ]
-    if role == "agent":
-        if not server_url or not token:
-            msg = "k3s agent join requires server URL and token"
-            raise ValueError(msg)
-        return ["agent", *common, "--server", server_url, "--token", token]
+    mode: str = "0644",
+    group: str = "root",
+    deadline: Deadline,
+) -> bool:
+    with contextlib.suppress(OSError):
+        if path.read_text(encoding="utf-8") == payload:
+            return False
+    fd: int | None = None
+    temp_file: Path | None = None
+    try:
+        fd, name = tempfile.mkstemp(prefix="bertrand-k0s.", suffix=".tmp")
+        temp_file = Path(name)
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        await run(
+            sudo(
+                [
+                    "install",
+                    "-D",
+                    "-m",
+                    mode,
+                    "-o",
+                    "root",
+                    "-g",
+                    group,
+                    str(temp_file),
+                    str(path),
+                ]
+            ),
+            deadline=deadline,
+        )
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        if temp_file is not None:
+            temp_file.unlink(missing_ok=True)
+    return True
 
-    args = [
-        "server",
-        *common,
-        "--https-listen-port",
-        str(K3S_API_PORT),
-        "--write-kubeconfig",
-        str(KUBE_CONFIG_FILE),
-        "--write-kubeconfig-mode",
-        "0640",
-        "--disable",
-        "traefik",
-        "--disable",
-        "servicelb",
-        "--disable",
-        "local-storage",
-    ]
-    if server_url and token:
-        args.extend(["--server", server_url, "--token", token])
-    else:
-        args.append("--cluster-init")
-    return args
+
+async def _ensure_k0s_state_paths(
+    *,
+    assume_yes: bool,
+    deadline: Deadline,
+) -> None:
+    for path in (K0S_BIN_DIR, K0S_RUNTIME_DIR):
+        await install_state_dir(
+            path,
+            mode=STATE_DIR_MODE,
+            assume_yes=assume_yes,
+            deadline=deadline,
+        )
 
 
-async def _ensure_default_registries_config(*, deadline: Deadline) -> None:
-    K3S_REGISTRIES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if K3S_REGISTRIES_FILE.exists():
-        return
-    atomic_write_text(
-        K3S_REGISTRIES_FILE,
-        "mirrors: {}\nconfigs: {}\n",
-        encoding="utf-8",
+async def _ensure_k0s_config(
+    *,
+    assume_yes: bool,
+    deadline: Deadline,
+) -> None:
+    await _ensure_k0s_state_paths(assume_yes=assume_yes, deadline=deadline)
+    await write_state_file(
+        K0S_CONFIG_FILE,
+        _k0s_cluster_config_payload(),
+        assume_yes=assume_yes,
+        deadline=deadline,
     )
-    await _normalize_file_permissions(K3S_REGISTRIES_FILE, deadline=deadline)
 
 
-async def _download_k3s_installer(*, deadline: Deadline) -> Path:
+async def _download_k0s_binary(
+    *,
+    assume_yes: bool,
+    deadline: Deadline,
+) -> None:
     if not shutil.which("curl"):
-        msg = "k3s installation requires `curl`; install host prerequisites first"
+        msg = "k0s installation requires `curl`; install host prerequisites first"
         raise OSError(msg)
-    fd, name = tempfile.mkstemp(prefix="bertrand-k3s-install.", suffix=".sh")
+    fd, name = tempfile.mkstemp(prefix="bertrand-k0s.", suffix=".download")
     os.close(fd)
-    script = Path(name)
+    download = Path(name)
     try:
         await run(
-            ["curl", "-sfL", K3S_INSTALL_URL, "-o", str(script)],
+            ["curl", "-fL", _k0s_download_url(), "-o", str(download)],
             capture_output=True,
             deadline=deadline,
         )
-    except BaseException:
-        script.unlink(missing_ok=True)
-        raise
+        await run(
+            sudo(
+                [
+                    "install",
+                    "-D",
+                    "-m",
+                    "0750",
+                    "-o",
+                    "root",
+                    "-g",
+                    BERTRAND_GROUP,
+                    str(download),
+                    str(K0S_BINARY),
+                ],
+                non_interactive=assume_yes,
+            ),
+            deadline=deadline,
+        )
+        await normalize_state_executable(
+            K0S_BINARY,
+            assume_yes=assume_yes,
+            deadline=deadline,
+        )
+    finally:
+        download.unlink(missing_ok=True)
+
+
+def _k0s_unit_text(*, role: K0sRole, token_file: Path | None) -> str:
+    node_name = k0s_node_name()
+    if role == "controller":
+        exec_start = " ".join(
+            (
+                str(K0S_BINARY),
+                "controller",
+                "--config",
+                str(K0S_CONFIG_FILE),
+                "--data-dir",
+                str(K0S_DATA_DIR),
+                "--enable-worker",
+                "--no-taints",
+                f"--kubelet-extra-args=--hostname-override={node_name}",
+                *(("--token-file", str(token_file)) if token_file is not None else ()),
+            )
+        )
     else:
-        return script
+        if token_file is None:
+            msg = "k0s worker join requires a token file"
+            raise ValueError(msg)
+        exec_start = " ".join(
+            (
+                str(K0S_BINARY),
+                "worker",
+                "--data-dir",
+                str(K0S_DATA_DIR),
+                "--token-file",
+                str(token_file),
+                f"--kubelet-extra-args=--hostname-override={node_name}",
+            )
+        )
+
+    return "\n".join(
+        (
+            "[Unit]",
+            "Description=Bertrand owned k0s Kubernetes runtime",
+            "Wants=network-online.target",
+            "After=network-online.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            "Delegate=yes",
+            "KillMode=process",
+            "Restart=always",
+            "RestartSec=5",
+            "LimitNOFILE=1048576",
+            f"ExecStart={exec_start}",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        )
+    )
 
 
-async def install_k3s(
+async def _install_k0s_unit(
     *,
-    role: K3sRole = "server",
-    server_url: str | None = None,
+    role: K0sRole,
+    token_file: Path | None,
+    deadline: Deadline,
+) -> None:
+    unit = Path("/etc/systemd/system") / f"{K0S_SERVICE_NAME}.service"
+    await _install_root_file(
+        unit,
+        _k0s_unit_text(role=role, token_file=token_file),
+        deadline=deadline,
+    )
+    await _systemctl("daemon-reload", deadline=deadline)
+    await _systemctl("enable", K0S_SERVICE_NAME, deadline=deadline)
+
+
+async def install_k0s(
+    *,
+    role: K0sRole = "controller",
     token: str | None = None,
     assume_yes: bool,
     force: bool = False,
     deadline: Deadline,
 ) -> None:
-    """Install or refresh Bertrand's owned k3s systemd service.
+    """Install or refresh Bertrand's owned k0s systemd service.
 
     Raises
     ------
+    OSError
+        If runtime installation cannot be prepared.
     PermissionError
-        If the user declines k3s installation.
+        If the user declines installation.
     """
-    role = normalize_k3s_role(role)
-    node_name = k3s_node_name()
+    role = normalize_k0s_role(role)
     if (
         not force
-        and await k3s_service_active(deadline=deadline)
-        and K3S_BINARY.is_file()
+        and await k0s_service_active(deadline=deadline)
+        and K0S_BINARY.is_file()
+        and K0S_CONFIG_FILE.is_file()
     ):
-        K3S_ROLE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(K3S_ROLE_FILE, f"{role}\n", encoding="utf-8")
-        return
-    if not confirm(
-        "Bertrand uses an owned k3s service as its local Kubernetes runtime. "
-        f"Install or refresh {K3S_SERVICE_NAME!r} now (requires sudo)?\n[y/N] ",
-        assume_yes=assume_yes,
-    ):
-        msg = "k3s installation declined by user."
-        raise PermissionError(msg)
-    await _ensure_default_registries_config(deadline=deadline)
-    script = await _download_k3s_installer(deadline=deadline)
-    try:
-        exec_args = _k3s_exec_args(
-            role=role,
-            node_name=node_name,
-            server_url=server_url,
-            token=token,
-        )
-        env = {
-            "INSTALL_K3S_NAME": K3S_SERVICE_BASENAME,
-            "INSTALL_K3S_BIN_DIR": str(K3S_BIN_DIR),
-            "INSTALL_K3S_CHANNEL": K3S_CHANNEL,
-            "INSTALL_K3S_SYMLINK": "skip",
-            "INSTALL_K3S_EXEC": " ".join(exec_args),
-        }
-        await run(
-            sudo(
-                [
-                    "env",
-                    *(f"{key}={value}" for key, value in env.items()),
-                    "sh",
-                    str(script),
-                ]
-            ),
-            capture_output=None,
+        await write_state_file(
+            K0S_ROLE_FILE,
+            f"{role}\n",
+            assume_yes=assume_yes,
             deadline=deadline,
         )
-    finally:
-        script.unlink(missing_ok=True)
+        return
+    if not confirm(
+        "Bertrand uses an owned k0s service as its local Kubernetes runtime. "
+        f"Install or refresh {K0S_SERVICE_NAME!r} now (requires sudo)?\n[y/N] ",
+        assume_yes=assume_yes,
+    ):
+        msg = "k0s installation declined by user."
+        raise PermissionError(msg)
 
-    K3S_ROLE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(K3S_ROLE_FILE, f"{role}\n", encoding="utf-8")
-    await _normalize_kubeconfig_permissions(deadline=deadline)
+    await _ensure_k0s_config(assume_yes=assume_yes, deadline=deadline)
+    if force or not K0S_BINARY.is_file():
+        await _download_k0s_binary(assume_yes=assume_yes, deadline=deadline)
+
+    token_file: Path | None = None
+    if token is not None:
+        token = token.strip()
+        if not token:
+            msg = "k0s join token cannot be empty"
+            raise OSError(msg)
+        await write_state_file(
+            K0S_JOIN_TOKEN_FILE,
+            f"{token}\n",
+            assume_yes=assume_yes,
+            deadline=deadline,
+        )
+        token_file = K0S_JOIN_TOKEN_FILE
+
+    await _install_k0s_unit(role=role, token_file=token_file, deadline=deadline)
+    await write_state_file(
+        K0S_ROLE_FILE,
+        f"{role}\n",
+        assume_yes=assume_yes,
+        deadline=deadline,
+    )
 
 
-def assert_k3s_installed() -> None:
-    """Raise with actionable diagnostics when the managed k3s runtime is unusable.
+def assert_k0s_installed() -> None:
+    """Raise with actionable diagnostics when the managed k0s runtime is unusable.
 
     Raises
     ------
     OSError
-        If the managed k3s binary or kubeconfig is missing.
+        If the managed binary or config is missing.
     """
-    if not K3S_BINARY.is_file():
-        msg = f"Bertrand k3s binary is missing at {K3S_BINARY}; rerun `bertrand init`"
+    if not K0S_BINARY.is_file():
+        msg = f"Bertrand k0s binary is missing at {K0S_BINARY}; rerun `bertrand init`"
         raise OSError(msg)
-    if not KUBE_CONFIG_FILE.is_file():
+    if not K0S_CONFIG_FILE.is_file():
         msg = (
-            f"Bertrand kubeconfig is missing at {KUBE_CONFIG_FILE}; rerun "
-            "`bertrand init` or `bertrand cluster join`"
+            f"Bertrand k0s config is missing at {K0S_CONFIG_FILE}; rerun "
+            "`bertrand init`"
         )
         raise OSError(msg)
 
 
-async def start_k3s(*, deadline: Deadline) -> None:
-    """Ensure Bertrand's owned k3s service is running and namespace exists.
+async def start_k0s(*, deadline: Deadline) -> None:
+    """Ensure Bertrand's owned k0s service is running and namespace exists.
 
     Raises
     ------
     OSError
-        If the managed k3s runtime cannot be started.
+        If the managed runtime cannot be started.
     TimeoutError
-        If the managed k3s API does not become ready before the deadline.
+        If the managed API does not become ready before the deadline.
     """
-    assert_k3s_installed()
-    if await k3s_cluster_ready(deadline=deadline):
+    assert_k0s_installed()
+    if await k0s_cluster_ready(deadline=deadline):
         await _add_bertrand_kube_namespace(deadline=deadline)
         return
 
@@ -623,44 +758,45 @@ async def start_k3s(*, deadline: Deadline) -> None:
     try:
         await lock.lock(deadline)
         try:
-            if await k3s_cluster_ready(deadline=deadline):
+            if await k0s_cluster_ready(deadline=deadline):
                 await _add_bertrand_kube_namespace(deadline=deadline)
                 return
 
-            await _systemctl("start", K3S_SERVICE_NAME, deadline=deadline)
+            await _systemctl("start", K0S_SERVICE_NAME, deadline=deadline)
             try:
-                await _wait_k3s_ready(
+                await _wait_k0s_ready(
                     deadline=deadline,
                     interval=0.25,
-                    message="k3s is not ready yet",
-                    action="waiting for k3s to become ready",
+                    message="k0s is not ready yet",
+                    action="waiting for k0s to become ready",
                 )
             except TimeoutError as err:
                 msg = (
-                    "timed out waiting for k3s to become ready after "
+                    "timed out waiting for k0s to become ready after "
                     f"{deadline.timeout} seconds"
                 )
                 raise TimeoutError(msg) from err
+            await normalize_state_file(KUBE_CONFIG_FILE, deadline=deadline)
             await _add_bertrand_kube_namespace(deadline=deadline)
-            return
         finally:
             await lock.unlock(ignore_errors=True)
     except TimeoutExpired as err:
         msg = (
-            "timed out waiting for k3s to become ready after "
+            "timed out waiting for k0s to become ready after "
             f"{deadline.timeout} seconds"
         )
         raise TimeoutError(msg) from err
     except CommandError as err:
         msg = (
-            "Failed to start Bertrand's k3s service. Re-run `bertrand init` to "
+            "Failed to start Bertrand's k0s service. Re-run `bertrand init` to "
             f"repair the managed runtime.\n{err}"
         )
         raise OSError(msg) from err
 
 
-async def k3s_join_bundle(
+async def k0s_join_bundle(
     *,
+    role: K0sRole,
     server_url: str | None,
     deadline: Deadline,
 ) -> tuple[str, str, str]:
@@ -669,18 +805,18 @@ async def k3s_join_bundle(
     Returns
     -------
     tuple[str, str, str]
-        Reachable server URL, k3s join token, and rewritten kubeconfig payload.
+        Reachable server URL, rewritten join token, and rewritten kubeconfig.
 
     Raises
     ------
     OSError
-        If k3s is not ready, the API URL is not reachable by peers, or the join token
-        cannot be read.
+        If k0s is not ready or a join token cannot be generated.
     """
-    if not await k3s_cluster_ready(deadline=deadline):
-        msg = "k3s must be running before generating a join token"
+    role = normalize_k0s_role(role)
+    if not await k0s_cluster_ready(deadline=deadline):
+        msg = "k0s must be running before generating a join token"
         raise OSError(msg)
-    payload = k3s_config_payload()
+    payload = k0s_config_payload()
     default_server, _ca = kubeconfig_identity(payload, source="managed kubeconfig")
     explicit_server = server_url is not None and bool(server_url.strip())
     chosen_source = (
@@ -689,141 +825,237 @@ async def k3s_join_bundle(
     chosen_server = _normalize_server_url(chosen_source)
     if not explicit_server and _server_is_loopback(chosen_server):
         msg = (
-            "managed kubeconfig points at a loopback k3s API endpoint. Re-run "
+            "managed kubeconfig points at a loopback k0s API endpoint. Re-run "
             "`bertrand cluster invite` with --server-url https://HOST:PORT for a "
-            "reachable control-plane address."
+            "reachable controller address."
         )
         raise OSError(msg)
-    token_file = K3S_DATA_DIR / "server" / "token"
     result = await run(
-        sudo(["cat", str(token_file)]),
+        sudo(
+            [
+                str(K0S_BINARY),
+                "token",
+                "create",
+                "--role",
+                role,
+                "--config",
+                str(K0S_CONFIG_FILE),
+                "--data-dir",
+                str(K0S_DATA_DIR),
+            ]
+        ),
         capture_output=True,
         deadline=deadline,
     )
     token = result.stdout.strip()
     if not token:
-        msg = f"k3s server token is empty at {token_file}"
+        msg = "k0s token create returned an empty join token"
         raise OSError(msg)
-    return chosen_server, token, _kubeconfig_with_server(payload, chosen_server)
+    return (
+        chosen_server,
+        _token_with_server(token, chosen_server),
+        _kubeconfig_with_server(payload, chosen_server),
+    )
 
 
-async def join_k3s_cluster(
+async def join_k0s_cluster(
     *,
     server_url: str,
     token: str,
-    role: K3sRole,
+    role: K0sRole,
     kubeconfig: str,
     assume_yes: bool,
     deadline: Deadline,
 ) -> None:
-    """Join the local host to an existing Bertrand k3s cluster.
+    """Join the local host to an existing Bertrand k0s cluster.
 
     Raises
     ------
     OSError
-        If the local host already has a ready k3s cluster or the join payload is
-        invalid.
+        If the local runtime is already ready or the join payload is invalid.
     """
-    if await k3s_cluster_ready(deadline=deadline):
+    if await k0s_cluster_ready(deadline=deadline):
         msg = (
-            "local k3s already reports a ready cluster; refusing to join it to "
+            "local k0s already reports a ready cluster; refusing to join it to "
             "another cluster. Run `bertrand clean --force` first if this host should "
             "join a different Bertrand cluster."
         )
         raise OSError(msg)
-    role = normalize_k3s_role(role)
+    role = normalize_k0s_role(role)
     server = _normalize_server_url(server_url)
     token = token.strip()
     if not token:
-        msg = "k3s join token cannot be empty"
+        msg = "k0s join token cannot be empty"
         raise OSError(msg)
     kubeconfig_identity(kubeconfig, source="join bundle kubeconfig")
+    token = _token_with_server(token, server)
+
     lock = HostLock(KUBE_LOCK_FILE)
     await lock.lock(deadline)
     try:
-        atomic_write_text(
+        await write_state_file(
             KUBE_CONFIG_FILE,
             _kubeconfig_with_server(kubeconfig, server),
-            encoding="utf-8",
-            private=True,
+            assume_yes=assume_yes,
+            deadline=deadline,
         )
-        await install_k3s(
+        await install_k0s(
             role=role,
-            server_url=server,
             token=token,
             assume_yes=assume_yes,
             force=True,
             deadline=deadline,
         )
-        await _wait_k3s_ready(
+        await _systemctl("start", K0S_SERVICE_NAME, deadline=deadline)
+        await _wait_k0s_ready(
             deadline=deadline,
             interval=0.5,
-            message="k3s has not joined the cluster yet",
-            action="waiting for k3s cluster join",
+            message="k0s has not joined the cluster yet",
+            action="waiting for k0s cluster join",
         )
     finally:
         await lock.unlock(ignore_errors=True)
 
 
-async def ensure_k3s_kubeconfig(*, deadline: Deadline) -> Path:
-    """Return Bertrand's managed k3s kubeconfig path after validating it.
+async def ensure_k0s_kubeconfig(*, deadline: Deadline) -> Path:
+    """Return Bertrand's managed k0s kubeconfig path after validating it.
 
     Returns
     -------
     Path
         Path to Bertrand's managed kubeconfig.
     """
-    assert_k3s_installed()
-    payload = k3s_config_payload()
+    assert_k0s_installed()
+    payload = k0s_config_payload()
     kubeconfig_identity(payload, source=f"managed kubeconfig {KUBE_CONFIG_FILE}")
-    await _normalize_kubeconfig_permissions(deadline=deadline)
+    await normalize_state_file(KUBE_CONFIG_FILE, deadline=deadline)
     return KUBE_CONFIG_FILE
 
 
-async def configure_k3s_registries(
+def _containerd_dropin_payload() -> str:
+    return "\n".join(
+        (
+            'version = 2',
+            '',
+            '[plugins."io.containerd.grpc.v1.cri".registry]',
+            f'  config_path = "{K0S_CONTAINERD_CERTS_DIR}"',
+            '',
+        )
+    )
+
+
+def _hosts_toml_payload(host: str) -> str:
+    endpoint = f"http://{host}"
+    return "\n".join(
+        (
+            f'server = "{endpoint}"',
+            '',
+            f'[host."{endpoint}"]',
+            '  capabilities = ["pull", "resolve"]',
+            '',
+        )
+    )
+
+
+async def configure_k0s_registries(
     *,
     hosts: tuple[str, ...],
     deadline: Deadline,
 ) -> None:
-    """Converge k3s/containerd registry mirror configuration for local pulls."""
-    mirrors = {
-        host: {"endpoint": [f"http://{host}"]}
-        for host in sorted({item.strip() for item in hosts if item.strip()})
-    }
-    payload = yaml.safe_dump({"mirrors": mirrors}, sort_keys=True)
-    current = ""
-    with contextlib.suppress(OSError):
-        current = K3S_REGISTRIES_FILE.read_text(encoding="utf-8")
-    if current == payload:
-        return
-    atomic_write_text(K3S_REGISTRIES_FILE, payload, encoding="utf-8")
-    await _normalize_file_permissions(K3S_REGISTRIES_FILE, deadline=deadline)
-    if await k3s_service_active(deadline=deadline):
-        await _systemctl("restart", K3S_SERVICE_NAME, deadline=deadline)
-
-
-async def uninstall_k3s(*, deadline: Deadline) -> None:
-    """Uninstall Bertrand's owned k3s runtime from this host."""
-    if K3S_UNINSTALL.is_file():
+    """Converge k0s/containerd registry mirror configuration for local pulls."""
+    normalized = tuple(sorted({item.strip() for item in hosts if item.strip()}))
+    await run(
+        sudo(
+            [
+                "install",
+                "-d",
+                "-m",
+                "0755",
+                "-o",
+                "root",
+                "-g",
+                "root",
+                str(K0S_CONTAINERD_DROPIN_DIR),
+            ]
+        ),
+        deadline=deadline,
+    )
+    changed = await _install_root_file(
+        K0S_REGISTRY_DROPIN_FILE,
+        _containerd_dropin_payload(),
+        deadline=deadline,
+    )
+    for host in normalized:
+        cert_dir = K0S_CONTAINERD_CERTS_DIR / host
         await run(
-            sudo([str(K3S_UNINSTALL)]),
-            check=False,
-            capture_output=True,
+            sudo(
+                [
+                    "install",
+                    "-d",
+                    "-m",
+                    "0755",
+                    "-o",
+                    "root",
+                    "-g",
+                    "root",
+                    str(cert_dir),
+                ]
+            ),
             deadline=deadline,
         )
-    elif shutil.which("systemctl"):
+        host_changed = await _install_root_file(
+            cert_dir / "hosts.toml",
+            _hosts_toml_payload(host),
+            deadline=deadline,
+        )
+        changed = changed or host_changed
+    if changed and await k0s_service_active(deadline=deadline):
+        await _systemctl("restart", K0S_SERVICE_NAME, deadline=deadline)
+
+
+async def uninstall_k0s(*, deadline: Deadline) -> None:
+    """Uninstall Bertrand's owned k0s runtime from this host."""
+    if shutil.which("systemctl"):
         await _systemctl(
             "disable",
             "--now",
-            K3S_SERVICE_NAME,
+            K0S_SERVICE_NAME,
             check=False,
             deadline=deadline,
         )
-        unit = Path("/etc/systemd/system") / f"{K3S_SERVICE_NAME}.service"
+    if K0S_BINARY.is_file():
         await run(
-            sudo(["rm", "-f", str(unit)]),
+            sudo(
+                [
+                    str(K0S_BINARY),
+                    "reset",
+                    "--force",
+                    "--data-dir",
+                    str(K0S_DATA_DIR),
+                ]
+            ),
             check=False,
             capture_output=True,
             deadline=deadline,
         )
+    unit = Path("/etc/systemd/system") / f"{K0S_SERVICE_NAME}.service"
+    await run(
+        sudo(
+            [
+                "rm",
+                "-rf",
+                str(unit),
+                str(K0S_DATA_DIR),
+                str(K0S_RUNTIME_DIR),
+                str(K0S_CONFIG_FILE),
+                str(K0S_ROLE_FILE),
+                str(K0S_JOIN_TOKEN_FILE),
+                str(KUBE_CONFIG_FILE),
+            ]
+        ),
+        check=False,
+        capture_output=True,
+        deadline=deadline,
+    )
+    if shutil.which("systemctl"):
         await _systemctl("daemon-reload", check=False, deadline=deadline)

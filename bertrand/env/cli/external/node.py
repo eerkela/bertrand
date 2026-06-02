@@ -11,7 +11,7 @@ from bertrand.env.cli.external._storage import (
     storage_cli_snapshot,
 )
 from bertrand.env.cli.util import emit_json
-from bertrand.env.kube.api.bootstrap import k3s_cluster_ready
+from bertrand.env.kube.api.bootstrap import k0s_cluster_ready
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.capability.device import (
     delete_device_inventory,
@@ -58,7 +58,7 @@ async def bertrand_node_status(*, json_output: bool, deadline: Deadline) -> None
         print(f"  ready: {node_status.get('ready')}")
         print(f"  build eligible: {node_status.get('build_eligible')}")
         print(f"  platform: {node_status.get('platform') or 'unknown'}")
-    print(f"  k3s: {'ready' if payload['k3s_ready'] else 'not ready'}")
+    print(f"  k0s: {'ready' if payload['k0s_ready'] else 'not ready'}")
     print(f"  rook ceph: {'ready' if payload['rook_ceph_ready'] else 'not ready'}")
     print(f"  storage report: {payload['storage_report'] or 'unavailable'}")
     devices = payload["devices"]
@@ -285,14 +285,14 @@ async def _node_status_payload(*, deadline: Deadline) -> dict[str, object]:
     except OSError:
         host_id = ""
     try:
-        k3s_ready = bool(await k3s_cluster_ready(deadline=deadline))
+        k0s_ready = bool(await k0s_cluster_ready(deadline=deadline))
     except (OSError, TimeoutError, RuntimeError, ValueError):
-        k3s_ready = False
+        k0s_ready = False
     payload: dict[str, object] = {
         "host_id": host_id,
         "display_name": "",
         "phase": "",
-        "k3s_ready": k3s_ready,
+        "k0s_ready": k0s_ready,
         "rook_ceph_ready": False,
         "kubernetes": {},
         "storage_report": "",

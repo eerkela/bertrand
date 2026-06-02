@@ -1,4 +1,4 @@
-"""Teardown Bertrand-managed local runtime and owned k3s cluster state."""
+"""Teardown Bertrand-managed local runtime and owned k0s cluster state."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from bertrand.env.git import (
     warn,
 )
 from bertrand.env.host.state import disable_run_tmpfs_mount
-from bertrand.env.kube.api.bootstrap import uninstall_k3s
+from bertrand.env.kube.api.bootstrap import uninstall_k0s
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.ceph.api import (
     ceph_health,
@@ -331,8 +331,8 @@ async def _delete_final_cluster_repository_volumes(state: CleanState) -> None:
         warn(f"deleted final Bertrand repository volume(s): {names}")
 
 
-async def _uninstall_owned_k3s(state: CleanState) -> None:
-    await uninstall_k3s(deadline=state.deadline)
+async def _uninstall_owned_k0s(state: CleanState) -> None:
+    await uninstall_k0s(deadline=state.deadline)
 
 
 def _runtime_residue(state: CleanState) -> tuple[list[str], list[str]]:
@@ -415,7 +415,7 @@ async def bertrand_clean(*, deadline: Deadline, assume_yes: bool, force: bool) -
     except _CLEAN_ERROR_TYPES as err:
         if not force:
             msg = (
-                "failed to connect to Bertrand's owned k3s runtime. Normal cleanup "
+                "failed to connect to Bertrand's owned k0s runtime. Normal cleanup "
                 "needs cluster access so it can distinguish node departure from "
                 f"final cluster teardown safely: {err}"
             )
@@ -457,24 +457,24 @@ async def bertrand_clean(*, deadline: Deadline, assume_yes: bool, force: bool) -
             if kube is None:
                 prompt = (
                     "Kubernetes access is unavailable, so --force cleanup can only "
-                    "remove local reconstructible state and uninstall the local k3s "
+                    "remove local reconstructible state and uninstall the local k0s "
                     "service. Durable cluster cleanup cannot be verified. Do you "
                     "want to proceed?\n[y/N] "
                 )
             elif state.last_node:
                 prompt = (
-                    "This is the last active Bertrand node in the owned k3s cluster. "
+                    "This is the last active Bertrand node in the owned k0s cluster. "
                     "Cleanup will delete all remaining Bertrand repository volumes, "
                     "credentials, snapshots, cluster resources, local mounts, the "
-                    f"managed k3s service, and local state in {STATE_DIR}. This is "
+                    f"managed k0s service, and local state in {STATE_DIR}. This is "
                     "destructive. Do you want to proceed?\n[y/N] "
                 )
             else:
                 prompt = (
-                    "This will remove this host from Bertrand's owned k3s cluster, "
+                    "This will remove this host from Bertrand's owned k0s cluster, "
                     "evacuate this host's Ceph OSDs, retire this host's mount and "
                     "node records, delete volatile dev/dashboard resources, uninstall "
-                    f"the local k3s service, and delete local state in {STATE_DIR}. "
+                    f"the local k0s service, and delete local state in {STATE_DIR}. "
                     "Durable repository volumes are preserved because other active "
                     "Bertrand nodes remain. Do you want to proceed?\n[y/N] "
                 )
@@ -549,12 +549,12 @@ async def bertrand_clean(*, deadline: Deadline, assume_yes: bool, force: bool) -
 
             try:
                 state.deadline.check(
-                    "bertrand clean stage 'uninstall_owned_k3s' timed out before "
+                    "bertrand clean stage 'uninstall_owned_k0s' timed out before "
                     "execution"
                 )
-                await _uninstall_owned_k3s(state)
+                await _uninstall_owned_k0s(state)
             except _CLEAN_ERROR_TYPES as err:
-                _handle_clean_error(state, "uninstall_owned_k3s", err)
+                _handle_clean_error(state, "uninstall_owned_k0s", err)
 
             try:
                 state.deadline.check(
