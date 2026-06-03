@@ -669,7 +669,11 @@ async def _assert_image_repository_local_route(*, deadline: Deadline) -> None:
         await deadline.sleep(IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS)
 
 
-async def ensure_image_repository_node_trust(*, kube: Kube, deadline: Deadline) -> None:
+async def ensure_image_repository_node_trust(
+    *,
+    kube: Kube,
+    deadline: Deadline,
+) -> None:
     """Converge local registry trust and mark the local node ready."""
     await _ensure_image_repository_trust(deadline=deadline)
     await _assert_image_repository_local_route(deadline=deadline)

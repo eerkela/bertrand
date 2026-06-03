@@ -11,8 +11,7 @@ import sys
 import webbrowser
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
-from bertrand.env.kube.api.bootstrap import K0S_BINARY, KUBE_CONFIG_FILE
+from bertrand.env.git import BERTRAND_NAMESPACE, STATE, Deadline
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.dashboard import DASHBOARD_NAME, ensure_dashboard_backend
 
@@ -68,10 +67,10 @@ async def _port_forward_dashboard(
     timeout: float,
 ) -> None:
     process = await asyncio.create_subprocess_exec(
-        str(K0S_BINARY),
+        str(STATE.path(STATE.k0s_binary)),
         "kubectl",
         "--kubeconfig",
-        str(KUBE_CONFIG_FILE),
+        str(STATE.path(STATE.kubeconfig)),
         "port-forward",
         "--namespace",
         BERTRAND_NAMESPACE,

@@ -102,9 +102,8 @@ async def bertrand_cluster_status(*, json_output: bool, deadline: Deadline) -> N
     deadline : Deadline
         Kubernetes request budget.
     """
-    status: dict[str, object] = {
-        "k0s": await _probe_bool(lambda: k0s_cluster_ready(deadline=deadline)),
-    }
+    k0s_status = await _probe_bool(lambda: k0s_cluster_ready(deadline=deadline))
+    status: dict[str, object] = {"k0s": k0s_status}
     kube_checks = (
         ("rook_ceph", _rook_ceph_status),
         ("namespace", _namespace_status),
@@ -211,7 +210,7 @@ async def bertrand_cluster_join(
         token=str(bundle["token"]),
         role=resolved_role,
         kubeconfig=str(bundle["kubeconfig"]),
-        assume_yes=False,
+        yes=False,
         deadline=deadline,
     )
     await _converge_host_cluster_runtime(deadline, start=False)

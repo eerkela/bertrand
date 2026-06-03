@@ -13,8 +13,7 @@ from typing import TYPE_CHECKING, Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bertrand.env.config.core import UUIDHex, _check_uuid
-from bertrand.env.git import CommandError, Deadline
-from bertrand.env.host import RUN_DIR
+from bertrand.env.git import STATE, CommandError, Deadline
 from bertrand.env.kube.ceph.api import ceph
 
 if TYPE_CHECKING:
@@ -372,8 +371,8 @@ class RepoCredentials:
         """Yield a temporary secretfile path for kernel Ceph mount operations.
 
         The file is created with private mode (0600), stored under Bertrand's runtime
-        directory (`RUN_DIR`) which is expected to be tmpfs-backed, contains only the
-        Ceph key, and is always deleted when the context exits.
+        runtime directory which is expected to be tmpfs-backed, contains only the Ceph
+        key, and is always deleted when the context exits.
 
         Yields
         ------
@@ -395,7 +394,10 @@ class RepoCredentials:
         fd: int | None = None
         path: Path | None = None
         try:
-            fd, name = tempfile.mkstemp(prefix="bertrand-ceph-secret.", dir=RUN_DIR)
+            fd, name = tempfile.mkstemp(
+                prefix="bertrand-ceph-secret.",
+                dir=STATE.path(STATE.runtime),
+            )
             path = Path(name)
             os.fchmod(fd, 0o600)
             os.write(fd, f"{key}\n".encode(encoding="utf-8"))  # noqa: UP012

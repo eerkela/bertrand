@@ -18,14 +18,11 @@ from urllib.parse import urlparse, urlunparse
 import yaml
 
 from bertrand.env.git import (
-    BERTRAND_GROUP,
     BERTRAND_LABEL,
     BERTRAND_LABEL_MANAGED,
     BERTRAND_NAMESPACE,
-    HOST_ID_FILE,
     NO_DEADLINE,
-    RUN_DIR,
-    STATE_DIR,
+    STATE,
     CommandError,
     CompletedProcess,
     Deadline,
@@ -36,33 +33,17 @@ from bertrand.env.git import (
     sudo,
     until,
 )
-from bertrand.env.host.state import (
-    STATE_DIR_MODE,
-    install_state_dir,
-    normalize_state_executable,
-    normalize_state_file,
-    write_state_file,
-)
 
 type K0sRole = Literal["controller", "worker"]
 
-KUBE_CONFIG_FILE = STATE_DIR / "kubeconfig"
 K0S_CONTEXT = "bertrand"
 K0S_VERSION = "v1.35.4+k0s.0"
 K0S_SERVICE_NAME = "bertrand-k0s"
 K0S_API_PORT = 16443
 K0S_CONTROLLER_API_PORT = 19443
-K0S_BIN_DIR = STATE_DIR / "bin"
-K0S_BINARY = K0S_BIN_DIR / "k0s"
-K0S_DATA_DIR = STATE_DIR / "k0s"
-K0S_CONFIG_FILE = STATE_DIR / "k0s.yaml"
-K0S_ROLE_FILE = STATE_DIR / "k0s.role"
-K0S_JOIN_TOKEN_FILE = STATE_DIR / "k0s.join-token"
-K0S_RUNTIME_DIR = RUN_DIR / "k0s"
 K0S_CONTAINERD_DROPIN_DIR = Path("/etc/k0s/containerd.d")
 K0S_CONTAINERD_CERTS_DIR = K0S_CONTAINERD_DROPIN_DIR / "certs.d"
 K0S_REGISTRY_DROPIN_FILE = K0S_CONTAINERD_DROPIN_DIR / "bertrand-registry.toml"
-KUBE_LOCK_FILE = RUN_DIR / "k0s.lock"
 K0S_ROLES: tuple[K0sRole, ...] = ("controller", "worker")
 
 
@@ -188,24 +169,14 @@ def k0s_node_name() -> str:
     -------
     str
         Kubernetes node name derived from the host ID.
-
-    Raises
-    ------
-    OSError
-        If the host ID is missing or empty.
     """
-    try:
-        host_id = HOST_ID_FILE.read_text(encoding="utf-8").strip()
-    except OSError as err:
-        msg = f"failed to read Bertrand host identity at {HOST_ID_FILE}"
-        raise OSError(msg) from err
-    if not host_id:
-        msg = f"Bertrand host identity at {HOST_ID_FILE} is empty"
-        raise OSError(msg)
-    return f"bertrand-{host_id[:32]}"
+    return f"bertrand-{STATE.id[:32]}"
 
 
-def k0s_config_payload(*, source: str = "managed kubeconfig") -> str:
+def k0s_config_payload(
+    *,
+    source: str = "managed kubeconfig",
+) -> str:
     """Return the current Bertrand-managed k0s kubeconfig payload.
 
     Returns
@@ -218,13 +189,14 @@ def k0s_config_payload(*, source: str = "managed kubeconfig") -> str:
     OSError
         If the kubeconfig is missing or empty.
     """
+    kubeconfig = STATE.path(STATE.kubeconfig)
     try:
-        text = KUBE_CONFIG_FILE.read_text(encoding="utf-8").strip()
+        text = kubeconfig.read_text(encoding="utf-8").strip()
     except OSError as err:
-        msg = f"failed to read {source} at {KUBE_CONFIG_FILE}: {err}"
+        msg = f"failed to read {source} at {kubeconfig}: {err}"
         raise OSError(msg) from err
     if not text:
-        msg = f"{source} at {KUBE_CONFIG_FILE} is empty"
+        msg = f"{source} at {kubeconfig} is empty"
         raise OSError(msg)
     return text if text.endswith("\n") else f"{text}\n"
 
@@ -253,15 +225,16 @@ async def kubectl(
     OSError
         If the managed k0s binary is missing.
     """
-    if not K0S_BINARY.is_file():
-        msg = f"Bertrand k0s binary is missing at {K0S_BINARY}; run `bertrand init`"
+    k0s_binary = STATE.path(STATE.k0s_binary)
+    if not k0s_binary.is_file():
+        msg = f"Bertrand k0s binary is missing at {k0s_binary}; run `bertrand init`"
         raise OSError(msg)
     return await run(
         [
-            str(K0S_BINARY),
+            str(k0s_binary),
             "kubectl",
             "--kubeconfig",
-            str(KUBE_CONFIG_FILE),
+            str(STATE.path(STATE.kubeconfig)),
             *argv,
         ],
         check=check,
@@ -316,7 +289,10 @@ async def k0s_cluster_ready(*, deadline: Deadline) -> bool:
     bool
         Whether the managed k0s API responds successfully to `/readyz`.
     """
-    if not K0S_BINARY.is_file() or not KUBE_CONFIG_FILE.is_file():
+    if (
+        not STATE.path(STATE.k0s_binary).is_file()
+        or not STATE.path(STATE.kubeconfig).is_file()
+    ):
         return False
     return (
         await kubectl(
@@ -348,7 +324,10 @@ async def _wait_k0s_ready(
         raise TimeoutError(action) from err
 
 
-async def _add_bertrand_kube_namespace(*, deadline: Deadline) -> None:
+async def _add_bertrand_kube_namespace(
+    *,
+    deadline: Deadline,
+) -> None:
     manifest = {
         "apiVersion": "v1",
         "kind": "Namespace",
@@ -395,7 +374,11 @@ def _server_is_loopback(server_url: str) -> bool:
         return False
 
 
-def _kubeconfig_with_server(payload: str, server_url: str) -> str:
+def _managed_kubeconfig_payload(
+    payload: str,
+    *,
+    server_url: str | None = None,
+) -> str:
     raw = yaml.safe_load(payload)
     if not isinstance(raw, dict):
         msg = "cannot rewrite malformed kubeconfig payload"
@@ -404,14 +387,47 @@ def _kubeconfig_with_server(payload: str, server_url: str) -> str:
     if not isinstance(clusters, list):
         msg = "cannot rewrite kubeconfig without cluster list"
         raise OSError(msg)
+    cluster_name = ""
     for entry in clusters:
         if not isinstance(entry, dict):
             continue
+        if not cluster_name:
+            cluster_name = str(entry.get("name") or "").strip()
         cluster = entry.get("cluster")
-        if isinstance(cluster, dict):
+        if server_url is not None and isinstance(cluster, dict):
             cluster["server"] = server_url
+    if not cluster_name:
+        msg = "cannot rewrite kubeconfig without a named cluster"
+        raise OSError(msg)
+
+    users = raw.get("users")
+    user_name = ""
+    if isinstance(users, list):
+        for entry in users:
+            if isinstance(entry, dict):
+                user_name = str(entry.get("name") or "").strip()
+                if user_name:
+                    break
+
+    contexts = raw.get("contexts")
+    if not isinstance(contexts, list):
+        contexts = []
+        raw["contexts"] = contexts
+    context_payload: dict[str, str] = {"cluster": cluster_name}
+    if user_name:
+        context_payload["user"] = user_name
+    contexts[:] = [
+        entry
+        for entry in contexts
+        if not isinstance(entry, dict) or entry.get("name") != K0S_CONTEXT
+    ]
+    contexts.append({"name": K0S_CONTEXT, "context": context_payload})
     raw["current-context"] = K0S_CONTEXT
     return yaml.safe_dump(raw, sort_keys=False)
+
+
+def _kubeconfig_with_server(payload: str, server_url: str) -> str:
+    return _managed_kubeconfig_payload(payload, server_url=server_url)
 
 
 def _token_with_server(token: str, server_url: str) -> str:
@@ -512,35 +528,30 @@ async def _install_root_file(
 
 async def _ensure_k0s_state_paths(
     *,
-    assume_yes: bool,
+    yes: bool,
     deadline: Deadline,
 ) -> None:
-    for path in (K0S_BIN_DIR, K0S_RUNTIME_DIR):
-        await install_state_dir(
-            path,
-            mode=STATE_DIR_MODE,
-            assume_yes=assume_yes,
-            deadline=deadline,
-        )
+    for path in (STATE.binary_dir, STATE.k0s_runtime):
+        await STATE.mkdir(path, deadline=deadline, yes=yes)
 
 
 async def _ensure_k0s_config(
     *,
-    assume_yes: bool,
+    yes: bool,
     deadline: Deadline,
 ) -> None:
-    await _ensure_k0s_state_paths(assume_yes=assume_yes, deadline=deadline)
-    await write_state_file(
-        K0S_CONFIG_FILE,
+    await _ensure_k0s_state_paths(yes=yes, deadline=deadline)
+    await STATE.write(
+        STATE.k0s_config,
         _k0s_cluster_config_payload(),
-        assume_yes=assume_yes,
+        yes=yes,
         deadline=deadline,
     )
 
 
 async def _download_k0s_binary(
     *,
-    assume_yes: bool,
+    yes: bool,
     deadline: Deadline,
 ) -> None:
     if not shutil.which("curl"):
@@ -555,44 +566,60 @@ async def _download_k0s_binary(
             capture_output=True,
             deadline=deadline,
         )
-        await run(
-            sudo(
-                [
-                    "install",
-                    "-D",
-                    "-m",
-                    "0750",
-                    "-o",
-                    "root",
-                    "-g",
-                    BERTRAND_GROUP,
-                    str(download),
-                    str(K0S_BINARY),
-                ],
-                non_interactive=assume_yes,
-            ),
-            deadline=deadline,
-        )
-        await normalize_state_executable(
-            K0S_BINARY,
-            assume_yes=assume_yes,
+        await STATE.executable(
+            download,
+            STATE.k0s_binary,
+            yes=yes,
             deadline=deadline,
         )
     finally:
         download.unlink(missing_ok=True)
 
 
-def _k0s_unit_text(*, role: K0sRole, token_file: Path | None) -> str:
+async def _refresh_k0s_kubeconfig(*, deadline: Deadline, yes: bool) -> None:
+    result = await run(
+        sudo(
+            [
+                str(STATE.path(STATE.k0s_binary)),
+                "kubeconfig",
+                "admin",
+                "--config",
+                str(STATE.path(STATE.k0s_config)),
+                "--data-dir",
+                str(STATE.path(STATE.k0s_data)),
+            ],
+            non_interactive=yes,
+        ),
+        capture_output=True,
+        deadline=deadline,
+    )
+    payload = result.stdout.strip()
+    if not payload:
+        msg = "k0s kubeconfig admin returned an empty kubeconfig"
+        raise OSError(msg)
+    await STATE.write(
+        STATE.kubeconfig,
+        _managed_kubeconfig_payload(payload),
+        yes=yes,
+        deadline=deadline,
+    )
+
+
+def _k0s_unit_text(
+    *,
+    role: K0sRole,
+    token_file: Path | None,
+) -> str:
     node_name = k0s_node_name()
     if role == "controller":
         exec_start = " ".join(
             (
-                str(K0S_BINARY),
+                str(STATE.path(STATE.k0s_binary)),
                 "controller",
                 "--config",
-                str(K0S_CONFIG_FILE),
+                str(STATE.path(STATE.k0s_config)),
                 "--data-dir",
-                str(K0S_DATA_DIR),
+                str(STATE.path(STATE.k0s_data)),
                 "--enable-worker",
                 "--no-taints",
                 f"--kubelet-extra-args=--hostname-override={node_name}",
@@ -605,10 +632,10 @@ def _k0s_unit_text(*, role: K0sRole, token_file: Path | None) -> str:
             raise ValueError(msg)
         exec_start = " ".join(
             (
-                str(K0S_BINARY),
+                str(STATE.path(STATE.k0s_binary)),
                 "worker",
                 "--data-dir",
-                str(K0S_DATA_DIR),
+                str(STATE.path(STATE.k0s_data)),
                 "--token-file",
                 str(token_file),
                 f"--kubelet-extra-args=--hostname-override={node_name}",
@@ -658,7 +685,7 @@ async def install_k0s(
     *,
     role: K0sRole = "controller",
     token: str | None = None,
-    assume_yes: bool,
+    yes: bool,
     force: bool = False,
     deadline: Deadline,
 ) -> None:
@@ -675,27 +702,27 @@ async def install_k0s(
     if (
         not force
         and await k0s_service_active(deadline=deadline)
-        and K0S_BINARY.is_file()
-        and K0S_CONFIG_FILE.is_file()
+        and STATE.path(STATE.k0s_binary).is_file()
+        and STATE.path(STATE.k0s_config).is_file()
     ):
-        await write_state_file(
-            K0S_ROLE_FILE,
+        await STATE.write(
+            STATE.k0s_role,
             f"{role}\n",
-            assume_yes=assume_yes,
+            yes=yes,
             deadline=deadline,
         )
         return
     if not confirm(
         "Bertrand uses an owned k0s service as its local Kubernetes runtime. "
         f"Install or refresh {K0S_SERVICE_NAME!r} now (requires sudo)?\n[y/N] ",
-        assume_yes=assume_yes,
+        yes=yes,
     ):
         msg = "k0s installation declined by user."
         raise PermissionError(msg)
 
-    await _ensure_k0s_config(assume_yes=assume_yes, deadline=deadline)
-    if force or not K0S_BINARY.is_file():
-        await _download_k0s_binary(assume_yes=assume_yes, deadline=deadline)
+    await _ensure_k0s_config(yes=yes, deadline=deadline)
+    if force or not STATE.path(STATE.k0s_binary).is_file():
+        await _download_k0s_binary(yes=yes, deadline=deadline)
 
     token_file: Path | None = None
     if token is not None:
@@ -703,19 +730,23 @@ async def install_k0s(
         if not token:
             msg = "k0s join token cannot be empty"
             raise OSError(msg)
-        await write_state_file(
-            K0S_JOIN_TOKEN_FILE,
+        await STATE.write(
+            STATE.k0s_token,
             f"{token}\n",
-            assume_yes=assume_yes,
+            yes=yes,
             deadline=deadline,
         )
-        token_file = K0S_JOIN_TOKEN_FILE
+        token_file = STATE.path(STATE.k0s_token)
 
-    await _install_k0s_unit(role=role, token_file=token_file, deadline=deadline)
-    await write_state_file(
-        K0S_ROLE_FILE,
+    await _install_k0s_unit(
+        role=role,
+        token_file=token_file,
+        deadline=deadline,
+    )
+    await STATE.write(
+        STATE.k0s_role,
         f"{role}\n",
-        assume_yes=assume_yes,
+        yes=yes,
         deadline=deadline,
     )
 
@@ -728,18 +759,17 @@ def assert_k0s_installed() -> None:
     OSError
         If the managed binary or config is missing.
     """
-    if not K0S_BINARY.is_file():
-        msg = f"Bertrand k0s binary is missing at {K0S_BINARY}; rerun `bertrand init`"
+    k0s_binary = STATE.path(STATE.k0s_binary)
+    k0s_config = STATE.path(STATE.k0s_config)
+    if not k0s_binary.is_file():
+        msg = f"Bertrand k0s binary is missing at {k0s_binary}; rerun `bertrand init`"
         raise OSError(msg)
-    if not K0S_CONFIG_FILE.is_file():
-        msg = (
-            f"Bertrand k0s config is missing at {K0S_CONFIG_FILE}; rerun "
-            "`bertrand init`"
-        )
+    if not k0s_config.is_file():
+        msg = f"Bertrand k0s config is missing at {k0s_config}; rerun `bertrand init`"
         raise OSError(msg)
 
 
-async def start_k0s(*, deadline: Deadline) -> None:
+async def start_k0s(*, deadline: Deadline, yes: bool) -> None:
     """Ensure Bertrand's owned k0s service is running and namespace exists.
 
     Raises
@@ -754,7 +784,7 @@ async def start_k0s(*, deadline: Deadline) -> None:
         await _add_bertrand_kube_namespace(deadline=deadline)
         return
 
-    lock = HostLock(KUBE_LOCK_FILE)
+    lock = HostLock(STATE.path(STATE.k0s_lock))
     try:
         await lock.lock(deadline)
         try:
@@ -776,7 +806,7 @@ async def start_k0s(*, deadline: Deadline) -> None:
                     f"{deadline.timeout} seconds"
                 )
                 raise TimeoutError(msg) from err
-            await normalize_state_file(KUBE_CONFIG_FILE, deadline=deadline)
+            await _refresh_k0s_kubeconfig(deadline=deadline, yes=yes)
             await _add_bertrand_kube_namespace(deadline=deadline)
         finally:
             await lock.unlock(ignore_errors=True)
@@ -833,15 +863,15 @@ async def k0s_join_bundle(
     result = await run(
         sudo(
             [
-                str(K0S_BINARY),
+                str(STATE.path(STATE.k0s_binary)),
                 "token",
                 "create",
                 "--role",
                 role,
                 "--config",
-                str(K0S_CONFIG_FILE),
+                str(STATE.path(STATE.k0s_config)),
                 "--data-dir",
-                str(K0S_DATA_DIR),
+                str(STATE.path(STATE.k0s_data)),
             ]
         ),
         capture_output=True,
@@ -864,7 +894,7 @@ async def join_k0s_cluster(
     token: str,
     role: K0sRole,
     kubeconfig: str,
-    assume_yes: bool,
+    yes: bool,
     deadline: Deadline,
 ) -> None:
     """Join the local host to an existing Bertrand k0s cluster.
@@ -890,19 +920,19 @@ async def join_k0s_cluster(
     kubeconfig_identity(kubeconfig, source="join bundle kubeconfig")
     token = _token_with_server(token, server)
 
-    lock = HostLock(KUBE_LOCK_FILE)
+    lock = HostLock(STATE.path(STATE.k0s_lock))
     await lock.lock(deadline)
     try:
-        await write_state_file(
-            KUBE_CONFIG_FILE,
+        await STATE.write(
+            STATE.kubeconfig,
             _kubeconfig_with_server(kubeconfig, server),
-            assume_yes=assume_yes,
+            yes=yes,
             deadline=deadline,
         )
         await install_k0s(
             role=role,
             token=token,
-            assume_yes=assume_yes,
+            yes=yes,
             force=True,
             deadline=deadline,
         )
@@ -917,19 +947,28 @@ async def join_k0s_cluster(
         await lock.unlock(ignore_errors=True)
 
 
-async def ensure_k0s_kubeconfig(*, deadline: Deadline) -> Path:
+def ensure_k0s_kubeconfig(
+    *,
+    deadline: Deadline,
+) -> Path:
     """Return Bertrand's managed k0s kubeconfig path after validating it.
+
+    Parameters
+    ----------
+    deadline : Deadline
+        Active operation deadline.
 
     Returns
     -------
     Path
         Path to Bertrand's managed kubeconfig.
     """
+    deadline.check("k0s kubeconfig validation timed out")
     assert_k0s_installed()
     payload = k0s_config_payload()
-    kubeconfig_identity(payload, source=f"managed kubeconfig {KUBE_CONFIG_FILE}")
-    await normalize_state_file(KUBE_CONFIG_FILE, deadline=deadline)
-    return KUBE_CONFIG_FILE
+    kubeconfig = STATE.path(STATE.kubeconfig)
+    kubeconfig_identity(payload, source=f"managed kubeconfig {kubeconfig}")
+    return kubeconfig
 
 
 def _containerd_dropin_payload() -> str:
@@ -1009,7 +1048,11 @@ async def configure_k0s_registries(
             deadline=deadline,
         )
         changed = changed or host_changed
-    if changed and await k0s_service_active(deadline=deadline):
+    if (
+        changed
+        and STATE.path(STATE.k0s_binary).is_file()
+        and await k0s_service_active(deadline=deadline)
+    ):
         await _systemctl("restart", K0S_SERVICE_NAME, deadline=deadline)
 
 
@@ -1023,15 +1066,15 @@ async def uninstall_k0s(*, deadline: Deadline) -> None:
             check=False,
             deadline=deadline,
         )
-    if K0S_BINARY.is_file():
+    if STATE.path(STATE.k0s_binary).is_file():
         await run(
             sudo(
                 [
-                    str(K0S_BINARY),
+                    str(STATE.path(STATE.k0s_binary)),
                     "reset",
                     "--force",
                     "--data-dir",
-                    str(K0S_DATA_DIR),
+                    str(STATE.path(STATE.k0s_data)),
                 ]
             ),
             check=False,
@@ -1045,12 +1088,12 @@ async def uninstall_k0s(*, deadline: Deadline) -> None:
                 "rm",
                 "-rf",
                 str(unit),
-                str(K0S_DATA_DIR),
-                str(K0S_RUNTIME_DIR),
-                str(K0S_CONFIG_FILE),
-                str(K0S_ROLE_FILE),
-                str(K0S_JOIN_TOKEN_FILE),
-                str(KUBE_CONFIG_FILE),
+                str(STATE.path(STATE.k0s_data)),
+                str(STATE.path(STATE.k0s_runtime)),
+                str(STATE.path(STATE.k0s_config)),
+                str(STATE.path(STATE.k0s_role)),
+                str(STATE.path(STATE.k0s_token)),
+                str(STATE.path(STATE.kubeconfig)),
             ]
         ),
         check=False,

@@ -11,6 +11,7 @@ from bertrand.env.cli.external._storage import (
     storage_cli_snapshot,
 )
 from bertrand.env.cli.util import emit_json
+from bertrand.env.git import STATE
 from bertrand.env.kube.api.bootstrap import k0s_cluster_ready
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.capability.device import (
@@ -24,7 +25,6 @@ from bertrand.env.kube.ceph.capacity import read_storage_state
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.node_identity import (
     BertrandNodeRecord,
-    current_host_id,
     ensure_local_bertrand_node,
 )
 
@@ -281,11 +281,11 @@ def parse_device_attrs(values: list[str]) -> dict[str, str]:
 
 async def _node_status_payload(*, deadline: Deadline) -> dict[str, object]:
     try:
-        host_id = current_host_id()
+        host_id = STATE.id
     except OSError:
         host_id = ""
     try:
-        k0s_ready = bool(await k0s_cluster_ready(deadline=deadline))
+        k0s_ready = await k0s_cluster_ready(deadline=deadline)
     except (OSError, TimeoutError, RuntimeError, ValueError):
         k0s_ready = False
     payload: dict[str, object] = {

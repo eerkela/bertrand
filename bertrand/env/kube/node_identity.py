@@ -11,8 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bertrand.env.config.core import _check_uuid
-from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline
-from bertrand.env.host import HOST_ID_FILE
+from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, STATE, Deadline
 from bertrand.env.kube.custom_object import (
     CustomObjectMetadata,
     CustomObjectResource,
@@ -371,11 +370,12 @@ def current_host_id() -> str:
     OSError
         If the host identity is missing or malformed.
     """
+    host_id_file = STATE.id_file
     try:
-        return uuid.UUID(HOST_ID_FILE.read_text(encoding="utf-8").strip()).hex
+        return uuid.UUID(host_id_file.read_text(encoding="utf-8").strip()).hex
     except (OSError, ValueError) as err:
         msg = (
-            f"failed to read Bertrand host identity at {HOST_ID_FILE}; run "
+            f"failed to read Bertrand host identity at {host_id_file}; run "
             "`bertrand init`"
         )
         raise OSError(msg) from err

@@ -13,9 +13,8 @@ import kubernetes
 from kubernetes.client.rest import ApiException
 from kubernetes.config.config_exception import ConfigException
 
-from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
+from bertrand.env.git import BERTRAND_NAMESPACE, STATE, Deadline
 from bertrand.env.kube.api.bootstrap import (
-    KUBE_CONFIG_FILE,
     ensure_k0s_kubeconfig,
     k0s_config_payload,
     kubeconfig_identity,
@@ -198,7 +197,7 @@ class Kube:
             strict Bertrand-managed path.
         """
         if config_file is None:
-            config_file = KUBE_CONFIG_FILE
+            config_file = STATE.path(STATE.kubeconfig)
         if not config_file.is_file():
             msg = (
                 f"kubernetes config is missing at {config_file}.  Run `bertrand init` "
@@ -272,7 +271,7 @@ class Kube:
             If managed kubeconfig convergence fails, identity proof fails, or API
             client initialization fails.
         """
-        config_file = await ensure_k0s_kubeconfig(deadline=deadline)
+        config_file = ensure_k0s_kubeconfig(deadline=deadline)
         try:
             managed_payload = config_file.read_text(encoding="utf-8")
         except OSError as err:

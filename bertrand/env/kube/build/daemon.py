@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, Deadline
-from bertrand.env.host import CACHE_DIR
+from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, STATE, Deadline
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.node import Node
@@ -28,7 +27,7 @@ BUILDKIT_SOCKET_FILE = f"{BUILDKIT_SOCKET_DIR}/buildkitd.sock"
 BUILDKIT_SOCKET_ADDR = f"unix://{BUILDKIT_SOCKET_FILE}"
 BUILDKIT_SOCKET_VOLUME = "buildkit-socket"
 BUILDKIT_CACHE_MOUNT = "/var/lib/buildkit"
-BUILDKIT_CACHE_PATH = CACHE_DIR / "buildkit"
+BUILDKIT_CACHE_PATH = STATE.path(STATE.cache) / "buildkit"
 BUILDKIT_CACHE_VOLUME = "buildkit-state"
 BUILDKIT_CONFIG_DIR = "/etc/buildkit"
 BUILDKIT_CONFIG_FILE = f"{BUILDKIT_CONFIG_DIR}/buildkitd.toml"

@@ -9,27 +9,28 @@ import os
 import re
 import shutil
 import uuid
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from bertrand.env.git import (
     NO_DEADLINE,
+    STATE,
     CompletedProcess,
     Deadline,
     HostLock,
     run,
     until,
 )
-from bertrand.env.host import HOST_ID_FILE
-from bertrand.env.kube.api.bootstrap import K0S_BINARY, KUBE_CONFIG_FILE
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 HOST_ROOT = Path("/host")
 LOOP_FALLBACK_STORAGE_PATH = Path("/var/lib/bertrand/rook-loop")
 OSD_DEVICE_LINK_ROOT = Path("/var/lib/bertrand/rook-osd/devices")
-OSD_LOCK_FILE = Path("/var/lib/bertrand/run/rook-osd.lock")
+OSD_LOCK_FILE = STATE.path(STATE.runtime) / "rook-osd.lock"
 ROOK_NAMESPACE = "rook-ceph"
 ROOK_TOOLBOX_DEPLOYMENT = "deploy/rook-ceph-tools"
 BERTRAND_LVM_VG = "bertrand"
@@ -161,20 +162,23 @@ async def _run_text(argv: list[str], *, deadline: Deadline) -> str:
 def _ceph_argv(argv: list[str]) -> list[str]:
     if shutil.which("ceph"):
         return ["ceph", *argv]
-    if K0S_BINARY.is_file() and KUBE_CONFIG_FILE.is_file():
-        return [
-            str(K0S_BINARY),
-            "kubectl",
-            "--kubeconfig",
-            str(KUBE_CONFIG_FILE),
-            "-n",
-            ROOK_NAMESPACE,
-            "exec",
-            ROOK_TOOLBOX_DEPLOYMENT,
-            "--",
-            "ceph",
-            *argv,
-        ]
+    with contextlib.suppress(OSError):
+        k0s_binary = STATE.kube.bin
+        kubeconfig = STATE.kube.config
+        if k0s_binary.is_file() and kubeconfig.is_file():
+            return [
+                str(k0s_binary),
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "-n",
+                ROOK_NAMESPACE,
+                "exec",
+                ROOK_TOOLBOX_DEPLOYMENT,
+                "--",
+                "ceph",
+                *argv,
+            ]
     return ["ceph", *argv]
 
 
@@ -398,13 +402,14 @@ def host_id_from_host_state() -> str:
     OSError
         If the mounted host state is missing or malformed.
     """
+    host_id_file = STATE.id_file
     try:
         return uuid.UUID(
-            _local_path(HOST_ID_FILE).read_text(encoding="utf-8").strip()
+            _local_path(host_id_file).read_text(encoding="utf-8").strip()
         ).hex
     except (OSError, ValueError) as err:
         msg = (
-            f"failed to read Bertrand host identity at {HOST_ID_FILE}; run "
+            f"failed to read Bertrand host identity at {host_id_file}; run "
             "`bertrand init`"
         )
         raise OSError(msg) from err

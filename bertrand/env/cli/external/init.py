@@ -3,39 +3,28 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import shutil
 import sys
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import ValidationError
 
 from bertrand.env.config.core import RESOURCE_NAMES, Config, Resource
 from bertrand.env.git import (
     BERTRAND_NAMESPACE,
-    REPO_DIR,
-    REPO_MOUNT_EXT,
+    STATE,
     CommandError,
     Deadline,
     GitRepository,
-    HostLock,
+    Mount,
     abspath,
     atomic_write_text,
     confirm,
     run,
     symlink_points_to,
-)
-from bertrand.env.host.package import install_prereqs
-from bertrand.env.host.state import RUN_DIR, ensure_host_state
-from bertrand.env.host.user import (
-    BERTRAND_GROUP,
-    User,
-    UserGroup,
-    ensure_bertrand_group,
-    require_bertrand_group,
 )
 from bertrand.env.kube.api.bootstrap import (
     assert_k0s_installed,
@@ -73,10 +62,6 @@ from bertrand.env.kube.namespace import Namespace
 from bertrand.env.kube.network.bootstrap import ensure_network_backend
 from bertrand.env.kube.node_identity import ensure_local_bertrand_node
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-INIT_LOCK = Path("/tmp/bertrand-init.lock")
 INIT_REPO_STAGE_ERRORS: tuple[type[Exception], ...] = (
     OSError,
     RuntimeError,
@@ -96,7 +81,6 @@ MANAGED_GIT_HOOKS: tuple[tuple[Path, Path, bool], ...] = (
     (Path("reference_transaction.py"), Path("hooks/reference-transaction"), True),
     (Path("bertrand_git.py"), Path("hooks/bertrand_git.py"), False),
 )
-REPO_LOCK_DIR = RUN_DIR / "init"
 PROTECTED_DISABLE_RESOURCES: frozenset[str] = frozenset({"bertrand", "python"})
 
 
@@ -159,22 +143,11 @@ class _RepoState:
     mount_alias: Path | None
     enable: set[Resource[Any]]
     disable: set[Resource[Any]]
-    assume_yes: bool
+    yes: bool
     deadline: Deadline
 
     def __post_init__(self) -> None:
         self.target = abspath(self.target)
-
-    @classmethod
-    @contextlib.asynccontextmanager
-    async def lock(cls, root: Path, deadline: Deadline) -> AsyncIterator[HostLock]:
-        digest = hashlib.sha256(str(root).encode("utf-8"))
-        lock = HostLock(REPO_LOCK_DIR / f"{digest.hexdigest()}.lock")
-        await lock.lock(deadline)
-        try:
-            yield lock
-        finally:
-            await lock.unlock(ignore_errors=True)
 
 
 async def _ensure_repo_storage(state: _RepoState) -> None:
@@ -197,7 +170,7 @@ async def _ensure_repo_storage(state: _RepoState) -> None:
             "information can be "
             "found in the Bertrand documentation, if needed.\nContinue? [y/N] "
         )
-        if not confirm(prompt, assume_yes=state.assume_yes):
+        if not confirm(prompt, yes=state.yes):
             msg = "repository conversion declined by user"
             raise PermissionError(msg)
 
@@ -215,7 +188,7 @@ async def _ensure_bare_worktrees(state: _RepoState) -> None:
     if state.mount_alias is None:
         msg = "bare-worktree convergence requires a mounted repository alias"
         raise OSError(msg)
-    mount = GitRepository(REPO_DIR / state.repo_id / REPO_MOUNT_EXT / ".git")
+    mount = GitRepository(STATE.repo(state.repo_id).mount / ".git")
     target_branch = _target_worktree_branch(state)
     source_exists = await state.repo.exists(deadline=state.deadline)
 
@@ -568,7 +541,7 @@ async def _finalize(state: _RepoState) -> None:
         msg = "cannot finalize repository convergence without a mount alias"
         raise OSError(msg)
     target = state.target
-    hidden_mount = REPO_DIR / state.repo_id / REPO_MOUNT_EXT
+    hidden_mount = STATE.repo(state.repo_id).mount
     swap_path = target.parent / f".{target.name}.bertrand.swap.{state.repo_id}"
     replace_existing = False
     if (
@@ -580,7 +553,7 @@ async def _finalize(state: _RepoState) -> None:
         replace_existing = confirm(
             "Bertrand needs to atomically replace this path with a managed "
             "CephFS repository alias to complete conversion. Continue?\n[y/N] ",
-            assume_yes=state.assume_yes,
+            yes=state.yes,
         )
 
     state.mount_alias = await finalize_repository_mount(
@@ -674,6 +647,42 @@ def _repository_destination_path(raw_path: Path, repo: GitRepository) -> Path:
     raise OSError(msg)
 
 
+async def _repository_identity(
+    repo: GitRepository,
+    *,
+    recovered_repo_id: str | None,
+    target: Path,
+    deadline: Deadline,
+) -> tuple[str, GitRepository]:
+    """Resolve the stable repository ID and repair local catalogue drift.
+
+    Returns
+    -------
+    tuple[str, GitRepository]
+        Stable repository UUID and the repository object to converge.
+    """
+    mount = Mount.search(repo.root)
+    catalog_id = STATE.repository_mount_id(mount) if mount is not None else None
+    if catalog_id is not None:
+        catalog = STATE.repo(catalog_id)
+        metadata_id = catalog.read_metadata_id()
+        if metadata_id is None:
+            await catalog.write_metadata_id(catalog_id, deadline=deadline)
+            return catalog_id, repo
+        if metadata_id != catalog_id:
+            repaired = await STATE.normalize_repository_catalog(
+                catalog_id=catalog_id,
+                metadata_id=metadata_id,
+                aliases=(target,),
+                deadline=deadline,
+            )
+            return metadata_id, GitRepository(repaired.mount / ".git")
+        return catalog_id, repo
+
+    repo_id = recovered_repo_id or repo.id
+    return repo_id, repo
+
+
 async def _converge_repository(
     kube: Kube,
     *,
@@ -686,20 +695,26 @@ async def _converge_repository(
     deadline: Deadline,
     yes: bool,
 ) -> None:
-    # synchronize uniquely for each repository path to limit global init lock
-    # contention
-    async with _RepoState.lock(repo.root, deadline=deadline):
+    repo_id, repo = await _repository_identity(
+        repo,
+        recovered_repo_id=recovered_repo_id,
+        target=target,
+        deadline=deadline,
+    )
+    repo_lock = STATE.repo(repo_id).lock
+    await repo_lock.lock(deadline)
+    try:
         await _assert_repo_clean(repo, deadline=deadline)
         state = _RepoState(
             kube=kube,
             repo=repo,
             target=target,
             worktree=worktree,
-            repo_id=recovered_repo_id or repo.id,
+            repo_id=repo_id,
             mount_alias=None,
             enable=enable,
             disable=disable,
-            assume_yes=yes,
+            yes=yes,
             deadline=deadline,
         )
         try:
@@ -717,6 +732,8 @@ async def _converge_repository(
                 deadline=state.deadline,
             )
             raise
+    finally:
+        await repo_lock.unlock(ignore_errors=True)
 
 
 async def _assert_repo_clean(repo: GitRepository, *, deadline: Deadline) -> None:
@@ -758,27 +775,21 @@ class ExternalInit:
     disable: list[str]
     yes: bool
 
-    async def _prepare_host(self, deadline: Deadline) -> User:
-        await install_prereqs(yes=self.yes, deadline=deadline)
-        await ensure_bertrand_group(deadline=deadline, assume_yes=self.yes)
-        user = User()
-        group = UserGroup(user=user.name, group=BERTRAND_GROUP)
-        await group.activate(assume_yes=self.yes)
-        group = UserGroup(user=user.name, group=BERTRAND_GROUP)
-        require_bertrand_group(group=group)
-        return user
-
     async def _bootstrap_cluster(
         self,
         *,
         deadline: Deadline,
     ) -> None:
-        await install_k0s(assume_yes=self.yes, deadline=deadline)
+        await install_k0s(yes=self.yes, deadline=deadline)
         assert_k0s_installed()
-        await start_k0s(deadline=deadline)
-        await ensure_k0s_kubeconfig(deadline=deadline)
+        await start_k0s(deadline=deadline, yes=self.yes)
+        ensure_k0s_kubeconfig(deadline=deadline)
 
-    async def _bootstrap_control_plane(self, kube: Kube, deadline: Deadline) -> None:
+    async def _bootstrap_control_plane(
+        self,
+        kube: Kube,
+        deadline: Deadline,
+    ) -> None:
         await ensure_local_bertrand_node(kube, deadline=deadline)
         await ensure_rook_ceph_base(kube, deadline=deadline)
         await Namespace.upsert(
@@ -838,7 +849,7 @@ class ExternalInit:
             core resources are disabled.
         """
         raw_path = self.path
-        path = None if raw_path is None else Path(raw_path).expanduser().resolve()
+        path = None if raw_path is None else abspath(Path(raw_path))
         if path is None and (self.enable or self.disable):
             msg = (
                 "Cannot globally enable or disable resources without a worktree.  "
@@ -848,32 +859,23 @@ class ExternalInit:
             raise OSError(msg)
 
         # idempotently bootstrap host cluster infrastructure
-        user = await self._prepare_host(deadline)
-        init_lock = HostLock(INIT_LOCK)
-        await init_lock.lock(deadline=deadline)
+        kube: Kube | None = None
+        await STATE.init(yes=self.yes, deadline=deadline)
         try:
-            # TODO: ensure_host_state should take an actual User object, rather than a
-            # user name
-            await ensure_host_state(
-                user=user.name, assume_yes=self.yes, deadline=deadline
-            )
             await self._bootstrap_cluster(deadline=deadline)
             kube = Kube.external()
+            await self._bootstrap_control_plane(kube=kube, deadline=deadline)
         except:
-            await init_lock.unlock(ignore_errors=True)
+            await STATE.lock.unlock(ignore_errors=True)
+            if kube is not None:
+                kube.close()
             raise
+        else:
+            await STATE.lock.unlock()
 
         # finish bootstrapping cluster control plane, then converge repository volume
         # under a separate lock to reduce contention
         try:
-            try:
-                await self._bootstrap_control_plane(kube=kube, deadline=deadline)
-            except:
-                await init_lock.unlock(ignore_errors=True)
-                raise
-            else:
-                await init_lock.unlock()
-
             # if no repository root is provided, then we're done
             if path is None:
                 return
@@ -907,19 +909,18 @@ class ExternalInit:
                 yes=self.yes,
             )
         finally:
-            kube.close()
+            if kube is not None:
+                kube.close()
 
 
-async def ensure_shared_runtime_installed(*, deadline: Deadline, yes: bool) -> None:
+async def ensure_shared_runtime_installed(
+    *,
+    deadline: Deadline,
+    yes: bool,
+) -> None:
     """Install host prerequisites without starting or joining the k0s cluster."""
-    user = User().name
-    await install_prereqs(yes=yes, deadline=deadline)
-    await ensure_bertrand_group(deadline=deadline, assume_yes=yes)
-    group = UserGroup(user=user, group=BERTRAND_GROUP)
-    await group.activate(assume_yes=yes)
-    group = UserGroup(user=user, group=BERTRAND_GROUP)
-    require_bertrand_group(group=group)
-    await ensure_host_state(user=user, assume_yes=yes, deadline=deadline)
+    await STATE.init(yes=yes, deadline=deadline)
+    await STATE.lock.unlock()
 
 
 async def _converge_host_cluster_runtime(
@@ -929,8 +930,8 @@ async def _converge_host_cluster_runtime(
 ) -> None:
     """Converge the local cluster control plane after host runtime installation."""
     if start:
-        await start_k0s(deadline=deadline)
-    await ensure_k0s_kubeconfig(deadline=deadline)
+        await start_k0s(deadline=deadline, yes=False)
+    ensure_k0s_kubeconfig(deadline=deadline)
     runtime = ExternalInit(path=None, enable=[], disable=[], yes=False)
     with Kube.external() as kube:
         await runtime._bootstrap_control_plane(kube, deadline)

@@ -1566,7 +1566,7 @@ class External:
                 command_factory=_ExternalLeafFactory(
                     func=bertrand_clean,
                     kwargs=(
-                        ("assume_yes", "yes"),
+                        ("yes", "yes"),
                         ("force", "force"),
                     ),
                 ),

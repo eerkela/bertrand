@@ -19,19 +19,26 @@ import asyncio
 import contextlib
 import errno
 import grp
+import json
 import math
 import os
+import platform
+import pwd
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
-from typing import Any, Literal, Self, TextIO, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, TextIO, cast
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 if os.name == "nt":
     import msvcrt
@@ -72,9 +79,13 @@ GIT_REQUIRE_RELATIVE_PATHS = (
     "(git 2.52+)."
 )
 LOCK_FILE_MODE = 0o660
-LOCK_DIR_MODE = 0o2770
 LOCK_GUARD = threading.RLock()
 HOST_LOCKS: dict[str, HostLock] = {}
+ALIAS_LOCK_RELEASE_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    RuntimeError,
+    TimeoutError,
+)
 
 
 # In-container path definitions for metadata and runtime control.
@@ -97,16 +108,9 @@ WORKTREE_ID_LABEL: str = "BERTRAND_WORKTREE_ID"
 
 # Shared runtime identifiers and host paths.  These intentionally stay in this
 # hook-safe module so installed Git hooks can use them without importing the rest of
-# Bertrand.  Host-state convergence lives in `bertrand.env.host`.
+# Bertrand.
 BERTRAND_NAMESPACE = "bertrand"
 BERTRAND_GROUP = "bertrand"
-STATE_DIR = Path("/var/lib/bertrand")
-HOST_ID_FILE = STATE_DIR / "host_id"
-REPO_DIR = STATE_DIR / "repositories"
-REPO_LOCK_EXT = Path("lock")
-REPO_MOUNT_EXT = Path("mount")
-CACHE_DIR = STATE_DIR / "cache"
-RUN_DIR = STATE_DIR / "run"
 
 
 # common type aliases for serialization
@@ -335,14 +339,14 @@ def can_escalate() -> bool:
     return os.name == "posix" and bool(shutil.which("sudo") or shutil.which("doas"))
 
 
-def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
+def confirm(prompt: str, *, yes: bool = False) -> bool:
     """Ask the user for a yes/no confirmation for a given prompt.
 
     Parameters
     ----------
     prompt : str
         The prompt to display to the user.
-    assume_yes : bool, optional
+    yes : bool, optional
         If True, automatically return True without prompting the user.  Default is
         False.
 
@@ -351,7 +355,7 @@ def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
     bool
         True if the user confirmed yes, false otherwise.
     """
-    if assume_yes:
+    if yes:
         return True
     try:
         response = input(prompt).strip().lower()
@@ -827,6 +831,585 @@ async def until[T](
         await deadline.sleep(delay)
 
 
+def read_os_release() -> dict[str, str]:
+    """Read key-value pairs from the host's `/etc/os-release` file, if it exists.
+
+    Returns
+    -------
+    dict[str, str]
+        A dictionary containing the parsed values of every `<KEY>=<VALUE>` pair in the
+        host's `/etc/os-release` file, if it exists.  If the file does not exist, an
+        empty dictionary is returned.  Values are stripped of whitespace and up to 1
+        layer of surrounding single or double quotes.  Lines that are empty, start with
+        `#`, or do not contain `=` are ignored.
+    """
+    path = Path("/etc/os-release")
+    data: dict[str, str] = {}
+    if not path.exists() or not path.is_file():
+        return data
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        data[k.strip()] = v.strip().strip('"').strip("'")
+    return data
+
+
+@dataclass(frozen=True)
+class PackageManager:
+    """A distro-agnostic interface for installing packages on the host system.
+
+    Attributes
+    ----------
+    name : PackageManager.Name
+        The name of the detected package manager (e.g. "apt", "dnf", etc.).
+    """
+
+    type Name = Literal["apt", "dnf", "yum", "zypper", "pacman", "apk"]
+
+    @dataclass(frozen=True)
+    class Spec:
+        """Defines the command topology for a supported package manager."""
+
+        install: list[str]
+        refresh: list[str] | None
+        yes_install: list[str]
+        yes_refresh: list[str]
+        noninteractive_env: dict[str, str] | None
+
+    SPECS: ClassVar[dict[PackageManager.Name, PackageManager.Spec]] = {
+        "apt": Spec(
+            install=["apt-get", "install"],
+            refresh=["apt-get", "update"],
+            yes_install=["-y"],
+            yes_refresh=[],
+            noninteractive_env={"DEBIAN_FRONTEND": "noninteractive"},
+        ),
+        "dnf": Spec(
+            install=["dnf", "install"],
+            refresh=["dnf", "makecache"],
+            yes_install=["-y"],
+            yes_refresh=["-y"],
+            noninteractive_env=None,
+        ),
+        "yum": Spec(
+            install=["yum", "install"],
+            refresh=["yum", "makecache"],
+            yes_install=["-y"],
+            yes_refresh=["-y"],
+            noninteractive_env=None,
+        ),
+        "zypper": Spec(
+            install=["zypper", "install"],
+            refresh=["zypper", "refresh"],
+            yes_install=["--non-interactive"],
+            yes_refresh=["--non-interactive"],
+            noninteractive_env=None,
+        ),
+        "pacman": Spec(
+            install=["pacman", "-S"],
+            refresh=["pacman", "-Sy"],
+            yes_install=["--noconfirm"],
+            yes_refresh=[],
+            noninteractive_env=None,
+        ),
+        "apk": Spec(
+            install=["apk", "add"],
+            refresh=["apk", "update"],
+            yes_install=["--no-interactive"],
+            yes_refresh=["--no-interactive"],
+            noninteractive_env=None,
+        ),
+    }
+
+    @staticmethod
+    def _detect_package_manager() -> PackageManager.Name:
+        system = platform.system().lower()
+        if system != "linux":
+            msg = "Unsupported platform for package manager detection"
+            raise OSError(msg)
+
+        os_release = read_os_release()
+        distro_id = (os_release.get("ID") or "").lower() or None
+        manager: str | None = None
+        if distro_id in {"debian", "ubuntu"} and shutil.which("apt-get"):
+            manager = "apt"
+        elif shutil.which("dnf"):
+            manager = "dnf"
+        elif shutil.which("yum"):
+            manager = "yum"
+        elif shutil.which("zypper"):
+            manager = "zypper"
+        elif shutil.which("pacman"):
+            manager = "pacman"
+        elif shutil.which("apk"):
+            manager = "apk"
+        if manager is None:
+            msg = "No supported package manager found"
+            raise OSError(msg)
+        return manager
+
+    name: PackageManager.Name = field(default_factory=_detect_package_manager)
+    _spec: PackageManager.Spec = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Validate the detected package manager.
+
+        Raises
+        ------
+        OSError
+            If the package manager is not supported on the current system.
+        ValueError
+            If the detected package manager is not supported.
+        """
+        if os.name != "posix":
+            msg = "package manager operations require a POSIX system."
+            raise OSError(msg)
+        spec = self.SPECS.get(self.name)
+        if spec is None:
+            msg = (
+                f"Unsupported package manager detected: {self.name!r} (supported: "
+                f"{sorted(self.SPECS.keys())})"
+            )
+            raise ValueError(msg)
+        object.__setattr__(self, "_spec", spec)
+
+    async def install(
+        self,
+        packages: Sequence[str],
+        *,
+        deadline: Deadline = NO_DEADLINE,
+        yes: bool = False,
+    ) -> None:
+        """Install OS packages with the requested host package manager.
+
+        Parameters
+        ----------
+        packages : Sequence[str]
+            The packages to install.
+        deadline : Deadline, optional
+            An overall deadline by which the installation must complete before raising a
+            `TimeoutExpired` exception.  Defaults to an infinite deadline, which causes
+            the command to block indefinitely until completion.  If the deadline is
+            earlier than the time this method is called, a `TimeoutExpired` exception
+            will be raised immediately.
+        yes : bool, optional
+            If True, automatically confirm any prompts for installation or refreshing
+            package lists.  Default is False.
+
+        Raises
+        ------
+        PermissionError
+            If the package manager requires root privileges and they are not available.
+        """
+        if os.geteuid() != 0 and not can_escalate():
+            msg = (
+                f"package installation using '{self.name}' requires root privileges; "
+                "sudo not available."
+            )
+            raise PermissionError(msg)
+
+        # generate environment for non-interactive installs, if needed
+        env: dict[str, str] | None = None
+        if yes and self._spec.noninteractive_env:
+            env = os.environ.copy()
+            env.update(self._spec.noninteractive_env)
+
+        # refresh package lists if supported
+        if self._spec.refresh is not None:
+            cmd = self._spec.refresh.copy()
+            if yes:
+                cmd.extend(self._spec.yes_refresh)
+            await run(
+                sudo(cmd, non_interactive=yes),
+                env=env,
+                deadline=deadline,
+            )
+
+        # install requested packages
+        cmd = self._spec.install.copy()
+        if yes:
+            cmd.extend(self._spec.yes_install)
+        cmd.extend(packages)
+        await run(
+            sudo(cmd, non_interactive=yes),
+            env=env,
+            deadline=deadline,
+        )
+
+
+PREREQS: dict[PackageManager.Name, dict[str, str]] = {
+    "apt": {
+        "groupadd": "passwd",
+        "usermod": "passwd",
+        "curl": "curl",
+        "install": "coreutils",
+        "mount.ceph": "ceph-common",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
+    },
+    "dnf": {
+        "groupadd": "shadow-utils",
+        "usermod": "shadow-utils",
+        "curl": "curl",
+        "install": "coreutils",
+        "mount.ceph": "ceph-common",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
+    },
+    "yum": {
+        "groupadd": "shadow-utils",
+        "usermod": "shadow-utils",
+        "curl": "curl",
+        "install": "coreutils",
+        "mount.ceph": "ceph-common",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
+    },
+    "zypper": {
+        "groupadd": "shadow",
+        "usermod": "shadow",
+        "curl": "curl",
+        "install": "coreutils",
+        "mount.ceph": "ceph-common",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
+    },
+    "pacman": {
+        "groupadd": "shadow",
+        "usermod": "shadow",
+        "curl": "curl",
+        "install": "coreutils",
+        "mount.ceph": "ceph",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
+    },
+    "apk": {
+        "groupadd": "shadow",
+        "usermod": "shadow",
+        "curl": "curl",
+        "install": "coreutils",
+        "mount.ceph": "ceph",
+        "pvs": "lvm2",
+        "vgs": "lvm2",
+        "lvs": "lvm2",
+        "losetup": "util-linux",
+    },
+}
+CHECK_PREREQS = (
+    ("groupadd", ("groupadd",)),
+    ("usermod", ("usermod",)),
+    ("curl", ("curl",)),
+    ("install", ("install",)),
+    ("mount.ceph", ("mount.ceph",)),
+    ("pvs", ("pvs",)),
+    ("vgs", ("vgs",)),
+    ("lvs", ("lvs",)),
+    ("losetup", ("losetup",)),
+)
+
+
+async def _install_prereqs(
+    package_manager: PackageManager,
+    *,
+    deadline: Deadline,
+    yes: bool,
+) -> None:
+    # fail fast if no escalation path is available for package installs
+    if os.geteuid() != 0 and not can_escalate():
+        msg = (
+            "Bertrand requires root escalation to install host bootstrap dependencies, "
+            "but neither 'sudo' nor 'doas' is available.  Install one of these tools "
+            "or manually rerun `bertrand init` as root."
+        )
+        raise PermissionError(msg)
+
+    # package mapping for bootstrap-required host tools across package managers
+    packages = PREREQS.get(package_manager.name)
+    if packages is None:
+        msg = (
+            "Unsupported package manager for prerequisite installation: "
+            f"'{package_manager.name}' (supported: {sorted(PREREQS)})"
+        )
+        raise OSError(msg)
+
+    # detect missing required bootstrap tools
+    missing: set[str] = set()
+    for tool, package in packages.items():
+        if package in missing:
+            continue
+        if shutil.which(tool):
+            continue
+        missing.add(package)
+    if not missing:
+        return  # idempotently skip if all tools are already available
+
+    # install missing tools
+    if not confirm(
+        "Bertrand requires host bootstrap tools to configure runtime "
+        f"dependencies and shared state (missing: {', '.join(missing)}).  Would "
+        "you like Bertrand to install missing packages now (requires sudo)?\n[y/N] ",
+        yes=yes,
+    ):
+        msg = "Installation declined by user."
+        raise PermissionError(msg)
+    await package_manager.install(
+        packages=sorted(missing),
+        yes=yes,
+        deadline=deadline,
+    )
+
+    # verify all required tools after installation
+    unresolved: list[str] = [
+        name for name, cmd in CHECK_PREREQS if not any(shutil.which(c) for c in cmd)
+    ]
+    if unresolved:
+        msg = (
+            "Prerequisite installation completed, but required host bootstrap tools "
+            f"are still missing: {', '.join(unresolved)}."
+        )
+        raise OSError(msg)
+
+
+@dataclass(frozen=True)
+class User:
+    """A simple structure representing a user identity by user ID and group ID.
+
+    Attributes
+    ----------
+    uid : int
+        The numeric user ID.
+    gid : int
+        The numeric group ID.
+    name : str
+        The username.
+    home : Path
+        The path to the user's home directory.
+    """
+
+    uid: int = field(init=False)
+    gid: int = field(init=False)
+    name: str = field(init=False)
+    home: Path = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Resolve the effective host user identity."""
+        euid = os.geteuid()
+        sudo_uid = os.environ.get("SUDO_UID")
+        sudo_user = os.environ.get("SUDO_USER")
+        if euid == 0 and sudo_uid:
+            object.__setattr__(self, 'uid', int(sudo_uid))
+            pw = pwd.getpwuid(self.uid)
+            object.__setattr__(self, 'gid', pw.pw_gid)
+            object.__setattr__(self, 'name', sudo_user or pw.pw_name)
+            object.__setattr__(self, 'home', Path(pw.pw_dir))
+        else:
+            object.__setattr__(self, 'uid', os.getuid())
+            pw = pwd.getpwuid(self.uid)
+            object.__setattr__(self, 'gid', pw.pw_gid)
+            object.__setattr__(self, 'name', pw.pw_name)
+            object.__setattr__(self, 'home', Path(pw.pw_dir))
+
+
+@dataclass(frozen=True)
+class UserGroup:
+    """A simple struct representing a user's membership status in a host group.
+
+    Attributes
+    ----------
+    user : str
+        The username to which this status applies.
+    group : str
+        The group name to which this status applies.
+    configured : bool
+        Whether the user is configured as a member of the group (either as a primary or
+        secondary member).
+    active : bool
+        Whether the user's current session is active in the group (i.e. whether the
+        group is included in the user's current group list, which is determined at
+        login and may need to be refreshed via `newgrp` or a logout/login cycle).
+    """
+
+    user: str
+    name: str
+    gid: int = field(init=False)
+    configured: bool = field(init=False)
+    active: bool = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Get the corresponding gid, configured, and active status for the group."""
+        try:
+            group_info = grp.getgrnam(self.name)
+        except KeyError:
+            object.__setattr__(self, 'gid', -1)
+            object.__setattr__(self, 'configured', False)
+            object.__setattr__(self, 'active', False)
+            return
+
+        object.__setattr__(self, 'gid', group_info.gr_gid)
+        try:
+            primary_gid = pwd.getpwnam(self.user).pw_gid
+        except KeyError:
+            primary_gid = None
+        object.__setattr__(
+            self,
+            'configured',
+            self.user in group_info.gr_mem or primary_gid == self.gid,
+        )
+        object.__setattr__(
+            self, 'active', self.gid in os.getgroups() or os.getegid() == self.gid
+        )
+
+    async def activate(self, *, yes: bool, deadline: Deadline) -> None:
+        """Ensure host group membership.
+
+        Parameters
+        ----------
+        yes : bool
+            If True, automatically confirm any prompts for fixing group membership.
+        deadline : Deadline
+            Maximum time in seconds to wait for required host commands.
+
+        Raises
+        ------
+        PermissionError
+            If the user declines to update their group membership, or if the update
+            requires root privileges and they are not available.
+        OSError
+            If group membership still isn't properly configured after attempting to
+            update it.
+        """
+        group = self
+        if group.configured and group.active:
+            return
+
+        # ensure membership
+        if not group.configured:
+            if not confirm(
+                f"Bertrand must add user {group.user!r} to the {group.name!r} "
+                f"group in order to avoid future root escalation.  Would you like "
+                "Bertrand to add this membership now (requires sudo)?\n[y/N] ",
+                yes=yes,
+            ):
+                msg = f"{group.name} group membership update declined by user."
+                raise PermissionError(msg)
+            if os.geteuid() != 0 and not can_escalate():
+                msg = (
+                    f"Updating {group.name} group membership requires root "
+                    "privileges; "
+                    "sudo not available."
+                )
+                raise PermissionError(msg)
+            await run(
+                sudo(
+                    ["usermod", "-a", "-G", group.name, group.user],
+                    non_interactive=yes,
+                ),
+                deadline=deadline,
+            )
+            group = UserGroup(user=group.user, name=group.name)
+            if not group.configured:
+                msg = f"failed to add user '{group.user}' to group '{group.name}'"
+                raise OSError(msg)
+
+        # warn if group membership is not active in current session
+        if not group.active:
+            warn(
+                f"added {group.user!r} to the {group.name!r} group, but "
+                f"sudo is still required for this session.  Run `newgrp {group.name}` "
+                "or log out and back in to pick up the new group privileges before "
+                "proceeding."
+            )
+
+
+async def _create_bertrand_group(*, deadline: Deadline, yes: bool) -> grp.struct_group:
+    # idempotently skip if group is already present
+    try:
+        return grp.getgrnam(BERTRAND_GROUP)
+    except KeyError:
+        pass
+
+    if not confirm(
+        f"Bertrand uses a shared host group named '{BERTRAND_GROUP}' for "
+        "unprivileged access to global runtime state.  Create this system group now "
+        "(requires sudo)?\n"
+        "[y/N] ",
+        yes=yes,
+    ):
+        msg = "Bertrand shared-group bootstrap declined by user."
+        raise PermissionError(msg)
+    if os.geteuid() != 0 and not can_escalate():
+        msg = (
+            f"Creating group '{BERTRAND_GROUP}' requires root privileges; sudo not "
+            "available."
+        )
+        raise PermissionError(msg)
+    try:
+        await run(
+            sudo(
+                ["groupadd", "--system", BERTRAND_GROUP],
+                non_interactive=yes,
+            ),
+            capture_output=True,
+            deadline=deadline,
+        )
+    except CommandError:
+        with contextlib.suppress(KeyError):
+            return grp.getgrnam(BERTRAND_GROUP)
+        raise
+
+    try:
+        return grp.getgrnam(BERTRAND_GROUP)
+    except KeyError as err:
+        msg = f"Failed to create shared Bertrand group '{BERTRAND_GROUP}'."
+        raise OSError(msg) from err
+
+
+# TODO: not sure if `require_bertrand_group` is actually necessary?  I'll have to
+# check
+
+
+def require_bertrand_group(*, group: UserGroup) -> None:
+    """Raise an error if the user is not an active member of the Bertrand user group.
+
+    Parameters
+    ----------
+    group : UserGroup
+        The user's group membership status to check.
+
+    Raises
+    ------
+    OSError
+        If the user is not configured as a member of the Bertrand group, or if they are
+        configured but their membership is not active in the current session.
+    """
+    if not group.configured:
+        msg = (
+            f"user {group.user!r} is not in the '{BERTRAND_GROUP}' group.  Rerun "
+            "`bertrand init` to establish permissions for this user."
+        )
+        raise OSError(msg)
+    if not group.active:
+        msg = (
+            f"user {group.user!r} is in the '{BERTRAND_GROUP}' group, but membership "
+            f"has not yet been activated for the current session.  Run "
+            f"`newgrp {BERTRAND_GROUP}` or log out and back in, then rerun "
+            "`bertrand init` to continue."
+        )
+        raise OSError(msg)
+
+
 def abspath(path: Path) -> Path:
     """Normalize a filesystem path without resolving symlinks.
 
@@ -894,7 +1477,8 @@ def atomic_write_text(
     text: str,
     encoding: str | None = None,
     *,
-    private: bool = False,
+    mode: int = 0o666,
+    gid: int | None = None,
 ) -> None:
     """Atomically write text to a file, avoiding race conditions and partial writes.
 
@@ -906,8 +1490,11 @@ def atomic_write_text(
         The text to write.
     encoding : str | None, optional
         The text encoding to use (default is None, which uses the system default).
-    private : bool, optional
-        Whether to set private permissions (0600) on the written file, by default False.
+    mode : int, optional
+        The file mode to set on the written file, by default 0o666, which grants
+        read-write permissions to all users.
+    gid : int | None, optional
+        The group ID to set on the written file, by default None.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
@@ -915,8 +1502,9 @@ def atomic_write_text(
     with tmp.open("r+", encoding=encoding) as f:
         f.flush()
         os.fsync(f.fileno())
-    if private:
-        tmp.chmod(0o600)
+    if gid is not None:
+        os.chown(tmp, -1, gid)
+    tmp.chmod(mode)
     tmp.replace(path)
 
 
@@ -963,8 +1551,6 @@ class HostLock:
                 HOST_LOCKS[key] = self
         return cast("Self", self)
 
-    # TODO: review the permissions logic here before moving on.
-
     @staticmethod
     def _get_owner() -> asyncio.Task[Any]:
         try:
@@ -991,63 +1577,13 @@ class HostLock:
                 HOST_LOCKS.pop(self._key, None)
 
     @staticmethod
-    def _lock_group_gid() -> int:
-        try:
-            return grp.getgrnam(BERTRAND_GROUP).gr_gid
-        except KeyError as err:
-            msg = (
-                f"host locks require the shared {BERTRAND_GROUP!r} group.  "
-                "Run `bertrand init` to create it before using host locks."
-            )
-            raise OSError(msg) from err
-
-    @staticmethod
     def _permissions_ready(stat_info: os.stat_result, group_gid: int) -> bool:
         return (
             stat_info.st_gid == group_gid
             and (stat_info.st_mode & 0o777) == LOCK_FILE_MODE
         )
 
-    @staticmethod
-    def _directory_permissions_ready(
-        stat_info: os.stat_result,
-        group_gid: int,
-    ) -> bool:
-        return (
-            stat_info.st_gid == group_gid
-            and (stat_info.st_mode & 0o7777) == LOCK_DIR_MODE
-        )
-
-    def _normalize_parent_directory(self, group_gid: int) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=LOCK_DIR_MODE)
-        errors: list[OSError] = []
-        try:
-            os.chown(self.path.parent, -1, group_gid)
-        except OSError as err:
-            errors.append(err)
-        try:
-            self.path.parent.chmod(LOCK_DIR_MODE)
-        except OSError as err:
-            errors.append(err)
-
-        try:
-            stat_info = self.path.parent.stat()
-        except OSError as err:
-            msg = f"cannot inspect host lock directory {self.path.parent}"
-            raise OSError(msg) from err
-        if self._directory_permissions_ready(stat_info, group_gid):
-            return
-
-        detail = "; ".join(str(err) for err in errors)
-        msg = (
-            f"failed to secure host lock directory {self.path.parent} for group "
-            f"{BERTRAND_GROUP!r} with mode {LOCK_DIR_MODE:o}"
-        )
-        if detail:
-            msg = f"{msg}: {detail}"
-        raise OSError(msg)
-
-    def _normalize_permissions(self, fd: int, group_gid: int) -> None:
+    def _set_permissions(self, fd: int, group_gid: int) -> None:
         errors: list[OSError] = []
         if hasattr(os, "fchown"):
             try:
@@ -1066,15 +1602,16 @@ class HostLock:
 
         detail = "; ".join(str(err) for err in errors)
         msg = (
-            f"failed to secure host lock {self.path} for group {BERTRAND_GROUP!r} "
+            f"failed to secure host lock {self.path} for group '{BERTRAND_GROUP}' "
             f"with mode {LOCK_FILE_MODE:o}"
         )
         if detail:
             msg = f"{msg}: {detail}"
         raise OSError(msg)
 
-    def _open_lock_file(self) -> int:
-        group_gid = self._lock_group_gid()
+    def _create_lock_file(self) -> int:
+        group = grp.getgrnam(BERTRAND_GROUP)
+
         try:
             fd = os.open(self.path, os.O_RDWR | os.O_CREAT, LOCK_FILE_MODE)
         except OSError as err:
@@ -1085,35 +1622,33 @@ class HostLock:
             except OSError as stat_err:
                 msg = f"cannot open or inspect host lock {self.path}"
                 raise OSError(msg) from stat_err
-            if self._permissions_ready(stat_info, group_gid):
+            if self._permissions_ready(stat_info, group.gr_gid):
                 msg = (
                     f"cannot open host lock {self.path} even though it is already "
-                    f"group-owned by {BERTRAND_GROUP!r} with mode {LOCK_FILE_MODE:o}"
+                    f"group-owned by '{BERTRAND_GROUP}' with mode "
+                    f"{LOCK_FILE_MODE:o}"
                 )
                 raise OSError(msg) from err
             msg = (
                 f"cannot open host lock {self.path}: existing lock file is not "
-                f"group-owned by {BERTRAND_GROUP!r} with mode {LOCK_FILE_MODE:o}.  "
-                "Remove the stale lock file or fix its ownership and permissions, "
-                "then retry."
+                f"group-owned by '{BERTRAND_GROUP}' with mode "
+                f"{LOCK_FILE_MODE:o}.  Remove the stale lock file or fix its ownership "
+                "and permissions, then retry."
             )
             raise OSError(msg) from err
 
         try:
             if os.name != "nt":
-                self._normalize_permissions(fd, group_gid)
+                self._set_permissions(fd, group.gr_gid)
         except OSError:
             os.close(fd)
             raise
         return fd
 
     async def _try_acquire_file(self) -> bool:
-        if os.name != "nt":
-            self._normalize_parent_directory(self._lock_group_gid())
-        else:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         if self._fd is None:
-            self._fd = self._open_lock_file()
+            self._fd = self._create_lock_file()
 
         # Windows file lock on a 1-byte region
         if os.name == "nt":
@@ -1320,9 +1855,1369 @@ class HostLock:
         str
             A string representation of this lock.
         """
-        return f"HostLock(path={self.path!r})"
+        return f"{type(self).__name__}(path={self.path!r})"
 
 
+@dataclass(frozen=True)
+class Mount:
+    r"""Describe one host mount table entry.
+
+    Attributes
+    ----------
+    mount_point : Path
+        Mountpoint path from mountinfo field 5 (pre-`-` section). Kernel escaping
+        is decoded before storage (`\\040`, `\\011`, `\\012`, `\\134`).
+    fs_type : str
+        Filesystem type from the first field after the `-` separator.
+    source : str
+        Kernel-reported mount source from the second field after `-`.
+    """
+
+    mount_point: Path
+    fs_type: str = field(default="")
+    source: str = field(default="")
+
+    @classmethod
+    def local(cls) -> dict[Path, Self]:
+        """Parse and return local mount entries from `/proc/self/mountinfo`.
+
+        Returns
+        -------
+        dict[Path, Mount]
+            Parsed entries with decoded mountpoint paths as keys, for fast lookup.
+
+        Raises
+        ------
+        OSError
+            If the host mount table cannot be read.
+        """
+        try:
+            lines = HOST_MOUNTS.read_text(encoding="utf-8").splitlines()
+        except OSError as err:
+            msg = f"failed to inspect host mount table: {err}"
+            raise OSError(msg) from err
+
+        out: dict[Path, Self] = {}
+        for line in lines:
+            parts = line.strip().split()
+            try:
+                if len(parts) < 10:
+                    continue
+                sep = parts.index("-")
+                if sep + 2 >= len(parts):
+                    continue
+            except ValueError:
+                continue
+
+            info = cls(
+                mount_point=abspath(
+                    Path(
+                        parts[4]
+                        .replace("\\040", " ")
+                        .replace("\\011", "\t")
+                        .replace("\\012", "\n")
+                        .replace("\\134", "\\")
+                    )
+                ),
+                fs_type=parts[sep + 1],
+                source=parts[sep + 2],
+            )
+            out[info.mount_point] = info
+        return out
+
+    @classmethod
+    def under(cls, root: Path) -> dict[Path, Self]:
+        """Return mounted paths at or below `root`.
+
+        Parameters
+        ----------
+        root : Path
+            Root path to check for mounted entries at or below.
+
+        Returns
+        -------
+        dict[Path, Mount]
+            Parsed mount entries mounted at or below `root`, keyed by mount point.
+        """
+        prefix = abspath(root)
+        out: dict[Path, Self] = {}
+        for entry in cls.local().values():
+            if entry.mount_point.is_relative_to(prefix):
+                out[entry.mount_point] = entry
+        return out
+
+    @classmethod
+    def search(cls, path: Path) -> Self | None:
+        """Return the exact mounted entry for `path`, if present.
+
+        Parameters
+        ----------
+        path : Path
+            Path to check for an exact mountpoint match.
+
+        Returns
+        -------
+        Mount | None
+            Matching mount entry, or None when `path` is not mounted.
+        """
+        return cls.local().get(abspath(path))
+
+    async def unmount(self, *, deadline: Deadline, force: bool) -> bool:
+        """Detach this mounted entry from the host.
+
+        Parameters
+        ----------
+        deadline : Deadline
+            Maximum command budget for this unmount operation.
+        force : bool
+            If True, pass `-f` to `umount`.
+
+        Returns
+        -------
+        bool
+            True if this mount was detached, False if it was already detached.
+
+        Raises
+        ------
+        OSError
+            If unmounting fails or the mount remains attached.
+        """
+        if os.name != "posix" or platform.system() != "Linux":
+            msg = "host mounts are only supported on Linux platforms"
+            raise OSError(msg)
+        cmd = ["umount"]
+        if force:
+            cmd.append("-f")
+        cmd.append(str(self.mount_point))
+        try:
+            await run(
+                sudo(cmd),
+                capture_output=True,
+                deadline=deadline,
+            )
+        except CommandError as err:
+            if Mount.search(self.mount_point) is None:
+                return False
+            msg = f"unmount command failed:\n{err}"
+            raise OSError(msg) from err
+
+        if Mount.search(self.mount_point) is not None:
+            msg = f"failed to unmount volume at {self.mount_point}"
+            raise OSError(msg)
+        return True
+
+
+@dataclass(frozen=True)
+class State:
+    """Bertrand-managed host state layout and filesystem primitives.
+
+    Attributes
+    ----------
+    unit : Path
+        Absolute systemd unit path for the runtime tmpfs service.
+    root : Path
+        The absolute root directory of Bertrand's persistent state.
+    lock : HostLock
+        Absolute path to a global lock file that guards the global cluster bootstrap
+        portion of the `bertrand init` command.  This is stored outside the state
+        directory itself in order to allow the lock to cover the entire bootstrap
+        process.
+    id_file : Path
+        Absolute path to a durable file containing a UUID for this host.  This file will
+        be generated by `bertrand init` when the initial state directory is created.
+    bin : Path
+        Absolute path to a directory containing executable files for Bertrand's internal
+        control plane.
+    cache : Path
+        Absolute path to a cache directory for storing persistent cache files for
+        internal tooling used by Bertrand's control plane.
+    runtime : Path
+        Absolute path to a tmpfs-backed runtime directory used to store transient files
+        that should not persist across reboots, such as locks, secret files, join
+        tokens, etc.  Note that this does not encrypt the contents in any way, so the
+        contents must be treated as world-readable as long as it exists on disk.
+        Volatility is simply one component of Bertrand's security model.
+    mount_locks : Path
+        Absolute path to a subdirectory used to store host-local, per-repository lock
+        files for the project bootstrap portion of the `bertrand init` command.  Using
+        tiered global > repo locks reduces contention while still properly synchronizing
+        concurrent `init` commands, by transitioning at the boundary between the global
+        and per-repository bootstrap phases.
+    mount : Path
+        Absolute path to a repository catalogue holding metadata for all the Bertrand
+        repositories that are currently mounted to this host.
+    dir_mode : int
+        The file mode to set on created directories within the state root, by default
+        0o2770, which grants read-write-execute permissions to the owner and group and
+        causes subdirectories to inherit the group ID of the parent directory.
+    file_mode : int
+        The file mode to set on created files within the state root, by default 0o640,
+        which grants read-write permissions to the cluster's owner and read permissions
+        to the group.
+    bin_mode : int
+        The file mode to set on executable files within the state root, by default
+        0o750, which grants read-write-execute permissions to the owner and read-execute
+        permissions to the group.
+    kube : State.Kube
+        A nested namespace that encapsulates Kubernetes-related paths within the wider
+        state directory structure.
+    """
+
+    unit: Path = field(
+        default=(
+            ROOT_DIR / "etc" / "systemd" / "system" / "var-lib-bertrand-runtime.mount"
+        )
+    )
+    root: Path = field(default=ROOT_DIR / "var" / "lib" / "bertrand")
+    lock: HostLock = field(
+        default_factory=lambda: HostLock(ROOT_DIR / "tmp" / "bertrand-state.lock")
+    )
+    id_file: Path = field(default=Path("host_id"))
+    bin: Path = field(default=Path("bin"))
+    cache: Path = field(default=Path("cache"))
+    runtime: Path = field(default=Path("runtime"))
+    mount: Path = field(default=Path("mount"))
+    mount_locks: Path = field(default=Path("runtime") / "init")
+    dir_mode: int = field(default=0o2770)
+    file_mode: int = field(default=0o640)
+    bin_mode: int = field(default=0o750)
+
+    @dataclass
+    class Kube:
+        """Namespace for Kubernetes-related paths within the main State structure.
+
+        Attributes
+        ----------
+        bootstrap : Path
+            A k0s configuration file used to initialize and run an isolated kubernetes
+            cluster on this host equipped with Bertrand's internal control plane.
+        config : Path
+            Absolute path to a private kubeconfig file which Bertrand uses to access and
+            customize the kubernetes client API.
+        bin : Path
+            Absolute path to the kubernetes client executable.
+        cache : Path
+            Absolute path to the kubernetes data directory for the integrated Kubernetes
+            cluster.
+        runtime : Path
+            Absolute path to a runtime directory for the integrated Kubernetes cluster,
+            used to store transient files such as locks, secret files, join tokens, etc.
+        lock : Path
+            Absolute path to a lock file used to coordinate access to the Kubernetes
+            cluster across multiple concurrent Bertrand processes.
+        token : Path
+            Absolute path to a file containing a join token for the Kubernetes cluster,
+            if available.
+        """
+
+        bootstrap: Path = field(default=Path("kube") / "bootstrap.yaml")
+        config: Path = field(default=Path("kube") / "config")
+        bin: Path = field(default=Path("bin") / "k0s")
+        cache: Path = field(default=Path("cache") / "kube" / "data")
+        runtime: Path = field(default=Path("runtime") / "k0s")
+        lock: Path = field(default=Path("runtime") / "kube" / ".lock")
+        token: Path = field(default=Path("kube") / "join-token")
+
+    kube: Kube = field(default_factory=Kube)
+
+    @property
+    def id(self) -> str:
+        """Return this host's durable Bertrand UUID hex string.
+
+        Returns
+        -------
+        str
+            The current host ID as normalized UUID hex.
+
+        Raises
+        ------
+        OSError
+            If the host ID file is missing or invalid.
+        """
+        path = self.id_file
+        try:
+            return uuid.UUID(path.read_text(encoding="utf-8").strip()).hex
+        except (OSError, ValueError) as err:
+            msg = f"failed to read Bertrand host identity at {path}"
+            raise OSError(msg) from err
+
+    def __post_init__(self) -> None:
+        """Validate the state layout.
+
+        Raises
+        ------
+        ValueError
+            If any of the relative paths escape the root directory or are absolute.
+        """
+        if not self.unit.is_absolute():
+            msg = f"unit path must be absolute: {self.unit}"
+            raise ValueError(msg)
+        if not self.root.is_absolute():
+            msg = f"root path must be absolute: {self.root}"
+            raise ValueError(msg)
+        object.__setattr__(self, "unit", self.unit.expanduser().resolve(strict=False))
+        object.__setattr__(self, "root", self.root.expanduser().resolve(strict=False))
+        for attr in ("id_file", "bin", "cache", "runtime", "mount", "mount_locks"):
+            object.__setattr__(self, attr, self.path(getattr(self, attr)))
+        for attr in ("bootstrap", "config", "bin", "cache", "runtime", "lock", "token"):
+            object.__setattr__(self.kube, attr, self.path(getattr(self.kube, attr)))
+
+    def path(self, path: Path) -> Path:
+        """Return an absolute path below the managed state root.
+
+        Parameters
+        ----------
+        path : Path
+            A managed state path to resolve.  If the path is relative, then it will
+            be interpreted as relative to the state root.  If the path is absolute,
+            then it will be used as-is.  In both cases, the normalized path must be
+            contained within the state root.
+
+        Returns
+        -------
+        Path
+            Absolute path beneath `root`.
+
+        Raises
+        ------
+        ValueError
+            If the path is not absolute or escapes the managed state root.
+        """
+        if not path.is_absolute():
+            path = self.root / path
+        path = path.resolve(strict=False)
+        if not path.is_relative_to(self.root):
+            msg = f"state path is not contained under {self.root}: {path}"
+            raise ValueError(msg)
+        return path
+
+    @staticmethod
+    async def _host_install(
+        target: Path,
+        source: Path,
+        *,
+        group: str,
+        mode: int,
+        deadline: Deadline,
+        yes: bool,
+    ) -> None:
+        await run(
+            sudo(
+                [
+                    "install",
+                    "-D",
+                    "-m",
+                    f"{mode:o}",
+                    "-o",
+                    "root",
+                    "-g",
+                    group,
+                    str(source),
+                    str(target),
+                ],
+                non_interactive=yes,
+            ),
+            deadline=deadline,
+        )
+
+    async def mkdir(self, path: Path, *, deadline: Deadline, yes: bool) -> None:
+        """Create a managed root-owned state directory with the configured permissions.
+
+        Parameters
+        ----------
+        path : Path
+            Absolute path to the directory to create.  This path must be a descendant
+            of the `root` directory.
+        deadline : Deadline
+            Maximum time in seconds to wait for required host commands.
+        yes : bool
+            If True, automatically confirm any prompts for creating the directory.
+        """
+        await run(
+            sudo(
+                [
+                    "install",
+                    "-d",
+                    "-m",
+                    f"{self.dir_mode:o}",
+                    "-o",
+                    "root",
+                    "-g",
+                    BERTRAND_GROUP,
+                    str(self.path(path)),
+                ],
+                non_interactive=yes,
+            ),
+            deadline=deadline,
+        )
+
+    async def write(
+        self,
+        path: Path,
+        text: str,
+        *,
+        deadline: Deadline,
+        yes: bool,
+    ) -> None:
+        """Write one managed root-owned state file.
+
+        Parameters
+        ----------
+        path : Path
+            Relative path to the file to write beneath the state root.
+        text : str
+            The text content to write to the file, which will be UTF-8 encoded.
+        deadline : Deadline
+            Maximum time in seconds to wait for required host commands.
+        yes : bool
+            If True, automatically confirm any prompts for writing the file.
+        """
+        fd: int | None = None
+        temp_file: Path | None = None
+        try:
+            fd, name = tempfile.mkstemp(prefix="bertrand-state.", suffix=".tmp")
+            temp_file = Path(name)
+            os.write(fd, text.encode("utf-8"))
+            os.fsync(fd)
+            os.close(fd)
+            fd = None
+            await self._host_install(
+                self.path(path),
+                temp_file,
+                mode=self.file_mode,
+                group=BERTRAND_GROUP,
+                deadline=deadline,
+                yes=yes,
+            )
+        finally:
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            if temp_file is not None:
+                temp_file.unlink(missing_ok=True)
+
+    async def install(
+        self,
+        source: Path,
+        path: Path,
+        *,
+        deadline: Deadline,
+        yes: bool,
+    ) -> None:
+        """Install one managed root-owned executable file.
+
+        Parameters
+        ----------
+        source : Path
+            The original source path of the executable file to install.
+        path : Path
+            Relative path to the executable file to create beneath the state root.
+        deadline : Deadline
+            Maximum time in seconds to wait for required host commands.
+        yes : bool
+            If True, automatically confirm any prompts for installing the file.
+        """
+        await self._host_install(
+            self.path(path),
+            source,
+            group=BERTRAND_GROUP,
+            mode=self.bin_mode,
+            deadline=deadline,
+            yes=yes,
+        )
+
+    async def _render_tmpfs_systemd_unit(
+        self,
+        *,
+        gid: int,
+        deadline: Deadline,
+        yes: bool,
+    ) -> None:
+        fd: int | None = None
+        temp_unit: Path | None = None
+        try:
+            fd, name = tempfile.mkstemp(prefix="bertrand-runtime.", suffix=".mount")
+            temp_unit = Path(name)
+            os.write(
+                fd,
+                "\n".join(
+                    (
+                        "[Unit]",
+                        "Description=Bertrand tmpfs runtime state",
+                        "After=local-fs.target",
+                        "",
+                        "[Mount]",
+                        "What=tmpfs",
+                        f"Where={self.runtime}",
+                        "Type=tmpfs",
+                        (
+                            f"Options=mode={self.dir_mode:o},uid=0,gid={gid},nosuid,"
+                            "nodev,noexec"
+                        ),
+                        "",
+                        "[Install]",
+                        "WantedBy=multi-user.target",
+                        "",
+                    )
+                ).encode("utf-8"),
+            )
+            os.fsync(fd)
+            os.close(fd)
+            fd = None
+            await self._host_install(
+                self.unit,
+                temp_unit,
+                mode=0o644,
+                group="root",
+                deadline=deadline,
+                yes=yes,
+            )
+        finally:
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            if temp_unit is not None:
+                temp_unit.unlink(missing_ok=True)
+
+    async def init(self, *, deadline: Deadline, yes: bool) -> None:
+        """Initialize Bertrand's host state directory scaffold.
+
+        Parameters
+        ----------
+        deadline : Deadline
+            Maximum time in seconds to wait for required host commands.
+        yes : bool
+            If True, automatically confirm any prompts for installing the file.
+
+        Raises
+        ------
+        OSError
+            If the host cannot support Bertrand's managed state layout.
+
+        Notes
+        -----
+        When successful, this method will lock the `State` object's `lock` attribute as
+        a side effect, in order to properly synchronize the global portion of the host
+        bootstrap process.  The caller must immediately follow this method with a
+        `try: ... finally: STATE.lock.unlock()` block to ensure the lock is properly
+        released.
+        """
+        if os.name != "posix":
+            msg = "Bertrand state bootstrap requires a POSIX host."
+            raise OSError(msg)
+        # TODO: can systemd itself become a prereq?  Is that possible?
+        if not shutil.which("systemctl"):
+            msg = (
+                "Bertrand requires systemd (`systemctl`) to manage the runtime tmpfs "
+                f"mount at {self.path(self.runtime)}."
+            )
+            raise OSError(msg)
+
+        # prepare host prereqs + bertrand group before creating any state
+        package_manager = PackageManager()
+        await _install_prereqs(package_manager, deadline=deadline, yes=yes)
+        group = await _create_bertrand_group(deadline=deadline, yes=yes)
+
+        # acquire global init lock
+        await self.lock.lock(deadline=deadline)
+        try:
+            # create state directories
+            for path in (
+                self.root,
+                self.bin,
+                self.cache,
+                self.runtime,
+                self.mount,
+                self.mount_locks,
+                self.kube.cache,
+                self.kube.runtime,
+            ):
+                await self.mkdir(path, deadline=deadline, yes=yes)
+
+            # initialize state ID file if missing
+            host_id = ""
+            if self.id_file.exists():
+                if not self.id_file.is_file():
+                    msg = f"state id path exists but is not a file: {self.id_file}"
+                    raise OSError(msg)
+                with contextlib.suppress(ValueError, OSError):
+                    host_id = uuid.UUID(
+                        self.id_file.read_text(encoding="utf-8").strip()
+                    ).hex
+            if not host_id:
+                await self.write(
+                    self.id_file,
+                    uuid.uuid4().hex + "\n",
+                    deadline=deadline,
+                    yes=yes,
+                )
+
+            # render tmpfs systemd unit for runtime directory, then reload systemd
+            await self._render_tmpfs_systemd_unit(
+                gid=group.gr_gid, deadline=deadline, yes=yes
+            )
+            await run(
+                sudo(["systemctl", "daemon-reload"], non_interactive=yes),
+                deadline=deadline,
+            )
+            await run(
+                sudo(
+                    ["systemctl", "enable", "--now", self.unit.name],
+                    non_interactive=yes,
+                ),
+                deadline=deadline,
+            )
+
+            # confirm runtime directory is properly mounted
+            mount = Mount.search(self.runtime)
+            if mount is None or mount.fs_type.strip().lower() != "tmpfs":
+                msg = (
+                    f"failed to activate Bertrand tmpfs runtime mount at "
+                    f"{self.path(self.runtime)}"
+                )
+                raise OSError(msg)
+        except:
+            await self.lock.unlock(ignore_errors=True)
+            raise
+
+    async def clean(self, *, deadline: Deadline) -> None:
+        """Remove Bertrand's state directory and all its contents.
+
+        Parameters
+        ----------
+        deadline : Deadline
+            Maximum time in seconds to wait for required host commands.
+
+        Raises
+        ------
+        OSError
+            If the state root cannot be removed.
+        """
+        if shutil.which("systemctl"):
+            await run(
+                sudo(["systemctl", "disable", "--now", self.unit.name]),
+                check=False,
+                capture_output=True,
+                deadline=deadline,
+            )
+            await run(
+                sudo(["rm", "-f", str(self.unit)]),
+                check=False,
+                capture_output=True,
+                deadline=deadline,
+            )
+            await run(
+                sudo(["systemctl", "daemon-reload"]),
+                check=False,
+                capture_output=True,
+                deadline=deadline,
+            )
+
+        if self.root.is_symlink() or self.root.is_file():
+            self.root.unlink()
+            return
+        if not self.root.exists():
+            return
+
+        if self.mount.exists():
+            if not self.mount.is_dir():
+                msg = f"repository mount catalogue is not a directory: {self.mount}"
+                raise OSError(msg)
+            for repo_root in sorted(self.mount.iterdir(), key=lambda item: item.name):
+                if not repo_root.is_dir() or repo_root.is_symlink():
+                    continue
+                try:
+                    repo = self.repo(repo_root.name)
+                except ValueError:
+                    continue
+                for alias in repo._load_aliases():
+                    if symlink_points_to(alias, repo.mount):
+                        alias.unlink()
+                    elif alias.exists() or alias.is_symlink():
+                        msg = (
+                            f"recorded repository alias path {alias} is occupied but "
+                            f"is not a managed symlink to {repo.mount}"
+                        )
+                        raise OSError(msg)
+                await repo.unmount(deadline=deadline, force=True)
+
+            mounts = sorted(
+                Mount.under(self.mount).values(),
+                key=lambda item: len(item.mount_point.parts),
+                reverse=True,
+            )
+            for mount in mounts:
+                await mount.unmount(deadline=deadline, force=True)
+            residual = sorted(
+                str(mount.mount_point) for mount in Mount.under(self.mount).values()
+            )
+            if residual:
+                msg = f"residual repository mounts remain: {', '.join(residual)}"
+                raise OSError(msg)
+
+        mount = Mount.search(self.runtime)
+        if mount is not None:
+            await mount.unmount(deadline=deadline, force=True)
+        if Mount.search(self.runtime) is not None:
+            msg = f"residual runtime mount remains: {self.runtime}"
+            raise OSError(msg)
+
+        # remove the state root directory and all its contents
+        try:
+            shutil.rmtree(self.root)
+        except OSError as err:
+            msg = f"failed to remove state root directory at {self.root}"
+            raise OSError(msg) from err
+        if self.root.exists() or self.root.is_symlink():
+            msg = f"state directory still exists after cleanup: {self.root}"
+            raise OSError(msg)
+
+    @dataclass(frozen=True)
+    class Repository:
+        """A simple structure describing local state metadata for a Bertrand repo.
+
+        Attributes
+        ----------
+        state : State
+            The parent `State` object that this repository belongs to, used to resolve
+            paths and perform filesystem operations.
+        root : Path
+            Absolute path to the root of this repository's metadata directory under the
+            state mount catalogue.  This is not the same as the repository's mount
+            point, which is where the repository's content is actually mounted to the
+            host filesystem.
+        mount : Path
+            Absolute path to this repository's hidden mount point on the host, which is
+            where the repository's content is actually mounted to the host filesystem.
+        alias_file : Path
+            Absolute path to this repository's alias ledger file, which contains a JSON
+            array of absolute paths that are symlinked to this repository's mount point
+            as aliases.
+        lock : HostLock
+            A host lock for synchronizing access to this repository's metadata and mount
+            information across concurrent `bertrand init` commands.  The lock path is
+            derived from the idempotent repository ID, and is stored in the tmpfs
+            runtime directory to ensure it does not persist across reboots.
+        """
+
+        state: State = field(repr=False, compare=False)
+        root: Path
+        mount: Path
+        alias_file: Path
+        lock: HostLock
+
+        @property
+        def id(self) -> str:
+            """The unique repository ID, derived from the repository root path.
+
+            Returns
+            -------
+            str
+                The repository ID, which is the same as the repository root directory
+                name under the mount catalogue.
+            """
+            return self.root.name
+
+        def path(self, path: Path) -> Path:
+            """Return an absolute path under this repository's mount point.
+
+            Parameters
+            ----------
+            path : Path
+                A managed repo path to resolve.  If the path is relative, then it will
+                be interpreted as relative to the repository's mount point.  If the path
+                is absolute, then it will be used as-is.  In both cases, the normalized
+                path must be contained within the repository's mount point.
+
+            Returns
+            -------
+            Path
+                Absolute path beneath this repository mount point.
+
+            Raises
+            ------
+            ValueError
+                If the path is not absolute or escapes the managed mount point.
+            """
+            if not path.is_absolute():
+                path = self.mount / path
+            path = path.resolve(strict=False)
+            if not path.is_relative_to(self.mount):
+                msg = f"repository path is not contained under {self.mount}: {path}"
+                raise ValueError(msg)
+            return path
+
+        # TODO: review these methods as well.
+
+        async def ensure_layout(self, *, deadline: Deadline, yes: bool = True) -> None:
+            """Create this repository's host-local catalogue and mount directories."""
+            await self.state.mkdir(self.root, deadline=deadline, yes=yes)
+            await self.state.mkdir(self.mount, deadline=deadline, yes=yes)
+
+        def read_metadata_id(self) -> str | None:
+            """Read the repository metadata ID stored inside the hidden mount.
+
+            Returns
+            -------
+            str | None
+                UUID hex string from the metadata file, or None when the file is
+                absent.
+
+            Raises
+            ------
+            OSError
+                If the metadata path exists but is not a regular UTF-8 UUID file.
+            """
+            path = self.path(METADATA_ID)
+            if not path.exists():
+                return None
+            if not path.is_file():
+                msg = f"repository metadata identity path is not a file: {path}"
+                raise OSError(msg)
+            try:
+                return uuid.UUID(path.read_text(encoding="utf-8").strip()).hex
+            except (OSError, ValueError) as err:
+                msg = f"repository metadata identity is invalid at {path}"
+                raise OSError(msg) from err
+
+        async def write_metadata_id(
+            self,
+            repo_id: str | None = None,
+            *,
+            deadline: Deadline,
+            yes: bool = True,
+        ) -> None:
+            """Persist this repository's metadata ID inside the hidden mount."""
+            repo_id = self.id if repo_id is None else uuid.UUID(repo_id).hex
+            await self.state.write(
+                self.path(METADATA_ID),
+                repo_id + "\n",
+                deadline=deadline,
+                yes=yes,
+            )
+
+        def _load_aliases(self) -> set[Path]:
+            """Load absolute alias paths from this repository's alias ledger.
+
+            Returns
+            -------
+            set[Path]
+                Absolute alias paths from the ledger.
+
+            Raises
+            ------
+            OSError
+                If the alias ledger cannot be read or decoded.
+            TypeError
+                If the alias ledger has an invalid shape.
+            """
+            if not self.alias_file.exists():
+                return set()
+            try:
+                payload = json.loads(self.alias_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as err:
+                msg = f"failed to read repository alias ledger at {self.alias_file}"
+                raise OSError(msg) from err
+            if not isinstance(payload, list):
+                msg = f"expected a JSON array of alias paths, got: {payload}"
+                raise TypeError(msg)
+
+            aliases: set[Path] = set()
+            for item in payload:
+                if not isinstance(item, str):
+                    msg = f"expected alias paths to be strings, got: {item}"
+                    raise TypeError(msg)
+                path = Path(item)
+                if not path.is_absolute():
+                    msg = f"expected alias paths to be absolute, got: {path}"
+                    raise TypeError(msg)
+                aliases.add(path)
+            return aliases
+
+        async def _write_aliases(
+            self,
+            aliases: set[Path],
+            *,
+            deadline: Deadline,
+        ) -> None:
+            """Persist one sorted alias ledger."""
+            await self.state.mkdir(self.alias_file.parent, deadline=deadline, yes=True)
+            await self.state.write(
+                self.alias_file,
+                json.dumps(
+                    sorted(str(alias) for alias in aliases),
+                    separators=(",", ":"),
+                )
+                + "\n",
+                deadline=deadline,
+                yes=True,
+            )
+
+        async def unmount(self, *, deadline: Deadline, force: bool) -> bool:
+            """Unmount this repository's hidden host mount point if it is mounted.
+
+            Returns
+            -------
+            bool
+                True if a mount was detached, otherwise False.
+            """
+            mount = Mount.search(self.mount)
+            if mount is None:
+                return False
+            return await mount.unmount(deadline=deadline, force=force)
+
+        @dataclass
+        class Aliases:
+            """Async context manager for locked repository alias mutation."""
+
+            repo: State.Repository
+            deadline: Deadline
+            aliases: set[Path] = field(default_factory=set)
+            _depth: int = field(default=0, repr=False)
+
+            def __post_init__(self) -> None:
+                """Validate the alias manager deadline.
+
+                Raises
+                ------
+                TimeoutError
+                    If the deadline has already expired.
+                """
+                if self.deadline.remaining <= 0:
+                    msg = "repository alias lock timeout must be positive"
+                    raise TimeoutError(msg)
+
+            async def __aenter__(self) -> Self:
+                """Lock host-local alias mutation for this repository.
+
+                Returns
+                -------
+                State.Repository.Aliases
+                    Active alias mutation context.
+
+                """
+                if self._depth > 0:
+                    self._depth += 1
+                    return self  # re-entrant case
+
+                # acquire lock
+                await self.repo.lock.lock(deadline=self.deadline)
+                try:
+                    # only retain aliases that are still valid symlinks to this repo's
+                    # mount point
+                    for path in self.repo._load_aliases():
+                        if path.is_symlink() and symlink_points_to(
+                            path, self.repo.mount
+                        ):
+                            self.aliases.add(path)
+                except:
+                    await self.repo.lock.unlock(ignore_errors=True)
+                    raise
+
+                self._depth = 1
+                return self
+
+            def link(self, path: Path) -> bool:
+                """Create or validate a managed alias symlink for this repository.
+
+                Parameters
+                ----------
+                path : Path
+                    Absolute path to create a symlink to this repository's mount point
+                    at.
+
+                Returns
+                -------
+                bool
+                    True if a new symlink was created, false if it already existed.
+
+                Raises
+                ------
+                OSError
+                    If the alias path collides with unmanaged content.
+                RuntimeError
+                    If called outside an active alias context.
+                """
+                if self._depth < 1:
+                    msg = (
+                        "Repository.Aliases must be used inside 'async with' before "
+                        "calling link()/unlink()"
+                    )
+                    raise RuntimeError(msg)
+
+                path = abspath(path)
+                missing = not (path.exists() or path.is_symlink())
+                if missing:
+                    atomic_symlink(self.repo.mount, path)
+                elif not symlink_points_to(path, self.repo.mount):
+                    msg = (
+                        f"repository alias path '{path}' already exists and is not a "
+                        f"managed symlink to '{self.repo.mount}'"
+                    )
+                    raise OSError(msg)
+                self.aliases.add(path)
+                return missing
+
+            def unlink(self, path: Path) -> bool:
+                """Remove a managed alias symlink for this repository.
+
+                Returns
+                -------
+                bool
+                    True if the alias was removed or discarded from this context, false
+                    otherwise.
+
+                Raises
+                ------
+                RuntimeError
+                    If called outside an active alias context.
+                """
+                if self._depth < 1:
+                    msg = (
+                        "Repository.Aliases must be used inside 'async with' before "
+                        "calling link()/unlink()"
+                    )
+                    raise RuntimeError(msg)
+                path = abspath(path)
+
+                if symlink_points_to(path, self.repo.mount):
+                    path.unlink()
+                    self.aliases.discard(path)
+                    return True
+                if path in self.aliases:
+                    self.aliases.discard(path)
+                    return True
+                return False
+
+            async def __aexit__(
+                self,
+                exc_type: type[BaseException] | None,
+                exc_value: BaseException | None,
+                traceback: TracebackType | None,
+            ) -> None:
+                """Release the repository alias mutation lock.
+
+                Parameters
+                ----------
+                exc_type : type[BaseException] | None
+                    The exception type if an exception was raised in the context block,
+                    otherwise None.
+                exc_value : BaseException | None
+                    The exception value if an exception was raised in the context block,
+                    otherwise None.
+                traceback : TracebackType | None
+                    The traceback if an exception was raised in the context block,
+                    otherwise None.
+                """
+                if self._depth > 1:
+                    self._depth -= 1
+                    return  # re-entrant case
+
+                self._depth = 0
+                try:
+                    # dump aliases to disk
+                    await self.repo._write_aliases(
+                        self.aliases,
+                        deadline=self.deadline,
+                    )
+
+                    # TODO: trigger bounded GC here
+                except:  # noqa: E722
+                    await self.repo.lock.unlock(ignore_errors=True)
+                    if exc_value is None:
+                        raise
+                else:
+                    await self.repo.lock.unlock()
+
+        def aliases(self, *, deadline: Deadline) -> Aliases:
+            """Return a locked alias symlink mutation context for this repository.
+
+            Parameters
+            ----------
+            deadline : Deadline
+                Maximum time in seconds to wait for the alias mutation lock.
+
+            Returns
+            -------
+            State.Repository.Aliases
+                Async context manager for repository alias mutation.
+            """
+            return self.Aliases(self, deadline=deadline)
+
+    def repo(self, id: str) -> State.Repository:  # noqa: A002
+        """Get local metadata for a repository mounted to Bertrand's state directory.
+
+        Parameters
+        ----------
+        id : str
+            A repository UUID, which forms the name of the repository's root directory
+            under Bertrand's repository catalogue.
+
+        Returns
+        -------
+        State.Repository
+            A structure containing paths to the repository's root, lock file, and mount
+            point within Bertrand's state directory.
+
+        Raises
+        ------
+        ValueError
+            If the provided repository ID is not a valid UUID string.
+        """
+        try:
+            repo_id = uuid.UUID(id).hex
+        except ValueError as err:
+            msg = f"invalid repository id (must be a valid UUID): {id}"
+            raise ValueError(msg) from err
+
+        root = self.mount / repo_id
+        return self.Repository(
+            state=self,
+            root=root,
+            mount=root / "mount",
+            alias_file=root / "aliases.json",
+            lock=HostLock(self.mount_locks / f"{repo_id}.lock"),
+        )
+
+    # TODO: review everything below this line
+
+    def repository_mount_id(self, mount: Mount) -> str | None:
+        """Return the repository ID for one managed hidden mount entry.
+
+        Returns
+        -------
+        str | None
+            Repository UUID when the mount belongs to the managed catalogue,
+            otherwise None.
+        """
+        mount_point = abspath(mount.mount_point)
+        try:
+            relative = mount_point.relative_to(self.mount)
+        except ValueError:
+            return None
+        if len(relative.parts) != 2:
+            return None
+        try:
+            repo_id = uuid.UUID(relative.parts[0]).hex
+        except ValueError:
+            return None
+        return repo_id if mount_point == self.repo(repo_id).mount else None
+
+    def managed_alias_target(self, candidate: Path) -> tuple[str, Repository] | None:
+        """Return the managed repository target for a raw alias symlink.
+
+        Parameters
+        ----------
+        candidate : Path
+            Candidate symlink path to inspect without resolving through its target.
+
+        Returns
+        -------
+        tuple[str, State.Repository] | None
+            Repository ID and local layout when the symlink targets Bertrand's hidden
+            mount catalogue, otherwise None.
+
+        Raises
+        ------
+        OSError
+            If the symlink points into the managed catalogue but does not match the
+            expected repository mount layout.
+        """
+        try:
+            target = candidate.readlink()
+        except OSError as err:
+            msg = f"failed to inspect managed alias candidate {candidate}: {err}"
+            raise OSError(msg) from err
+        if not target.is_absolute():
+            return None
+
+        try:
+            relative = target.relative_to(self.mount)
+        except ValueError:
+            return None
+        if len(relative.parts) != 2:
+            msg = (
+                f"repository alias path {candidate} points to malformed managed "
+                f"target {target}; expected {self.mount}/<repo_id>/mount"
+            )
+            raise OSError(msg)
+        try:
+            repo_id = uuid.UUID(relative.parts[0]).hex
+        except ValueError as err:
+            msg = (
+                f"repository alias path {candidate} points to invalid repository "
+                f"target {target}: {err}"
+            )
+            raise OSError(msg) from err
+        repo = self.repo(repo_id)
+        if target != repo.mount:
+            msg = (
+                f"repository alias path {candidate} points to malformed managed "
+                f"target {target}; expected {repo.mount}"
+            )
+            raise OSError(msg)
+        return repo_id, repo
+
+    def managed_alias_ancestor(self, path: Path) -> tuple[Path, str, Repository] | None:
+        """Return the nearest managed alias at or above `path`, if any.
+
+        Returns
+        -------
+        tuple[Path, str, State.Repository] | None
+            Alias path, repository UUID, and repository layout, otherwise None.
+        """
+        inspected = abspath(path)
+        for candidate in (inspected, *inspected.parents):
+            if not candidate.is_symlink():
+                continue
+            managed = self.managed_alias_target(candidate)
+            if managed is None:
+                continue
+            repo_id, repo = managed
+            return candidate, repo_id, repo
+        return None
+
+    async def normalize_repository_catalog(
+        self,
+        *,
+        catalog_id: str,
+        metadata_id: str,
+        aliases: Sequence[Path] = (),
+        deadline: Deadline,
+    ) -> Repository:
+        """Make the local repository catalogue agree with mounted metadata.
+
+        The metadata ID stored inside the repository volume is authoritative over the
+        directory name under the host-local mount catalogue.  When they disagree, this
+        method moves the local catalogue directory and retargets live persisted aliases.
+
+        Returns
+        -------
+        State.Repository
+            Repository layout for the authoritative metadata ID.
+
+        Raises
+        ------
+        OSError
+            If the catalogue cannot be repaired safely.
+        """
+        catalog_id = uuid.UUID(catalog_id).hex
+        metadata_id = uuid.UUID(metadata_id).hex
+        old = self.repo(catalog_id)
+        new = self.repo(metadata_id)
+        if old.root == new.root:
+            return new
+
+        await new.lock.lock(deadline)
+        try:
+            if new.root.exists() or new.root.is_symlink():
+                msg = (
+                    f"cannot repair repository catalogue {old.root}: authoritative "
+                    f"metadata id {metadata_id} maps to existing path {new.root}"
+                )
+                raise OSError(msg)
+            if not old.root.exists() or not old.root.is_dir() or old.root.is_symlink():
+                msg = f"cannot repair missing repository catalogue path: {old.root}"
+                raise OSError(msg)
+
+            known_aliases = old._load_aliases()
+            known_aliases.update(abspath(alias) for alias in aliases)
+            await self.mkdir(new.root.parent, deadline=deadline, yes=True)
+            await run(
+                sudo(
+                    ["mv", str(old.root), str(new.root)],
+                    non_interactive=True,
+                ),
+                deadline=deadline,
+            )
+
+            live_aliases: set[Path] = set()
+            for alias in known_aliases:
+                if symlink_points_to(alias, old.mount):
+                    atomic_symlink(new.mount, alias)
+                    live_aliases.add(alias)
+                elif symlink_points_to(alias, new.mount):
+                    live_aliases.add(alias)
+                elif alias.exists() or alias.is_symlink():
+                    msg = (
+                        f"recorded repository alias path {alias} is occupied but is "
+                        f"not a managed symlink to {old.mount} or {new.mount}"
+                    )
+                    raise OSError(msg)
+
+            await new._write_aliases(live_aliases, deadline=deadline)
+            await new.write_metadata_id(metadata_id, deadline=deadline)
+            return new
+        finally:
+            await new.lock.unlock(ignore_errors=True)
+
+    async def prune_mounts(
+        self,
+        *,
+        deadline: Deadline,
+        limit: int,
+        force: bool,
+    ) -> tuple[str, ...]:
+        """Prune bounded host-local hidden repository mounts with no live aliases.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Repository IDs whose hidden mounts were detached.
+
+        Raises
+        ------
+        ValueError
+            If `limit` is negative.
+        """
+        if limit < 0:
+            msg = "repository mount prune limit cannot be negative"
+            raise ValueError(msg)
+        if limit == 0 or not self.mount.exists():
+            return ()
+
+        mounted = [
+            (repo_id, mount)
+            for mount in Mount.under(self.mount).values()
+            if (repo_id := self.repository_mount_id(mount)) is not None
+        ]
+        mounted.sort(key=lambda item: item[0])
+        if not mounted:
+            return ()
+
+        cursor_file = self.cache / "repository-mount-gc-cursor"
+        cursor = ""
+        with contextlib.suppress(OSError):
+            cursor = cursor_file.read_text(encoding="utf-8").strip()
+        start = 0
+        ids = [repo_id for repo_id, _ in mounted]
+        if cursor in ids:
+            start = (ids.index(cursor) + 1) % len(mounted)
+        rotated = mounted[start:] + mounted[:start]
+
+        pruned: list[str] = []
+        last_seen = cursor
+        for repo_id, mount in rotated[:limit]:
+            last_seen = repo_id
+            repo = self.repo(repo_id)
+            async with repo.aliases(deadline=deadline) as aliases:
+                live = any(
+                    symlink_points_to(alias, repo.mount) for alias in aliases.aliases
+                )
+            if live:
+                continue
+            current = Mount.search(mount.mount_point)
+            if current is None:
+                continue
+            await current.unmount(deadline=deadline, force=force)
+            pruned.append(repo_id)
+
+        if last_seen:
+            await self.write(cursor_file, last_seen + "\n", deadline=deadline, yes=True)
+        return tuple(pruned)
+
+
+STATE = State()
 _HOOK_OPERATION_ERRORS: tuple[type[Exception], ...] = (
     OSError,
     RuntimeError,
@@ -1330,98 +3225,6 @@ _HOOK_OPERATION_ERRORS: tuple[type[Exception], ...] = (
     ValueError,
     CommandError,
 )
-
-
-@dataclass(frozen=True)
-class GitRefUpdate:
-    """A single reference update received from git on stdin."""
-
-    old: str
-    new: str
-    ref: str
-
-    @property
-    def is_head(self) -> bool:
-        """Return whether this update targets a branch ref.
-
-        Returns
-        -------
-        bool
-            True if this update targets `refs/heads/*`.
-        """
-        return self.ref.startswith(GIT_REF_HEADS_PREFIX)
-
-    @property
-    def branch(self) -> str:
-        """Return the short branch name for this update.
-
-        Returns
-        -------
-        str
-            The short branch name for `refs/heads/*` updates.
-        """
-        return self.ref[len(GIT_REF_HEADS_PREFIX) :]
-
-    @property
-    def created(self) -> bool:
-        """Return whether this update created a ref.
-
-        Returns
-        -------
-        bool
-            True if this update created a new ref.
-        """
-        return all(c == "0" for c in self.old) and any(c != "0" for c in self.new)
-
-    @property
-    def destroyed(self) -> bool:
-        """Return whether this update deleted a ref.
-
-        Returns
-        -------
-        bool
-            True if this update deleted an existing ref.
-        """
-        return any(c != "0" for c in self.old) and all(c == "0" for c in self.new)
-
-    @classmethod
-    def parse(cls, stdin: str) -> list[GitRefUpdate]:
-        """Parse and validate transaction update lines from stdin.
-
-        Parameters
-        ----------
-        stdin : str
-            The raw stdin input containing reference update lines, typically read from
-            the `reference-transaction` hook's standard input stream.
-
-        Returns
-        -------
-        list[GitRefUpdate]
-            A list of parsed reference updates.
-
-        Raises
-        ------
-        ValueError
-            If any line is malformed.
-        """
-        updates: list[GitRefUpdate] = []
-        for index, raw in enumerate(stdin.splitlines(), start=1):
-            line = raw.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) != 3:
-                msg = (
-                    f"malformed git transaction line {index}: expected "
-                    f"'<old> <new> <ref>', got: {raw!r}"
-                )
-                raise ValueError(msg)
-            old, new, ref = (part.strip() for part in parts)
-            if not ref:
-                msg = f"malformed git transaction line {index}: ref must not be empty"
-                raise ValueError(msg)
-            updates.append(cls(old=old, new=new, ref=ref))
-        return updates
 
 
 @dataclass(frozen=True)
@@ -1435,6 +3238,99 @@ class GitRepository:
         be by running `git rev-parse --git-common-dir` in the current working
         directory.
     """
+
+    @dataclass(frozen=True)
+    class RefUpdate:
+        """A single reference update received from git on stdin."""
+
+        old: str
+        new: str
+        ref: str
+
+        @property
+        def is_head(self) -> bool:
+            """Return whether this update targets a branch ref.
+
+            Returns
+            -------
+            bool
+                True if this update targets `refs/heads/*`.
+            """
+            return self.ref.startswith(GIT_REF_HEADS_PREFIX)
+
+        @property
+        def branch(self) -> str:
+            """Return the short branch name for this update.
+
+            Returns
+            -------
+            str
+                The short branch name for `refs/heads/*` updates.
+            """
+            return self.ref[len(GIT_REF_HEADS_PREFIX) :]
+
+        @property
+        def created(self) -> bool:
+            """Return whether this update created a ref.
+
+            Returns
+            -------
+            bool
+                True if this update created a new ref.
+            """
+            return all(c == "0" for c in self.old) and any(c != "0" for c in self.new)
+
+        @property
+        def destroyed(self) -> bool:
+            """Return whether this update deleted a ref.
+
+            Returns
+            -------
+            bool
+                True if this update deleted an existing ref.
+            """
+            return any(c != "0" for c in self.old) and all(c == "0" for c in self.new)
+
+        @classmethod
+        def parse(cls, stdin: str) -> list[GitRepository.RefUpdate]:
+            """Parse and validate transaction update lines from stdin.
+
+            Parameters
+            ----------
+            stdin : str
+                The raw stdin input containing reference update lines, typically read
+                from the `reference-transaction` hook's standard input stream.
+
+            Returns
+            -------
+            list[GitRepository.RefUpdate]
+                A list of parsed reference updates.
+
+            Raises
+            ------
+            ValueError
+                If any line is malformed.
+            """
+            updates: list[GitRepository.RefUpdate] = []
+            for index, raw in enumerate(stdin.splitlines(), start=1):
+                line = raw.strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) != 3:
+                    msg = (
+                        f"malformed git transaction line {index}: expected "
+                        f"'<old> <new> <ref>', got: {raw!r}"
+                    )
+                    raise ValueError(msg)
+                old, new, ref = (part.strip() for part in parts)
+                if not ref:
+                    msg = (
+                        f"malformed git transaction line {index}: ref must not be empty"
+                    )
+                    raise ValueError(msg)
+                updates.append(cls(old=old, new=new, ref=ref))
+            return updates
 
     @dataclass(frozen=True)
     class Worktree:
@@ -1686,7 +3582,7 @@ class GitRepository:
             except (OSError, ValueError):
                 pass
         try:
-            host_id = uuid.UUID(HOST_ID_FILE.read_text(encoding="utf-8").strip())
+            host_id = uuid.UUID(STATE.id)
         except (OSError, ValueError) as err:
             msg = (
                 "Bertrand host identity is missing or malformed. Run `bertrand init` "
@@ -2527,7 +4423,7 @@ class GitRepository:
     def _intended_worktree_changes(
         self,
         *,
-        updates: Sequence[GitRefUpdate],
+        updates: Sequence[GitRepository.RefUpdate],
     ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
         # get creation/destruction intent from transaction updates
         created_: dict[str, list[str]] = {}
@@ -2654,7 +4550,7 @@ class GitRepository:
 
     async def sync_worktrees(
         self,
-        updates: Sequence[GitRefUpdate] = (),
+        updates: Sequence[GitRepository.RefUpdate] = (),
         *,
         deadline: Deadline = NO_DEADLINE,
     ) -> None:
@@ -2662,7 +4558,7 @@ class GitRepository:
 
         Parameters
         ----------
-        updates : Sequence[GitRefUpdate], optional
+        updates : Sequence[GitRepository.RefUpdate], optional
             The parsed reference updates received from git on stdin, which will be used
             to derive explicit intent for branch creations and destructions, as well as
             implicit hints for branch renames where creation and destruction are paired
