@@ -2502,15 +2502,9 @@ class State:
                     repo = self.repo(repo_root.name)
                 except ValueError:
                     continue
-                for alias in repo._load_aliases():
-                    if symlink_points_to(alias, repo.mount):
-                        alias.unlink()
-                    elif alias.exists() or alias.is_symlink():
-                        msg = (
-                            f"recorded repository alias path {alias} is occupied but "
-                            f"is not a managed symlink to {repo.mount}"
-                        )
-                        raise OSError(msg)
+                async with repo.aliases(deadline=deadline) as aliases:
+                    for alias in tuple(aliases.aliases):
+                        aliases.unlink(alias)
                 await repo.unmount(deadline=deadline, force=True)
 
             mounts = sorted(
@@ -2665,64 +2659,6 @@ class State:
             await self.state.mkdir(self.root, deadline=deadline)
             await self.state.mkdir(self.mount, deadline=deadline)
 
-        # TODO: try to eliminate these extra helpers
-
-        def _load_aliases(self) -> set[Path]:
-            """Load absolute alias paths from this repository's alias ledger.
-
-            Returns
-            -------
-            set[Path]
-                Absolute alias paths from the ledger.
-
-            Raises
-            ------
-            OSError
-                If the alias ledger cannot be read or decoded.
-            TypeError
-                If the alias ledger has an invalid shape.
-            """
-            if not self.alias_file.exists():
-                return set()
-            try:
-                payload = json.loads(self.alias_file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as err:
-                msg = f"failed to read repository alias ledger at {self.alias_file}"
-                raise OSError(msg) from err
-            if not isinstance(payload, list):
-                msg = f"expected a JSON array of alias paths, got: {payload}"
-                raise TypeError(msg)
-
-            aliases: set[Path] = set()
-            for item in payload:
-                if not isinstance(item, str):
-                    msg = f"expected alias paths to be strings, got: {item}"
-                    raise TypeError(msg)
-                path = Path(item)
-                if not path.is_absolute():
-                    msg = f"expected alias paths to be absolute, got: {path}"
-                    raise TypeError(msg)
-                aliases.add(path)
-            return aliases
-
-        async def _write_aliases(
-            self,
-            aliases: set[Path],
-            *,
-            deadline: Deadline,
-        ) -> None:
-            """Persist one sorted alias ledger."""
-            await self.state.mkdir(self.alias_file.parent, deadline=deadline)
-            await self.state.write(
-                self.alias_file,
-                json.dumps(
-                    sorted(str(alias) for alias in aliases),
-                    separators=(",", ":"),
-                )
-                + "\n",
-                deadline=deadline,
-            )
-
         async def unmount(self, *, deadline: Deadline, force: bool) -> bool:
             """Unmount this repository's hidden host mount point if it is mounted.
 
@@ -2758,28 +2694,67 @@ class State:
                     raise TimeoutError(msg)
 
             async def __aenter__(self) -> Self:
-                """Lock host-local alias mutation for this repository.
+                """Lock, load, and filter the host-local aliases for this repository.
 
                 Returns
                 -------
                 State.Repository.Aliases
                     Active alias mutation context.
 
+                Raises
+                ------
+                OSError
+                    If the alias ledger file is present but cannot be read.
+                TypeError
+                    If the alias ledger file contains unexpected data.
                 """
                 if self._depth > 0:
                     self._depth += 1
                     return self  # re-entrant case
 
                 # acquire lock
+                self.aliases.clear()
                 await self.repo.lock.lock(deadline=self.deadline)
                 try:
-                    # only retain aliases that are still valid symlinks to this repo's
-                    # mount point
-                    for path in self.repo._load_aliases():
-                        if path.is_symlink() and symlink_points_to(
-                            path, self.repo.mount
-                        ):
-                            self.aliases.add(path)
+                    if self.repo.alias_file.exists():
+                        try:
+                            payload = json.loads(
+                                self.repo.alias_file.read_text(encoding="utf-8")
+                            )
+                        except json.JSONDecodeError as err:
+                            msg = (
+                                f"repository alias ledger at {self.repo.alias_file} "
+                                "does not contain valid JSON data"
+                            )
+                            raise TypeError(msg) from err
+                        except OSError as err:
+                            msg = (
+                                "failed to read repository alias ledger at "
+                                f"{self.repo.alias_file}"
+                            )
+                            raise OSError(msg) from err
+                        if not isinstance(payload, list):
+                            msg = (
+                                f"expected a JSON array of alias paths, got: {payload}"
+                            )
+                            raise TypeError(msg)
+
+                        for path in payload:
+                            if not isinstance(path, str):
+                                msg = f"expected alias paths to be strings, got: {path}"
+                                raise TypeError(msg)
+                            path = Path(path)
+                            if not path.is_absolute():
+                                msg = f"expected absolute alias paths, got: {path}"
+                                raise TypeError(msg)
+
+                            # only retain aliases that are still valid symlinks to this
+                            # repo's mount point
+                            if path.is_symlink() and symlink_points_to(
+                                path,
+                                self.repo.mount,
+                            ):
+                                self.aliases.add(path)
                 except:
                     await self.repo.lock.unlock(ignore_errors=True)
                     raise
@@ -2787,85 +2762,13 @@ class State:
                 self._depth = 1
                 return self
 
-            def link(self, path: Path) -> bool:
-                """Create or validate a managed alias symlink for this repository.
-
-                Parameters
-                ----------
-                path : Path
-                    Absolute path to create a symlink to this repository's mount point
-                    at.
-
-                Returns
-                -------
-                bool
-                    True if a new symlink was created, false if it already existed.
-
-                Raises
-                ------
-                OSError
-                    If the alias path collides with unmanaged content.
-                RuntimeError
-                    If called outside an active alias context.
-                """
-                if self._depth < 1:
-                    msg = (
-                        "Repository.Aliases must be used inside 'async with' before "
-                        "calling link()/unlink()"
-                    )
-                    raise RuntimeError(msg)
-
-                path = abspath(path)
-                missing = not (path.exists() or path.is_symlink())
-                if missing:
-                    atomic_symlink(self.repo.mount, path)
-                elif not symlink_points_to(path, self.repo.mount):
-                    msg = (
-                        f"repository alias path '{path}' already exists and is not a "
-                        f"managed symlink to '{self.repo.mount}'"
-                    )
-                    raise OSError(msg)
-                self.aliases.add(path)
-                return missing
-
-            def unlink(self, path: Path) -> bool:
-                """Remove a managed alias symlink for this repository.
-
-                Returns
-                -------
-                bool
-                    True if the alias was removed or discarded from this context, false
-                    otherwise.
-
-                Raises
-                ------
-                RuntimeError
-                    If called outside an active alias context.
-                """
-                if self._depth < 1:
-                    msg = (
-                        "Repository.Aliases must be used inside 'async with' before "
-                        "calling link()/unlink()"
-                    )
-                    raise RuntimeError(msg)
-                path = abspath(path)
-
-                if symlink_points_to(path, self.repo.mount):
-                    path.unlink()
-                    self.aliases.discard(path)
-                    return True
-                if path in self.aliases:
-                    self.aliases.discard(path)
-                    return True
-                return False
-
             async def __aexit__(
                 self,
                 exc_type: type[BaseException] | None,
                 exc_value: BaseException | None,
                 traceback: TracebackType | None,
             ) -> None:
-                """Release the repository alias mutation lock.
+                """Dump the aliases back to disk and release the repository lock.
 
                 Parameters
                 ----------
@@ -2886,8 +2789,17 @@ class State:
                 self._depth = 0
                 try:
                     # dump aliases to disk
-                    await self.repo._write_aliases(
-                        self.aliases,
+                    await self.repo.state.mkdir(
+                        self.repo.alias_file.parent,
+                        deadline=self.deadline,
+                    )
+                    await self.repo.state.write(
+                        self.repo.alias_file,
+                        json.dumps(
+                            sorted(str(alias) for alias in self.aliases),
+                            separators=(",", ":"),
+                        )
+                        + "\n",
                         deadline=self.deadline,
                     )
                 except:  # noqa: E722
@@ -2898,6 +2810,125 @@ class State:
 
                 # release lock
                 await self.repo.lock.unlock()
+
+            def _assert_active_context(self, action: str) -> None:
+                if self._depth < 1:
+                    msg = (
+                        "Repository.Aliases must be used inside 'async with' before "
+                        f"calling {action}()"
+                    )
+                    raise RuntimeError(msg)
+
+            def link(self, path: Path) -> bool:
+                """Create or validate a managed alias symlink for this repository.
+
+                Parameters
+                ----------
+                path : Path
+                    Absolute path to create a symlink to this repository's mount point
+                    at.
+
+                Returns
+                -------
+                bool
+                    True if a new symlink was created, false if it already existed.
+
+                Raises
+                ------
+                OSError
+                    If the alias path collides with unmanaged content.
+                """
+                self._assert_active_context("link")
+                path = abspath(path)
+                missing = not (path.exists() or path.is_symlink())
+                if missing:
+                    atomic_symlink(self.repo.mount, path)
+                elif not symlink_points_to(path, self.repo.mount):
+                    msg = (
+                        f"repository alias path '{path}' already exists and is not a "
+                        f"managed symlink to '{self.repo.mount}'"
+                    )
+                    raise OSError(msg)
+                self.aliases.add(path)
+                return missing
+
+            def unlink(self, path: Path) -> bool:
+                """Remove a managed alias symlink for this repository.
+
+                Parameters
+                ----------
+                path : Path
+                    Absolute path to remove from this repository's aliases.
+
+                Returns
+                -------
+                bool
+                    True if the alias was removed or discarded from this context, false
+                    otherwise.
+                """
+                self._assert_active_context("unlink")
+                path = abspath(path)
+
+                if symlink_points_to(path, self.repo.mount):
+                    path.unlink()
+                    self.aliases.discard(path)
+                    return True
+                if path in self.aliases:
+                    self.aliases.discard(path)
+                    return True
+                return False
+
+            # TODO: review the actual transfer() logic itself
+
+            def transfer(self, target: State.Repository.Aliases) -> int:
+                """Transfer active aliases from this repository to another.
+
+                Parameters
+                ----------
+                target : State.Repository.Aliases
+                    Active alias context that should receive this context's aliases.
+
+                Returns
+                -------
+                int
+                    Number of live aliases transferred to the target context.
+
+                Raises
+                ------
+                OSError
+                    If a recorded alias path is occupied by unmanaged content.
+                """
+                self._assert_active_context("transfer")
+                target._assert_active_context("transfer")
+                if self is target or self.repo.mount == target.repo.mount:
+                    return 0
+
+                moves: list[tuple[Path, bool]] = []
+                missing: list[Path] = []
+                for alias in sorted(self.aliases):
+                    if symlink_points_to(alias, self.repo.mount):
+                        moves.append((alias, True))
+                    elif symlink_points_to(alias, target.repo.mount):
+                        moves.append((alias, False))
+                    elif alias.exists() or alias.is_symlink():
+                        msg = (
+                            f"recorded repository alias path {alias} is occupied but "
+                            f"is not a managed symlink to {self.repo.mount} or "
+                            f"{target.repo.mount}"
+                        )
+                        raise OSError(msg)
+                    else:
+                        missing.append(alias)
+
+                for alias in missing:
+                    self.aliases.discard(alias)
+
+                for alias, retarget in moves:
+                    if retarget:
+                        atomic_symlink(target.repo.mount, alias)
+                    self.aliases.discard(alias)
+                    target.aliases.add(alias)
+                return len(moves)
 
         def aliases(self, *, deadline: Deadline) -> Aliases:
             """Return a locked alias symlink mutation context for this repository.
@@ -2914,40 +2945,23 @@ class State:
             """
             return self.Aliases(self, deadline=deadline)
 
-        async def normalize(self, *, deadline: Deadline) -> State.Repository:
-            """Ensure this repository's local mount ID agrees with mounted metadata.
-
-            Returns
-            -------
-            State.Repository
-                Repository layout for the authoritative metadata ID.
-            """
-            return await self._normalize(deadline=deadline, visited=set())
-
         async def _normalize(
             self,
             *,
             deadline: Deadline,
             visited: set[str],
         ) -> State.Repository:
-            """Recursive implementation for `normalize()`.
-
-            Returns
-            -------
-            State.Repository
-                Repository layout for the authoritative metadata ID.
-
-            Raises
-            ------
-            OSError
-                If local catalog repair cannot be completed safely.
-            """
+            # check for cycles
             if self.mount_id in visited:
-                chain = " -> ".join((*visited, self.mount_id))
-                msg = f"repository metadata normalization cycle detected: {chain}"
+                msg = (
+                    "repository metadata normalization cycle detected: "
+                    f"{' -> '.join((*visited, self.mount_id))}"
+                )
                 raise OSError(msg)
             visited.add(self.mount_id)
 
+            # try to read repository ID from metadata and repair/reuse it if it matches
+            # the mount ID
             repo_id = self.repo_id
             if repo_id is None:
                 await self.state.write(
@@ -2958,8 +2972,6 @@ class State:
                 return self
             if repo_id == self.mount_id:
                 return self
-
-            target = self.state.repo(repo_id)
             if (
                 not self.root.exists()
                 or not self.root.is_dir()
@@ -2968,145 +2980,58 @@ class State:
                 msg = f"cannot repair missing repository catalog path: {self.root}"
                 raise OSError(msg)
 
-            if not target.root.exists() and not target.root.is_symlink():
-                await target.lock.lock(deadline=deadline)
-                try:
-                    if target.root.exists() or target.root.is_symlink():
-                        msg = (
-                            f"cannot repair repository catalog {self.root}: "
-                            f"authoritative target {target.root} appeared during "
-                            "normalization"
-                        )
-                        raise OSError(msg)
-                    return await self._move_to(
-                        target,
-                        repo_id=repo_id,
-                        deadline=deadline,
-                    )
-                finally:
-                    await target.lock.unlock(ignore_errors=True)
-
-            if target.root.is_symlink() or not target.root.is_dir():
+            # repo ID doesn't match mount ID; treat repo ID as authoritative and move
+            # aliases to that location, leaving any required remount to the Ceph layer
+            target = self.state.repo(repo_id)
+            if (target.root.exists() or target.root.is_symlink()) and (
+                target.root.is_symlink() or not target.root.is_dir()
+            ):
                 msg = (
                     f"cannot repair repository catalog {self.root}: authoritative "
                     f"repository id {repo_id} maps to malformed path {target.root}"
                 )
                 raise OSError(msg)
 
-            if Mount.search(target.mount) is None:
-                msg = (
-                    f"cannot repair repository catalog {self.root}: authoritative "
-                    f"repository id {repo_id} maps to existing catalog {target.root}, "
-                    f"but hidden mount {target.mount} is not mounted"
-                )
-                raise OSError(msg)
+            # recur only through mounted targets; missing/unmounted authoritative
+            # mounts are valid dangling resurrection targets for the Ceph layer
+            result = target
+            if Mount.search(target.mount) is not None:
+                result = await target._normalize(deadline=deadline, visited=visited)
 
-            final = await target._normalize(deadline=deadline, visited=visited)
-            await self._merge_into(final, deadline=deadline)
-            return final
+            # lock in deterministic order to prevent deadlocks
+            if self.mount_id < result.mount_id:
+                async with (
+                    self.aliases(deadline=deadline) as source_aliases,
+                    result.aliases(deadline=deadline) as target_aliases,
+                ):
+                    source_aliases.transfer(target_aliases)
+            else:
+                async with (
+                    result.aliases(deadline=deadline) as target_aliases,
+                    self.aliases(deadline=deadline) as source_aliases,
+                ):
+                    source_aliases.transfer(target_aliases)
 
-        async def _move_to(
-            self,
-            target: State.Repository,
-            *,
-            repo_id: str,
-            deadline: Deadline,
-        ) -> State.Repository:
-            """Move this catalog root to an empty authoritative target.
+            # explicitly unmount source after transferring aliases so as not to
+            # interfere with any recursive ancestors; the Ceph layer will resurrect the
+            # mount at the correct location if needed using the updated mount ID
+            await self.unmount(deadline=deadline, force=False)
+            return result
+
+        async def normalize(self, *, deadline: Deadline) -> State.Repository:
+            """Ensure this repository's local mount ID agrees with mounted metadata.
+
+            Parameters
+            ----------
+            deadline : Deadline
+                Maximum time in seconds to wait for required host commands.
 
             Returns
             -------
             State.Repository
                 Repository layout for the authoritative metadata ID.
             """
-            recorded_aliases = self._load_aliases()
-            await self.state.mkdir(target.root.parent, deadline=deadline)
-            await run(
-                sudo(
-                    ["mv", str(self.root), str(target.root)],
-                    non_interactive=True,
-                ),
-                deadline=deadline,
-            )
-
-            live_aliases = self._retarget_aliases(
-                recorded_aliases,
-                old_mount=self.mount,
-                new_mount=target.mount,
-            )
-            await target._write_aliases(live_aliases, deadline=deadline)
-            await self.state.write(target.id_file, repo_id + "\n", deadline=deadline)
-            return target
-
-        async def _merge_into(
-            self,
-            target: State.Repository,
-            *,
-            deadline: Deadline,
-        ) -> None:
-            """Retarget this mounted catalog's recorded aliases to `target`.
-
-            Raises
-            ------
-            OSError
-                If recorded aliases collide with unmanaged content or the old catalog
-                cannot be pruned safely after retargeting.
-            """
-            merged_aliases = {
-                alias
-                for alias in target._load_aliases()
-                if alias.is_symlink() and symlink_points_to(alias, target.mount)
-            }
-            merged_aliases.update(
-                self._retarget_aliases(
-                    self._load_aliases(),
-                    old_mount=self.mount,
-                    new_mount=target.mount,
-                )
-            )
-            await target._write_aliases(merged_aliases, deadline=deadline)
-            await self._write_aliases(set(), deadline=deadline)
-            await self.gc(deadline=deadline, force=False)
-            if self.root.exists() or self.root.is_symlink():
-                msg = (
-                    f"failed to prune old repository catalog {self.root} after "
-                    f"normalizing it to {target.root}"
-                )
-                raise OSError(msg)
-
-        @staticmethod
-        def _retarget_aliases(
-            aliases: set[Path],
-            *,
-            old_mount: Path,
-            new_mount: Path,
-        ) -> set[Path]:
-            """Retarget recorded live aliases from one hidden mount to another.
-
-            Returns
-            -------
-            set[Path]
-                Recorded aliases that now point to the new hidden mount.
-
-            Raises
-            ------
-            OSError
-                If a recorded alias path is occupied by unmanaged content.
-            """
-            live_aliases: set[Path] = set()
-            for alias in aliases:
-                if symlink_points_to(alias, old_mount):
-                    atomic_symlink(new_mount, alias)
-                    live_aliases.add(alias)
-                elif symlink_points_to(alias, new_mount):
-                    live_aliases.add(alias)
-                elif alias.exists() or alias.is_symlink():
-                    msg = (
-                        f"recorded repository alias path {alias} is occupied but is "
-                        f"not a managed symlink to {old_mount} or {new_mount}"
-                    )
-                    raise OSError(msg)
-            return live_aliases
+            return await self._normalize(deadline=deadline, visited=set())
 
         async def gc(
             self,
@@ -3129,11 +3054,11 @@ class State:
                 else Mount.search(mount.mount_point)
             )
             if current is not None:
-                async with self.aliases(deadline=deadline) as aliases:
-                    live = any(
-                        symlink_points_to(alias, self.mount)
-                        for alias in aliases.aliases
-                    )
+                try:
+                    async with self.aliases(deadline=deadline) as aliases:
+                        live = bool(aliases.aliases)
+                except (OSError, TypeError):
+                    return False
                 if live:
                     return False
                 await current.unmount(deadline=deadline, force=force)
@@ -3146,10 +3071,11 @@ class State:
             ):
                 return removed
             try:
-                aliases = self._load_aliases()
+                async with self.aliases(deadline=deadline) as aliases:
+                    live = bool(aliases.aliases)
             except (OSError, TypeError):
                 return removed
-            if any(alias.exists() or alias.is_symlink() for alias in aliases):
+            if live:
                 return removed
 
             allowed = {self.mount, self.alias_file}
@@ -3157,7 +3083,7 @@ class State:
                 if child not in allowed:
                     return removed
                 if child == self.alias_file:
-                    if child.is_symlink() or not child.is_file() or aliases:
+                    if child.is_symlink() or not child.is_file():
                         return removed
                 elif child == self.mount and (
                     child.is_symlink() or not child.is_dir() or any(child.iterdir())

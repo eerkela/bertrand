@@ -141,11 +141,6 @@ async def _normalize_mounted_repository_catalog(
     -------
     tuple[UUIDHex, Mount | None]
         Authoritative repository ID and the mounted entry when present.
-
-    Raises
-    ------
-    OSError
-        If mounted metadata conflicts cannot be repaired safely.
     """
     mount_id = _check_uuid(mount_id)
     repo = STATE.repo(mount_id)
@@ -157,12 +152,6 @@ async def _normalize_mounted_repository_catalog(
     repo_id = repaired.repo_id or repaired.mount_id
     repo_id = _check_uuid(repo_id)
     mounted = Mount.search(repaired.mount)
-    if mounted is None:
-        msg = (
-            f"repository metadata id {repo_id} won over mount id {mount_id}, "
-            f"but repaired mount {repaired.mount} is not mounted"
-        )
-        raise OSError(msg)
     return repo_id, mounted
 
 
