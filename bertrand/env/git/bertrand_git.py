@@ -2044,7 +2044,7 @@ class State:
         concurrent `init` commands, by transitioning at the boundary between the global
         and per-repository bootstrap phases.
     mount : Path
-        Absolute path to a repository catalogue holding metadata for all the Bertrand
+        Absolute path to a repository catalog holding metadata for all the Bertrand
         repositories that are currently mounted to this host.
     dir_mode : int
         The file mode to set on created directories within the state root, by default
@@ -2199,7 +2199,6 @@ class State:
         group: str,
         mode: int,
         deadline: Deadline,
-        yes: bool,
     ) -> None:
         await run(
             sudo(
@@ -2215,12 +2214,12 @@ class State:
                     str(source),
                     str(target),
                 ],
-                non_interactive=yes,
+                non_interactive=True,
             ),
             deadline=deadline,
         )
 
-    async def mkdir(self, path: Path, *, deadline: Deadline, yes: bool) -> None:
+    async def mkdir(self, path: Path, *, deadline: Deadline) -> None:
         """Create a managed root-owned state directory with the configured permissions.
 
         Parameters
@@ -2230,8 +2229,6 @@ class State:
             of the `root` directory.
         deadline : Deadline
             Maximum time in seconds to wait for required host commands.
-        yes : bool
-            If True, automatically confirm any prompts for creating the directory.
         """
         await run(
             sudo(
@@ -2246,19 +2243,12 @@ class State:
                     BERTRAND_GROUP,
                     str(self.path(path)),
                 ],
-                non_interactive=yes,
+                non_interactive=True,
             ),
             deadline=deadline,
         )
 
-    async def write(
-        self,
-        path: Path,
-        text: str,
-        *,
-        deadline: Deadline,
-        yes: bool,
-    ) -> None:
+    async def write(self, path: Path, text: str, *, deadline: Deadline) -> None:
         """Write one managed root-owned state file.
 
         Parameters
@@ -2269,8 +2259,6 @@ class State:
             The text content to write to the file, which will be UTF-8 encoded.
         deadline : Deadline
             Maximum time in seconds to wait for required host commands.
-        yes : bool
-            If True, automatically confirm any prompts for writing the file.
         """
         fd: int | None = None
         temp_file: Path | None = None
@@ -2287,7 +2275,6 @@ class State:
                 mode=self.file_mode,
                 group=BERTRAND_GROUP,
                 deadline=deadline,
-                yes=yes,
             )
         finally:
             if fd is not None:
@@ -2296,14 +2283,7 @@ class State:
             if temp_file is not None:
                 temp_file.unlink(missing_ok=True)
 
-    async def install(
-        self,
-        source: Path,
-        path: Path,
-        *,
-        deadline: Deadline,
-        yes: bool,
-    ) -> None:
+    async def install(self, source: Path, path: Path, *, deadline: Deadline) -> None:
         """Install one managed root-owned executable file.
 
         Parameters
@@ -2314,8 +2294,6 @@ class State:
             Relative path to the executable file to create beneath the state root.
         deadline : Deadline
             Maximum time in seconds to wait for required host commands.
-        yes : bool
-            If True, automatically confirm any prompts for installing the file.
         """
         await self._host_install(
             self.path(path),
@@ -2323,7 +2301,6 @@ class State:
             group=BERTRAND_GROUP,
             mode=self.bin_mode,
             deadline=deadline,
-            yes=yes,
         )
 
     async def _render_tmpfs_systemd_unit(
@@ -2331,7 +2308,6 @@ class State:
         *,
         gid: int,
         deadline: Deadline,
-        yes: bool,
     ) -> None:
         fd: int | None = None
         temp_unit: Path | None = None
@@ -2370,7 +2346,6 @@ class State:
                 mode=0o644,
                 group="root",
                 deadline=deadline,
-                yes=yes,
             )
         finally:
             if fd is not None:
@@ -2432,7 +2407,7 @@ class State:
                 self.kube.cache,
                 self.kube.runtime,
             ):
-                await self.mkdir(path, deadline=deadline, yes=yes)
+                await self.mkdir(path, deadline=deadline)
 
             # initialize state ID file if missing
             host_id = ""
@@ -2449,21 +2424,18 @@ class State:
                     self.id_file,
                     uuid.uuid4().hex + "\n",
                     deadline=deadline,
-                    yes=yes,
                 )
 
             # render tmpfs systemd unit for runtime directory, then reload systemd
-            await self._render_tmpfs_systemd_unit(
-                gid=group.gr_gid, deadline=deadline, yes=yes
-            )
+            await self._render_tmpfs_systemd_unit(gid=group.gr_gid, deadline=deadline)
             await run(
-                sudo(["systemctl", "daemon-reload"], non_interactive=yes),
+                sudo(["systemctl", "daemon-reload"], non_interactive=True),
                 deadline=deadline,
             )
             await run(
                 sudo(
                     ["systemctl", "enable", "--now", self.unit.name],
-                    non_interactive=yes,
+                    non_interactive=True,
                 ),
                 deadline=deadline,
             )
@@ -2521,7 +2493,7 @@ class State:
 
         if self.mount.exists():
             if not self.mount.is_dir():
-                msg = f"repository mount catalogue is not a directory: {self.mount}"
+                msg = f"repository mount catalog is not a directory: {self.mount}"
                 raise OSError(msg)
             for repo_root in sorted(self.mount.iterdir(), key=lambda item: item.name):
                 if not repo_root.is_dir() or repo_root.is_symlink():
@@ -2583,12 +2555,16 @@ class State:
             paths and perform filesystem operations.
         root : Path
             Absolute path to the root of this repository's metadata directory under the
-            state mount catalogue.  This is not the same as the repository's mount
-            point, which is where the repository's content is actually mounted to the
-            host filesystem.
+            state mount catalog.  This is not the same as the repository's mount point,
+            which is where the repository's content is actually mounted to the host
+            filesystem.
         mount : Path
             Absolute path to this repository's hidden mount point on the host, which is
             where the repository's content is actually mounted to the host filesystem.
+        id_file : Path
+            Absolute path to a file within this repository's metadata directory that
+            contains the mounted repository's authoritative UUID, which is used to
+            detect and repair mount-catalog drift.
         alias_file : Path
             Absolute path to this repository's alias ledger file, which contains a JSON
             array of absolute paths that are symlinked to this repository's mount point
@@ -2596,27 +2572,58 @@ class State:
         lock : HostLock
             A host lock for synchronizing access to this repository's metadata and mount
             information across concurrent `bertrand init` commands.  The lock path is
-            derived from the idempotent repository ID, and is stored in the tmpfs
+            derived from the idempotent mount ID, and is stored in the tmpfs
             runtime directory to ensure it does not persist across reboots.
         """
+
+        # TODO: maybe add a `.git` attribute that stores the GitRepository object for
+        # the mounted volume?
 
         state: State = field(repr=False, compare=False)
         root: Path
         mount: Path
+        id_file: Path
         alias_file: Path
         lock: HostLock
 
         @property
-        def id(self) -> str:
-            """The unique repository ID, derived from the repository root path.
+        def mount_id(self) -> str:
+            """The local hidden mount catalog ID.
 
             Returns
             -------
             str
-                The repository ID, which is the same as the repository root directory
-                name under the mount catalogue.
+                The UUID encoded by this repository's root directory name under the
+                host-local mount catalog.
             """
             return self.root.name
+
+        @property
+        def repo_id(self) -> str | None:
+            """Read the repository metadata ID stored inside the hidden mount.
+
+            Returns
+            -------
+            str | None
+                UUID hex string from the metadata file, or None when the file is
+                absent.
+
+            Raises
+            ------
+            OSError
+                If the metadata path exists but is not a regular UTF-8 UUID file.
+            """
+            if not self.id_file.exists():
+                return None
+            if not self.id_file.is_file():
+                msg = f"repository metadata identity path is not a file: {self.id_file}"
+                raise OSError(msg)
+
+            try:
+                return uuid.UUID(self.id_file.read_text(encoding="utf-8").strip()).hex
+            except (OSError, ValueError) as err:
+                msg = f"repository metadata identity is invalid at {self.id_file}"
+                raise OSError(msg) from err
 
         def path(self, path: Path) -> Path:
             """Return an absolute path under this repository's mount point.
@@ -2647,54 +2654,18 @@ class State:
                 raise ValueError(msg)
             return path
 
-        # TODO: review these methods as well.
+        async def init(self, *, deadline: Deadline) -> None:
+            """Create this repository's host-local catalog and mount point.
 
-        async def ensure_layout(self, *, deadline: Deadline, yes: bool = True) -> None:
-            """Create this repository's host-local catalogue and mount directories."""
-            await self.state.mkdir(self.root, deadline=deadline, yes=yes)
-            await self.state.mkdir(self.mount, deadline=deadline, yes=yes)
-
-        def read_metadata_id(self) -> str | None:
-            """Read the repository metadata ID stored inside the hidden mount.
-
-            Returns
-            -------
-            str | None
-                UUID hex string from the metadata file, or None when the file is
-                absent.
-
-            Raises
-            ------
-            OSError
-                If the metadata path exists but is not a regular UTF-8 UUID file.
+            Parameters
+            ----------
+            deadline : Deadline
+                Maximum time in seconds to wait for required host commands.
             """
-            path = self.path(METADATA_ID)
-            if not path.exists():
-                return None
-            if not path.is_file():
-                msg = f"repository metadata identity path is not a file: {path}"
-                raise OSError(msg)
-            try:
-                return uuid.UUID(path.read_text(encoding="utf-8").strip()).hex
-            except (OSError, ValueError) as err:
-                msg = f"repository metadata identity is invalid at {path}"
-                raise OSError(msg) from err
+            await self.state.mkdir(self.root, deadline=deadline)
+            await self.state.mkdir(self.mount, deadline=deadline)
 
-        async def write_metadata_id(
-            self,
-            repo_id: str | None = None,
-            *,
-            deadline: Deadline,
-            yes: bool = True,
-        ) -> None:
-            """Persist this repository's metadata ID inside the hidden mount."""
-            repo_id = self.id if repo_id is None else uuid.UUID(repo_id).hex
-            await self.state.write(
-                self.path(METADATA_ID),
-                repo_id + "\n",
-                deadline=deadline,
-                yes=yes,
-            )
+        # TODO: try to eliminate these extra helpers
 
         def _load_aliases(self) -> set[Path]:
             """Load absolute alias paths from this repository's alias ledger.
@@ -2741,7 +2712,7 @@ class State:
             deadline: Deadline,
         ) -> None:
             """Persist one sorted alias ledger."""
-            await self.state.mkdir(self.alias_file.parent, deadline=deadline, yes=True)
+            await self.state.mkdir(self.alias_file.parent, deadline=deadline)
             await self.state.write(
                 self.alias_file,
                 json.dumps(
@@ -2750,7 +2721,6 @@ class State:
                 )
                 + "\n",
                 deadline=deadline,
-                yes=True,
             )
 
         async def unmount(self, *, deadline: Deadline, force: bool) -> bool:
@@ -2920,14 +2890,14 @@ class State:
                         self.aliases,
                         deadline=self.deadline,
                     )
-
-                    # TODO: trigger bounded GC here
                 except:  # noqa: E722
                     await self.repo.lock.unlock(ignore_errors=True)
                     if exc_value is None:
                         raise
-                else:
-                    await self.repo.lock.unlock()
+                    return
+
+                # release lock
+                await self.repo.lock.unlock()
 
         def aliases(self, *, deadline: Deadline) -> Aliases:
             """Return a locked alias symlink mutation context for this repository.
@@ -2944,214 +2914,348 @@ class State:
             """
             return self.Aliases(self, deadline=deadline)
 
-    def repo(self, id: str) -> State.Repository:  # noqa: A002
-        """Get local metadata for a repository mounted to Bertrand's state directory.
+        async def normalize(self, *, deadline: Deadline) -> State.Repository:
+            """Ensure this repository's local mount ID agrees with mounted metadata.
 
-        Parameters
-        ----------
-        id : str
-            A repository UUID, which forms the name of the repository's root directory
-            under Bertrand's repository catalogue.
+            Returns
+            -------
+            State.Repository
+                Repository layout for the authoritative metadata ID.
+            """
+            return await self._normalize(deadline=deadline, visited=set())
 
-        Returns
-        -------
-        State.Repository
-            A structure containing paths to the repository's root, lock file, and mount
-            point within Bertrand's state directory.
+        async def _normalize(
+            self,
+            *,
+            deadline: Deadline,
+            visited: set[str],
+        ) -> State.Repository:
+            """Recursive implementation for `normalize()`.
 
-        Raises
-        ------
-        ValueError
-            If the provided repository ID is not a valid UUID string.
-        """
-        try:
-            repo_id = uuid.UUID(id).hex
-        except ValueError as err:
-            msg = f"invalid repository id (must be a valid UUID): {id}"
-            raise ValueError(msg) from err
+            Returns
+            -------
+            State.Repository
+                Repository layout for the authoritative metadata ID.
 
-        root = self.mount / repo_id
-        return self.Repository(
-            state=self,
-            root=root,
-            mount=root / "mount",
-            alias_file=root / "aliases.json",
-            lock=HostLock(self.mount_locks / f"{repo_id}.lock"),
-        )
+            Raises
+            ------
+            OSError
+                If local catalog repair cannot be completed safely.
+            """
+            if self.mount_id in visited:
+                chain = " -> ".join((*visited, self.mount_id))
+                msg = f"repository metadata normalization cycle detected: {chain}"
+                raise OSError(msg)
+            visited.add(self.mount_id)
 
-    # TODO: review everything below this line
+            repo_id = self.repo_id
+            if repo_id is None:
+                await self.state.write(
+                    self.id_file,
+                    self.mount_id + "\n",
+                    deadline=deadline,
+                )
+                return self
+            if repo_id == self.mount_id:
+                return self
 
-    def repository_mount_id(self, mount: Mount) -> str | None:
-        """Return the repository ID for one managed hidden mount entry.
+            target = self.state.repo(repo_id)
+            if (
+                not self.root.exists()
+                or not self.root.is_dir()
+                or self.root.is_symlink()
+            ):
+                msg = f"cannot repair missing repository catalog path: {self.root}"
+                raise OSError(msg)
 
-        Returns
-        -------
-        str | None
-            Repository UUID when the mount belongs to the managed catalogue,
-            otherwise None.
-        """
-        mount_point = abspath(mount.mount_point)
-        try:
-            relative = mount_point.relative_to(self.mount)
-        except ValueError:
-            return None
-        if len(relative.parts) != 2:
-            return None
-        try:
-            repo_id = uuid.UUID(relative.parts[0]).hex
-        except ValueError:
-            return None
-        return repo_id if mount_point == self.repo(repo_id).mount else None
+            if not target.root.exists() and not target.root.is_symlink():
+                await target.lock.lock(deadline=deadline)
+                try:
+                    if target.root.exists() or target.root.is_symlink():
+                        msg = (
+                            f"cannot repair repository catalog {self.root}: "
+                            f"authoritative target {target.root} appeared during "
+                            "normalization"
+                        )
+                        raise OSError(msg)
+                    return await self._move_to(
+                        target,
+                        repo_id=repo_id,
+                        deadline=deadline,
+                    )
+                finally:
+                    await target.lock.unlock(ignore_errors=True)
 
-    def managed_alias_target(self, candidate: Path) -> tuple[str, Repository] | None:
-        """Return the managed repository target for a raw alias symlink.
-
-        Parameters
-        ----------
-        candidate : Path
-            Candidate symlink path to inspect without resolving through its target.
-
-        Returns
-        -------
-        tuple[str, State.Repository] | None
-            Repository ID and local layout when the symlink targets Bertrand's hidden
-            mount catalogue, otherwise None.
-
-        Raises
-        ------
-        OSError
-            If the symlink points into the managed catalogue but does not match the
-            expected repository mount layout.
-        """
-        try:
-            target = candidate.readlink()
-        except OSError as err:
-            msg = f"failed to inspect managed alias candidate {candidate}: {err}"
-            raise OSError(msg) from err
-        if not target.is_absolute():
-            return None
-
-        try:
-            relative = target.relative_to(self.mount)
-        except ValueError:
-            return None
-        if len(relative.parts) != 2:
-            msg = (
-                f"repository alias path {candidate} points to malformed managed "
-                f"target {target}; expected {self.mount}/<repo_id>/mount"
-            )
-            raise OSError(msg)
-        try:
-            repo_id = uuid.UUID(relative.parts[0]).hex
-        except ValueError as err:
-            msg = (
-                f"repository alias path {candidate} points to invalid repository "
-                f"target {target}: {err}"
-            )
-            raise OSError(msg) from err
-        repo = self.repo(repo_id)
-        if target != repo.mount:
-            msg = (
-                f"repository alias path {candidate} points to malformed managed "
-                f"target {target}; expected {repo.mount}"
-            )
-            raise OSError(msg)
-        return repo_id, repo
-
-    def managed_alias_ancestor(self, path: Path) -> tuple[Path, str, Repository] | None:
-        """Return the nearest managed alias at or above `path`, if any.
-
-        Returns
-        -------
-        tuple[Path, str, State.Repository] | None
-            Alias path, repository UUID, and repository layout, otherwise None.
-        """
-        inspected = abspath(path)
-        for candidate in (inspected, *inspected.parents):
-            if not candidate.is_symlink():
-                continue
-            managed = self.managed_alias_target(candidate)
-            if managed is None:
-                continue
-            repo_id, repo = managed
-            return candidate, repo_id, repo
-        return None
-
-    async def normalize_repository_catalog(
-        self,
-        *,
-        catalog_id: str,
-        metadata_id: str,
-        aliases: Sequence[Path] = (),
-        deadline: Deadline,
-    ) -> Repository:
-        """Make the local repository catalogue agree with mounted metadata.
-
-        The metadata ID stored inside the repository volume is authoritative over the
-        directory name under the host-local mount catalogue.  When they disagree, this
-        method moves the local catalogue directory and retargets live persisted aliases.
-
-        Returns
-        -------
-        State.Repository
-            Repository layout for the authoritative metadata ID.
-
-        Raises
-        ------
-        OSError
-            If the catalogue cannot be repaired safely.
-        """
-        catalog_id = uuid.UUID(catalog_id).hex
-        metadata_id = uuid.UUID(metadata_id).hex
-        old = self.repo(catalog_id)
-        new = self.repo(metadata_id)
-        if old.root == new.root:
-            return new
-
-        await new.lock.lock(deadline)
-        try:
-            if new.root.exists() or new.root.is_symlink():
+            if target.root.is_symlink() or not target.root.is_dir():
                 msg = (
-                    f"cannot repair repository catalogue {old.root}: authoritative "
-                    f"metadata id {metadata_id} maps to existing path {new.root}"
+                    f"cannot repair repository catalog {self.root}: authoritative "
+                    f"repository id {repo_id} maps to malformed path {target.root}"
                 )
                 raise OSError(msg)
-            if not old.root.exists() or not old.root.is_dir() or old.root.is_symlink():
-                msg = f"cannot repair missing repository catalogue path: {old.root}"
+
+            if Mount.search(target.mount) is None:
+                msg = (
+                    f"cannot repair repository catalog {self.root}: authoritative "
+                    f"repository id {repo_id} maps to existing catalog {target.root}, "
+                    f"but hidden mount {target.mount} is not mounted"
+                )
                 raise OSError(msg)
 
-            known_aliases = old._load_aliases()
-            known_aliases.update(abspath(alias) for alias in aliases)
-            await self.mkdir(new.root.parent, deadline=deadline, yes=True)
+            final = await target._normalize(deadline=deadline, visited=visited)
+            await self._merge_into(final, deadline=deadline)
+            return final
+
+        async def _move_to(
+            self,
+            target: State.Repository,
+            *,
+            repo_id: str,
+            deadline: Deadline,
+        ) -> State.Repository:
+            """Move this catalog root to an empty authoritative target.
+
+            Returns
+            -------
+            State.Repository
+                Repository layout for the authoritative metadata ID.
+            """
+            recorded_aliases = self._load_aliases()
+            await self.state.mkdir(target.root.parent, deadline=deadline)
             await run(
                 sudo(
-                    ["mv", str(old.root), str(new.root)],
+                    ["mv", str(self.root), str(target.root)],
                     non_interactive=True,
                 ),
                 deadline=deadline,
             )
 
+            live_aliases = self._retarget_aliases(
+                recorded_aliases,
+                old_mount=self.mount,
+                new_mount=target.mount,
+            )
+            await target._write_aliases(live_aliases, deadline=deadline)
+            await self.state.write(target.id_file, repo_id + "\n", deadline=deadline)
+            return target
+
+        async def _merge_into(
+            self,
+            target: State.Repository,
+            *,
+            deadline: Deadline,
+        ) -> None:
+            """Retarget this mounted catalog's recorded aliases to `target`.
+
+            Raises
+            ------
+            OSError
+                If recorded aliases collide with unmanaged content or the old catalog
+                cannot be pruned safely after retargeting.
+            """
+            merged_aliases = {
+                alias
+                for alias in target._load_aliases()
+                if alias.is_symlink() and symlink_points_to(alias, target.mount)
+            }
+            merged_aliases.update(
+                self._retarget_aliases(
+                    self._load_aliases(),
+                    old_mount=self.mount,
+                    new_mount=target.mount,
+                )
+            )
+            await target._write_aliases(merged_aliases, deadline=deadline)
+            await self._write_aliases(set(), deadline=deadline)
+            await self.gc(deadline=deadline, force=False)
+            if self.root.exists() or self.root.is_symlink():
+                msg = (
+                    f"failed to prune old repository catalog {self.root} after "
+                    f"normalizing it to {target.root}"
+                )
+                raise OSError(msg)
+
+        @staticmethod
+        def _retarget_aliases(
+            aliases: set[Path],
+            *,
+            old_mount: Path,
+            new_mount: Path,
+        ) -> set[Path]:
+            """Retarget recorded live aliases from one hidden mount to another.
+
+            Returns
+            -------
+            set[Path]
+                Recorded aliases that now point to the new hidden mount.
+
+            Raises
+            ------
+            OSError
+                If a recorded alias path is occupied by unmanaged content.
+            """
             live_aliases: set[Path] = set()
-            for alias in known_aliases:
-                if symlink_points_to(alias, old.mount):
-                    atomic_symlink(new.mount, alias)
+            for alias in aliases:
+                if symlink_points_to(alias, old_mount):
+                    atomic_symlink(new_mount, alias)
                     live_aliases.add(alias)
-                elif symlink_points_to(alias, new.mount):
+                elif symlink_points_to(alias, new_mount):
                     live_aliases.add(alias)
                 elif alias.exists() or alias.is_symlink():
                     msg = (
                         f"recorded repository alias path {alias} is occupied but is "
-                        f"not a managed symlink to {old.mount} or {new.mount}"
+                        f"not a managed symlink to {old_mount} or {new_mount}"
                     )
                     raise OSError(msg)
+            return live_aliases
 
-            await new._write_aliases(live_aliases, deadline=deadline)
-            await new.write_metadata_id(metadata_id, deadline=deadline)
-            return new
-        finally:
-            await new.lock.unlock(ignore_errors=True)
+        async def gc(
+            self,
+            *,
+            deadline: Deadline,
+            force: bool,
+            mount: Mount | None = None,
+        ) -> bool:
+            """Prune this repository's safe host-local mount residue.
 
-    async def prune_mounts(
+            Returns
+            -------
+            bool
+                True if a hidden mount or empty catalog root was removed.
+            """
+            removed = False
+            current = (
+                Mount.search(self.mount)
+                if mount is None
+                else Mount.search(mount.mount_point)
+            )
+            if current is not None:
+                async with self.aliases(deadline=deadline) as aliases:
+                    live = any(
+                        symlink_points_to(alias, self.mount)
+                        for alias in aliases.aliases
+                    )
+                if live:
+                    return False
+                await current.unmount(deadline=deadline, force=force)
+                removed = True
+
+            if (
+                not self.root.exists()
+                or not self.root.is_dir()
+                or self.root.is_symlink()
+            ):
+                return removed
+            try:
+                aliases = self._load_aliases()
+            except (OSError, TypeError):
+                return removed
+            if any(alias.exists() or alias.is_symlink() for alias in aliases):
+                return removed
+
+            allowed = {self.mount, self.alias_file}
+            for child in self.root.iterdir():
+                if child not in allowed:
+                    return removed
+                if child == self.alias_file:
+                    if child.is_symlink() or not child.is_file() or aliases:
+                        return removed
+                elif child == self.mount and (
+                    child.is_symlink() or not child.is_dir() or any(child.iterdir())
+                ):
+                    return removed
+
+            shutil.rmtree(self.root)
+            return True
+
+    def repo(self, mount_id: str) -> State.Repository:
+        """Get the local state layout for one repository mount catalog entry.
+
+        Parameters
+        ----------
+        mount_id : str
+            UUID encoded by the repository's host-local catalog directory.
+
+        Returns
+        -------
+        State.Repository
+            Pure repository layout for the requested mount catalog ID.
+
+        Raises
+        ------
+        ValueError
+            If the provided mount catalog ID is not a valid UUID string.
+        """
+        try:
+            mount_id = uuid.UUID(mount_id).hex
+        except ValueError as err:
+            msg = f"invalid repository mount id (must be a valid UUID): {mount_id}"
+            raise ValueError(msg) from err
+
+        root = self.mount / mount_id
+        return self.Repository(
+            state=self,
+            root=root,
+            mount=root / "mount",
+            id_file=root / "mount" / METADATA_ID,
+            alias_file=root / "aliases.json",
+            lock=HostLock(self.mount_locks / f"{mount_id}.lock"),
+        )
+
+    # TODO: review everything below this line
+
+    def managed_alias_ancestor(self, path: Path) -> tuple[Path, str] | None:
+        """Return the nearest managed alias at or above `path`, if any.
+
+        Returns
+        -------
+        tuple[Path, str] | None
+            Alias path and catalog repository UUID, otherwise None.
+
+        Raises
+        ------
+        OSError
+            If a candidate symlink points into Bertrand's repository catalog but
+            does not match the expected hidden mount layout.
+        """
+        inspected = abspath(path)
+        for candidate in (inspected, *inspected.parents):
+            if not candidate.is_symlink():
+                continue
+            try:
+                target = candidate.readlink()
+            except OSError as err:
+                msg = f"failed to inspect managed alias candidate {candidate}: {err}"
+                raise OSError(msg) from err
+            if not target.is_absolute():
+                continue
+            try:
+                relative = target.relative_to(self.mount)
+            except ValueError:
+                continue
+            if len(relative.parts) != 2:
+                msg = (
+                    f"repository alias path {candidate} points to malformed managed "
+                    f"target {target}; expected {self.mount}/<repo_id>/mount"
+                )
+                raise OSError(msg)
+            try:
+                repo_id = uuid.UUID(relative.parts[0]).hex
+            except ValueError as err:
+                msg = (
+                    f"repository alias path {candidate} points to invalid repository "
+                    f"target {target}: {err}"
+                )
+                raise OSError(msg) from err
+            if target != self.mount / repo_id / "mount":
+                msg = (
+                    f"repository alias path {candidate} points to malformed managed "
+                    f"target {target}; expected {self.mount / repo_id / 'mount'}"
+                )
+                raise OSError(msg)
+            return candidate, repo_id
+        return None
+
+    async def gc(
         self,
         *,
         deadline: Deadline,
@@ -3163,7 +3267,8 @@ class State:
         Returns
         -------
         tuple[str, ...]
-            Repository IDs whose hidden mounts were detached.
+            Repository mount IDs whose hidden mounts or empty catalog roots were
+            detached.
 
         Raises
         ------
@@ -3176,13 +3281,32 @@ class State:
         if limit == 0 or not self.mount.exists():
             return ()
 
-        mounted = [
-            (repo_id, mount)
-            for mount in Mount.under(self.mount).values()
-            if (repo_id := self.repository_mount_id(mount)) is not None
-        ]
-        mounted.sort(key=lambda item: item[0])
-        if not mounted:
+        roots: dict[str, State.Repository] = {}
+        with contextlib.suppress(OSError):
+            for child in self.mount.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    with contextlib.suppress(ValueError):
+                        repo = self.repo(child.name)
+                        roots[repo.mount_id] = repo
+
+        mounted: list[tuple[str, Mount]] = []
+        for mount in Mount.under(self.mount).values():
+            mount_point = abspath(mount.mount_point)
+            try:
+                relative = mount_point.relative_to(self.mount)
+            except ValueError:
+                continue
+            if len(relative.parts) != 2:
+                continue
+            try:
+                repo_id = uuid.UUID(relative.parts[0]).hex
+            except ValueError:
+                continue
+            if mount_point == self.mount / repo_id / "mount":
+                mounted.append((repo_id, mount))
+        for repo_id, _ in mounted:
+            roots[repo_id] = self.repo(repo_id)
+        if not roots:
             return ()
 
         cursor_file = self.cache / "repository-mount-gc-cursor"
@@ -3190,30 +3314,23 @@ class State:
         with contextlib.suppress(OSError):
             cursor = cursor_file.read_text(encoding="utf-8").strip()
         start = 0
-        ids = [repo_id for repo_id, _ in mounted]
+        ids = sorted(roots)
         if cursor in ids:
-            start = (ids.index(cursor) + 1) % len(mounted)
-        rotated = mounted[start:] + mounted[:start]
+            start = (ids.index(cursor) + 1) % len(ids)
+        rotated = ids[start:] + ids[:start]
 
         pruned: list[str] = []
         last_seen = cursor
-        for repo_id, mount in rotated[:limit]:
+        mounts = dict(mounted)
+        for repo_id in rotated[:limit]:
             last_seen = repo_id
-            repo = self.repo(repo_id)
-            async with repo.aliases(deadline=deadline) as aliases:
-                live = any(
-                    symlink_points_to(alias, repo.mount) for alias in aliases.aliases
-                )
-            if live:
-                continue
-            current = Mount.search(mount.mount_point)
-            if current is None:
-                continue
-            await current.unmount(deadline=deadline, force=force)
-            pruned.append(repo_id)
+            repo = roots[repo_id]
+            mount = mounts.get(repo_id)
+            if await repo.gc(deadline=deadline, force=force, mount=mount):
+                pruned.append(repo_id)
 
         if last_seen:
-            await self.write(cursor_file, last_seen + "\n", deadline=deadline, yes=True)
+            await self.write(cursor_file, last_seen + "\n", deadline=deadline)
         return tuple(pruned)
 
 
@@ -3554,13 +3671,41 @@ class GitRepository:
         return self.git_dir.parent
 
     @property
-    def id(self) -> str:
-        """Return the stable Bertrand repository identity.
+    def metadata_id(self) -> str | None:
+        """Read the Bertrand repository identity stored in repository metadata.
+
+        Returns
+        -------
+        str | None
+            UUID hex string from `.bertrand/id`, or None when the metadata file is
+            absent.
+
+        Raises
+        ------
+        OSError
+            If the metadata path exists but is not a regular UTF-8 UUID file.
+        """
+        id_file = self.root / METADATA_ID
+        if not id_file.exists():
+            return None
+        if not id_file.is_file():
+            msg = f"Bertrand repository identity path is not a file: {id_file}"
+            raise OSError(msg)
+        try:
+            return uuid.UUID(id_file.read_text(encoding="utf-8").strip()).hex
+        except (OSError, ValueError) as err:
+            msg = f"Bertrand repository identity is invalid at {id_file}"
+            raise OSError(msg) from err
+
+    @property
+    def path_id(self) -> str:
+        """Return this repository's deterministic host/path identity.
 
         Returns
         -------
         str
-            Stable UUID hex string used to scope cluster resources for the repository.
+            UUID5 hex string derived from the Bertrand host identity and repository
+            root path.
 
         Raises
         ------
@@ -3568,19 +3713,7 @@ class GitRepository:
             If Bertrand's host identity is missing or malformed. Run `bertrand init`
             to converge host state before resolving unmanaged repository identities.
 
-        Notes
-        -----
-        Managed repository metadata takes precedence when present. Otherwise, the ID
-        is deterministically derived from the Bertrand host identity and repository
-        root path so uninitialized repositories can still address cluster resources
-        consistently without colliding with matching paths on other hosts.
         """
-        id_file = self.root / METADATA_ID
-        if id_file.is_file():
-            try:
-                return uuid.UUID(id_file.read_text(encoding="utf-8").strip()).hex
-            except (OSError, ValueError):
-                pass
         try:
             host_id = uuid.UUID(STATE.id)
         except (OSError, ValueError) as err:
@@ -3590,6 +3723,18 @@ class GitRepository:
             )
             raise OSError(msg) from err
         return uuid.uuid5(host_id, self.root.as_posix()).hex
+
+    @property
+    def id(self) -> str:
+        """Return the stable Bertrand repository identity.
+
+        Returns
+        -------
+        str
+            Metadata repository UUID when present, otherwise this repository's
+            deterministic host/path UUID.
+        """
+        return self.metadata_id or self.path_id
 
     def __post_init__(self) -> None:
         """Automatically canonicalize the git_dir path."""

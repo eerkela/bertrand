@@ -1086,6 +1086,52 @@ async def ensure_repository_volume_record(
     )
 
 
+async def repository_volume_ready(
+    kube: Kube,
+    *,
+    repo_id: str,
+    deadline: Deadline,
+) -> bool:
+    """Return whether a repository ID already has a Ready lifecycle record.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    repo_id : str
+        Stable repository UUID.
+    deadline : Deadline
+        Maximum read budget in seconds.
+
+    Returns
+    -------
+    bool
+        True only when the repository lifecycle record exists and is in the `Ready`
+        phase. Missing records, missing CRDs, `Initializing`, and `Failed` records are
+        treated as not ready so init can adopt or retry them.
+
+    Raises
+    ------
+    OSError
+        If the lifecycle record cannot be read for any reason other than a missing
+        custom-resource API.
+
+    """
+    repo_id = _check_uuid(repo_id)
+    try:
+        record = await REPOSITORY_STATE_RESOURCE.get(
+            kube,
+            namespace=BERTRAND_NAMESPACE,
+            name=repo_volume_claim_name(repo_id),
+            deadline=deadline,
+        )
+    except OSError as err:
+        if is_missing_api_resource(err):
+            return False
+        raise
+    return record is not None and record.spec.phase == "Ready"
+
+
 async def mark_repository_volume_ready(
     kube: Kube,
     *,

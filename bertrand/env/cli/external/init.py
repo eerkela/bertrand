@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import shutil
 import sys
+import uuid
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
@@ -20,6 +21,7 @@ from bertrand.env.git import (
     Deadline,
     GitRepository,
     Mount,
+    State,
     abspath,
     atomic_write_text,
     confirm,
@@ -55,6 +57,7 @@ from bertrand.env.kube.ceph.volume import (
     DEFAULT_VOLUME_SIZE,
     list_repository_volume_claims,
     mark_repository_volume_failed,
+    repository_volume_ready,
 )
 from bertrand.env.kube.control import control_plane_image
 from bertrand.env.kube.dev import ensure_dev_backend
@@ -137,6 +140,7 @@ def _parse_repo_resource_plan(
 class _RepoState:
     kube: Kube
     repo: GitRepository
+    repo_state: State.Repository
     target: Path
     worktree: GitRepository.Worktree | None
     repo_id: str
@@ -188,7 +192,7 @@ async def _ensure_bare_worktrees(state: _RepoState) -> None:
     if state.mount_alias is None:
         msg = "bare-worktree convergence requires a mounted repository alias"
         raise OSError(msg)
-    mount = GitRepository(STATE.repo(state.repo_id).mount / ".git")
+    mount = GitRepository(state.repo_state.mount / ".git")
     target_branch = _target_worktree_branch(state)
     source_exists = await state.repo.exists(deadline=state.deadline)
 
@@ -541,7 +545,7 @@ async def _finalize(state: _RepoState) -> None:
         msg = "cannot finalize repository convergence without a mount alias"
         raise OSError(msg)
     target = state.target
-    hidden_mount = STATE.repo(state.repo_id).mount
+    hidden_mount = state.repo_state.mount
     swap_path = target.parent / f".{target.name}.bertrand.swap.{state.repo_id}"
     replace_existing = False
     if (
@@ -647,40 +651,62 @@ def _repository_destination_path(raw_path: Path, repo: GitRepository) -> Path:
     raise OSError(msg)
 
 
+def _repository_mount_id(mount: Mount) -> str | None:
+    mount_point = abspath(mount.mount_point)
+    try:
+        relative = mount_point.relative_to(STATE.mount)
+    except ValueError:
+        return None
+    if len(relative.parts) != 2:
+        return None
+    try:
+        mount_id = uuid.UUID(relative.parts[0]).hex
+    except ValueError:
+        return None
+    return mount_id if mount_point == STATE.mount / mount_id / "mount" else None
+
+
 async def _repository_identity(
+    kube: Kube,
     repo: GitRepository,
     *,
     recovered_repo_id: str | None,
-    target: Path,
     deadline: Deadline,
-) -> tuple[str, GitRepository]:
+) -> tuple[str, GitRepository, State.Repository]:
     """Resolve the stable repository ID and repair local catalogue drift.
 
     Returns
     -------
-    tuple[str, GitRepository]
+    tuple[str, GitRepository, State.Repository]
         Stable repository UUID and the repository object to converge.
     """
     mount = Mount.search(repo.root)
-    catalog_id = STATE.repository_mount_id(mount) if mount is not None else None
-    if catalog_id is not None:
-        catalog = STATE.repo(catalog_id)
-        metadata_id = catalog.read_metadata_id()
-        if metadata_id is None:
-            await catalog.write_metadata_id(catalog_id, deadline=deadline)
-            return catalog_id, repo
-        if metadata_id != catalog_id:
-            repaired = await STATE.normalize_repository_catalog(
-                catalog_id=catalog_id,
-                metadata_id=metadata_id,
-                aliases=(target,),
-                deadline=deadline,
-            )
-            return metadata_id, GitRepository(repaired.mount / ".git")
-        return catalog_id, repo
+    mount_id = _repository_mount_id(mount) if mount is not None else None
+    if mount_id is not None:
+        mounted = STATE.repo(mount_id)
+        repaired = await mounted.normalize(deadline=deadline)
+        repo_id = repaired.repo_id or repaired.mount_id
+        converged_repo = (
+            repo
+            if repaired.mount == mounted.mount
+            else GitRepository(repaired.mount / ".git")
+        )
+        return repo_id, converged_repo, repaired
 
-    repo_id = recovered_repo_id or repo.id
-    return repo_id, repo
+    if recovered_repo_id is not None:
+        repo_id = recovered_repo_id
+    else:
+        metadata_id = repo.metadata_id
+        if metadata_id is None or await repository_volume_ready(
+            kube,
+            repo_id=metadata_id,
+            deadline=deadline,
+        ):
+            repo_id = repo.path_id
+        else:
+            repo_id = metadata_id
+    repo_state = STATE.repo(repo_id)
+    return repo_id, repo, repo_state
 
 
 async def _converge_repository(
@@ -695,19 +721,20 @@ async def _converge_repository(
     deadline: Deadline,
     yes: bool,
 ) -> None:
-    repo_id, repo = await _repository_identity(
+    repo_id, repo, repo_state = await _repository_identity(
+        kube,
         repo,
         recovered_repo_id=recovered_repo_id,
-        target=target,
         deadline=deadline,
     )
-    repo_lock = STATE.repo(repo_id).lock
+    repo_lock = repo_state.lock
     await repo_lock.lock(deadline)
     try:
         await _assert_repo_clean(repo, deadline=deadline)
         state = _RepoState(
             kube=kube,
             repo=repo,
+            repo_state=repo_state,
             target=target,
             worktree=worktree,
             repo_id=repo_id,

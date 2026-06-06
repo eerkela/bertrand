@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import sys
+import uuid
 from pathlib import Path, PosixPath
 from typing import TYPE_CHECKING
 
@@ -81,12 +82,19 @@ def _single_repository_volume(
     raise OSError(msg)
 
 
-def _managed_alias_target(candidate: Path) -> tuple[UUIDHex, Path] | None:
-    managed = STATE.managed_alias_target(candidate)
-    if managed is None:
+def _repository_mount_id(mount: Mount) -> UUIDHex | None:
+    mount_point = abspath(mount.mount_point)
+    try:
+        relative = mount_point.relative_to(STATE.mount)
+    except ValueError:
         return None
-    repo_id, repo = managed
-    return repo_id, repo.mount
+    if len(relative.parts) != 2:
+        return None
+    try:
+        repo_id = uuid.UUID(relative.parts[0]).hex
+    except ValueError:
+        return None
+    return repo_id if mount_point == STATE.mount / repo_id / "mount" else None
 
 
 def _managed_alias_ancestor(
@@ -95,19 +103,9 @@ def _managed_alias_ancestor(
     managed = STATE.managed_alias_ancestor(path)
     if managed is None:
         return None
-    alias, repo_id, repo = managed
+    alias, repo_id = managed
+    repo = STATE.repo(repo_id)
     return alias, repo_id, Mount.search(repo.mount)
-
-
-def repository_mount_id(mount: Mount) -> str | None:
-    """Return the repository identity for a managed hidden mount, if any.
-
-    Returns
-    -------
-    str | None
-        Repository UUID for managed hidden mount points, otherwise None.
-    """
-    return STATE.repository_mount_id(mount)
 
 
 def ceph_mount_path(mount: Mount) -> PosixPath | None:
@@ -133,12 +131,11 @@ def ceph_mount_path(mount: Mount) -> PosixPath | None:
 
 
 async def _normalize_mounted_repository_catalog(
-    repo_id: str,
+    mount_id: str,
     *,
     deadline: Deadline,
-    aliases: Sequence[Path] = (),
 ) -> tuple[UUIDHex, Mount | None]:
-    """Make mounted repository metadata and local catalogue identity agree.
+    """Make mounted repository metadata and local mount identity agree.
 
     Returns
     -------
@@ -150,34 +147,23 @@ async def _normalize_mounted_repository_catalog(
     OSError
         If mounted metadata conflicts cannot be repaired safely.
     """
-    repo_id = _check_uuid(repo_id)
-    repo = STATE.repo(repo_id)
+    mount_id = _check_uuid(mount_id)
+    repo = STATE.repo(mount_id)
     mounted = Mount.search(repo.mount)
     if mounted is None:
-        return repo_id, None
+        return mount_id, None
 
-    metadata_id = repo.read_metadata_id()
-    if metadata_id is None:
-        await repo.write_metadata_id(repo_id, deadline=deadline)
-        return repo_id, mounted
-    metadata_id = _check_uuid(metadata_id)
-    if metadata_id == repo_id:
-        return repo_id, mounted
-
-    repaired = await STATE.normalize_repository_catalog(
-        catalog_id=repo_id,
-        metadata_id=metadata_id,
-        aliases=aliases,
-        deadline=deadline,
-    )
+    repaired = await repo.normalize(deadline=deadline)
+    repo_id = repaired.repo_id or repaired.mount_id
+    repo_id = _check_uuid(repo_id)
     mounted = Mount.search(repaired.mount)
     if mounted is None:
         msg = (
-            f"repository metadata id {metadata_id} won over catalogue id {repo_id}, "
+            f"repository metadata id {repo_id} won over mount id {mount_id}, "
             f"but repaired mount {repaired.mount} is not mounted"
         )
         raise OSError(msg)
-    return metadata_id, mounted
+    return repo_id, mounted
 
 
 async def ensure_repository_host_mount(
@@ -236,7 +222,6 @@ async def ensure_repository_host_mount(
 
     repo_state = STATE.repo(repo_id)
     mount_path = repo_state.mount
-    await repo_state.ensure_layout(deadline=deadline)
 
     await repo_state.lock.lock(deadline)
     try:
@@ -248,7 +233,7 @@ async def ensure_repository_host_mount(
                 f"mds_namespace={DEFAULT_REPO_FS_NAME}",
             ]
             mount_opts.extend(DEFAULT_REPO_MOUNT_OPTIONS)
-            await repo_state.ensure_layout(deadline=deadline)
+            await repo_state.init(deadline=deadline)
             await run(
                 sudo(
                     [
@@ -338,7 +323,8 @@ async def ensure_repository_mount(
             deadline=deadline,
         )
     )
-    hidden_mount = STATE.repo(repo_id).mount
+    repo_state = STATE.repo(repo_id)
+    hidden_mount = repo_state.mount
     volume = _single_repository_volume(repo_id, candidates)
     if volume is not None:
         ceph_path = await resolve_repository_volume_ceph_path(
@@ -393,10 +379,10 @@ async def ensure_repository_mount(
             ceph_user=credentials.user,
             ceph_secretfile=ceph_secretfile,
         )
-    async with STATE.repo(repo_id).aliases(deadline=deadline) as aliases:
+    async with repo_state.aliases(deadline=deadline) as aliases:
         aliases.link(alias)
 
-    await STATE.repo(repo_id).write_metadata_id(repo_id, deadline=deadline)
+    await STATE.write(repo_state.id_file, repo_state.mount_id + "\n", deadline=deadline)
     await ensure_repository_mount_record(
         kube,
         repo_id=repo_id,
@@ -532,7 +518,8 @@ async def finalize_repository_mount(
     repo_id = _check_uuid(repo_id)
     target = abspath(target)
     alias = abspath(alias)
-    hidden_mount = STATE.repo(repo_id).mount
+    repo_state = STATE.repo(repo_id)
+    hidden_mount = repo_state.mount
     staged_alias = target.parent / f".{target.name}.bertrand.mount.{repo_id}"
     swap_path = target.parent / f".{target.name}.bertrand.swap.{repo_id}"
     host_id = _current_host_id()
@@ -584,7 +571,7 @@ async def finalize_repository_mount(
             and (stale_alias.exists() or stale_alias.is_symlink())
             and symlink_points_to(stale_alias, hidden_mount)
         ):
-            async with STATE.repo(repo_id).aliases(deadline=deadline) as aliases:
+            async with repo_state.aliases(deadline=deadline) as aliases:
                 aliases.unlink(stale_alias)
         if stale_alias != target:
             await retire_repository_mount(
@@ -699,7 +686,8 @@ async def _resurrect_repository_mount_record(
             )
             raise OSError(msg)
         repo_id = next(iter(repo_ids))
-        hidden_mount = STATE.repo(repo_id).mount
+        repo_state = STATE.repo(repo_id)
+        hidden_mount = repo_state.mount
         if (candidate.exists() or candidate.is_symlink()) and not symlink_points_to(
             candidate,
             hidden_mount,
@@ -715,7 +703,8 @@ async def _resurrect_repository_mount_record(
             repo_id=repo_id,
             deadline=deadline,
         )
-        async with STATE.repo(repo_id).aliases(deadline=deadline) as aliases:
+        repo_state = STATE.repo(repo_id)
+        async with repo_state.aliases(deadline=deadline) as aliases:
             aliases.link(candidate)
         await ensure_repository_mount_record(
             kube,
@@ -766,10 +755,10 @@ async def resurrect_repository_mount(
     repo_id, mount = await _normalize_mounted_repository_catalog(
         repo_id,
         deadline=deadline,
-        aliases=(alias,),
     )
     if mount is not None:
-        async with STATE.repo(repo_id).aliases(deadline=deadline) as aliases:
+        repo_state = STATE.repo(repo_id)
+        async with repo_state.aliases(deadline=deadline) as aliases:
             aliases.link(alias)
         return repo_id, mount
 
@@ -780,7 +769,8 @@ async def resurrect_repository_mount(
         repo_id=repo_id,
         deadline=deadline,
     )
-    async with STATE.repo(repo_id).aliases(deadline=deadline) as aliases:
+    repo_state = STATE.repo(repo_id)
+    async with repo_state.aliases(deadline=deadline) as aliases:
         aliases.link(alias)
     return repo_id, mount
 
@@ -815,7 +805,6 @@ async def refresh_repository_alias_for_path(
         repo_id, mount = await _normalize_mounted_repository_catalog(
             repo_id,
             deadline=deadline,
-            aliases=(alias,),
         )
         if mount is None:
             repo_id, _ = await _mount_repository_volume(
@@ -823,7 +812,8 @@ async def refresh_repository_alias_for_path(
                 repo_id=repo_id,
                 deadline=deadline,
             )
-        async with STATE.repo(repo_id).aliases(deadline=deadline) as aliases:
+        repo_state = STATE.repo(repo_id)
+        async with repo_state.aliases(deadline=deadline) as aliases:
             aliases.link(alias)
         await ensure_repository_mount_record(
             kube,
@@ -888,7 +878,8 @@ async def prune_repository_mount_aliases(
         and record.host_id == host_id
         and record.phase == "Active"
     ]
-    hidden_mount = STATE.repo(repo_id).mount
+    repo_state = STATE.repo(repo_id)
+    hidden_mount = repo_state.mount
     live = False
     for record in records:
         alias = Path(record.alias_path)
@@ -945,12 +936,12 @@ async def prune_repository_mounts(
     mounted = [
         mount
         for mount in Mount.under(STATE.mount).values()
-        if repository_mount_id(mount) is not None
+        if _repository_mount_id(mount) is not None
     ]
     mounted.sort(key=lambda item: item.mount_point.as_posix())
     pruned: list[UUIDHex] = []
     for mount in mounted[:limit]:
-        repo_id = repository_mount_id(mount)
+        repo_id = _repository_mount_id(mount)
         if repo_id is None:
             continue
         live = await prune_repository_mount_aliases(
@@ -960,9 +951,6 @@ async def prune_repository_mounts(
         )
         if live:
             continue
-        current = Mount.search(mount.mount_point)
-        if current is None:
-            continue
-        await current.unmount(deadline=deadline, force=False)
-        pruned.append(repo_id)
+        if await STATE.repo(repo_id).gc(deadline=deadline, force=False, mount=mount):
+            pruned.append(repo_id)
     return tuple(pruned)
