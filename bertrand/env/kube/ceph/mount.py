@@ -6,7 +6,6 @@ import os
 import platform
 import shutil
 import sys
-import uuid
 from pathlib import Path, PosixPath
 from typing import TYPE_CHECKING
 
@@ -82,21 +81,6 @@ def _single_repository_volume(
     raise OSError(msg)
 
 
-def _repository_mount_id(mount: Mount) -> UUIDHex | None:
-    mount_point = abspath(mount.mount_point)
-    try:
-        relative = mount_point.relative_to(STATE.mount)
-    except ValueError:
-        return None
-    if len(relative.parts) != 2:
-        return None
-    try:
-        repo_id = uuid.UUID(relative.parts[0]).hex
-    except ValueError:
-        return None
-    return repo_id if mount_point == STATE.mount / repo_id / "mount" else None
-
-
 def _managed_alias_ancestor(
     path: Path,
 ) -> tuple[Path, UUIDHex, Mount | None] | None:
@@ -110,6 +94,11 @@ def _managed_alias_ancestor(
 
 def ceph_mount_path(mount: Mount) -> PosixPath | None:
     """Best-effort parsed CephFS path suffix from a host mount source.
+
+    Parameters
+    ----------
+    mount : Mount
+        Host mount entry to parse.
 
     Returns
     -------
@@ -136,6 +125,13 @@ async def _normalize_mounted_repository_catalog(
     deadline: Deadline,
 ) -> tuple[UUIDHex, Mount | None]:
     """Make mounted repository metadata and local mount identity agree.
+
+    Parameters
+    ----------
+    mount_id : str
+        Local repository mount catalog UUID to inspect.
+    deadline : Deadline
+        Maximum time to spend normalizing local repository metadata.
 
     Returns
     -------
@@ -165,6 +161,21 @@ async def ensure_repository_host_mount(
     deadline: Deadline,
 ) -> Mount:
     """Ensure a repository hidden Ceph mount exists and return its mount entry.
+
+    Parameters
+    ----------
+    repo_id : str
+        Repository UUID whose hidden mount should be converged.
+    ceph_path : PosixPath
+        Absolute CephFS path to mount.
+    monitors : Sequence[str]
+        Ceph monitor endpoints to use for the mount command.
+    ceph_user : str
+        Ceph client identity to mount as.
+    ceph_secretfile : Path
+        Path to the Ceph secret file for the client identity.
+    deadline : Deadline
+        Maximum time to spend converging the host mount.
 
     Returns
     -------
@@ -919,27 +930,11 @@ async def prune_repository_mounts(
     if limit < 0:
         msg = "repository mount prune limit cannot be negative"
         raise ValueError(msg)
-    if limit == 0:
-        return ()
-
-    mounted = [
-        mount
-        for mount in Mount.under(STATE.mount).values()
-        if _repository_mount_id(mount) is not None
-    ]
-    mounted.sort(key=lambda item: item.mount_point.as_posix())
-    pruned: list[UUIDHex] = []
-    for mount in mounted[:limit]:
-        repo_id = _repository_mount_id(mount)
-        if repo_id is None:
-            continue
-        live = await prune_repository_mount_aliases(
+    pruned = await STATE.gc(deadline=deadline, limit=limit)
+    for repo in pruned:
+        await prune_repository_mount_aliases(
             kube,
-            repo_id=repo_id,
+            repo_id=repo.mount_id,
             deadline=deadline,
         )
-        if live:
-            continue
-        if await STATE.repo(repo_id).gc(deadline=deadline, force=False, mount=mount):
-            pruned.append(repo_id)
-    return tuple(pruned)
+    return tuple(repo.mount_id for repo in pruned)

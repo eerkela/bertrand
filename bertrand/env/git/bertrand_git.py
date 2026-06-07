@@ -24,6 +24,7 @@ import math
 import os
 import platform
 import pwd
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -1508,6 +1509,45 @@ def atomic_write_text(
     tmp.replace(path)
 
 
+async def _require_systemd(deadline: Deadline) -> None:
+    if platform.system() != "Linux":
+        msg = (
+            "Bertrand state bootstrap requires a Linux host with systemd available "
+            "as the active init/service manager."
+        )
+        raise OSError(msg)
+    systemctl = shutil.which("systemctl")
+    if systemctl is None:
+        msg = (
+            "Bertrand requires systemd (`systemctl`) to manage the runtime tmpfs "
+            "mount and owned k0s service.  Installing a systemd package is not enough "
+            "unless the host is booted with systemd as its active service manager."
+        )
+        raise OSError(msg)
+    try:
+        await run(
+            [
+                systemctl,
+                "--system",
+                "show",
+                "--property=Version",
+                "--value",
+            ],
+            capture_output=True,
+            deadline=deadline,
+        )
+    except (CommandError, TimeoutExpired) as err:
+        msg = (
+            "Bertrand requires an active systemd system manager to manage the runtime "
+            "tmpfs mount and owned k0s service.  This host has `systemctl`, but the "
+            "system manager did not respond.  Run Bertrand on a systemd-booted Linux "
+            "host; for WSL, enable systemd and restart the distribution; containers, "
+            "chroots, and non-systemd init systems are not supported by this bootstrap "
+            "path."
+        )
+        raise OSError(msg) from err
+
+
 class HostLock:
     """A re-entrant, OS-level, asynchronous file lock."""
 
@@ -1524,6 +1564,11 @@ class HostLock:
         ----------
         path : Path
             Local file path used for host-level locking.
+
+        Returns
+        -------
+        Self
+            Shared lock instance for the resolved lock path.
 
         Raises
         ------
@@ -1876,6 +1921,9 @@ class Mount:
     mount_point: Path
     fs_type: str = field(default="")
     source: str = field(default="")
+
+    # TODO: not sure why I need to return a dictionary here, rather than making the
+    # Mount itself hashable and returning a set.
 
     @classmethod
     def local(cls) -> dict[Path, Self]:
@@ -2380,13 +2428,7 @@ class State:
         if os.name != "posix":
             msg = "Bertrand state bootstrap requires a POSIX host."
             raise OSError(msg)
-        # TODO: can systemd itself become a prereq?  Is that possible?
-        if not shutil.which("systemctl"):
-            msg = (
-                "Bertrand requires systemd (`systemctl`) to manage the runtime tmpfs "
-                f"mount at {self.path(self.runtime)}."
-            )
-            raise OSError(msg)
+        await _require_systemd(deadline)
 
         # prepare host prereqs + bertrand group before creating any state
         package_manager = PackageManager()
@@ -2505,7 +2547,9 @@ class State:
                 async with repo.aliases(deadline=deadline) as aliases:
                     for alias in tuple(aliases.aliases):
                         aliases.unlink(alias)
-                await repo.unmount(deadline=deadline, force=True)
+                mount = Mount.search(repo.mount)
+                if mount is not None:
+                    await mount.unmount(deadline=deadline, force=True)
 
             mounts = sorted(
                 Mount.under(self.mount).values(),
@@ -2659,19 +2703,6 @@ class State:
             await self.state.mkdir(self.root, deadline=deadline)
             await self.state.mkdir(self.mount, deadline=deadline)
 
-        async def unmount(self, *, deadline: Deadline, force: bool) -> bool:
-            """Unmount this repository's hidden host mount point if it is mounted.
-
-            Returns
-            -------
-            bool
-                True if a mount was detached, otherwise False.
-            """
-            mount = Mount.search(self.mount)
-            if mount is None:
-                return False
-            return await mount.unmount(deadline=deadline, force=force)
-
         @dataclass
         class Aliases:
             """Async context manager for locked repository alias mutation."""
@@ -2787,6 +2818,7 @@ class State:
                     return  # re-entrant case
 
                 self._depth = 0
+                ignore_errors = exc_value is not None
                 try:
                     # dump aliases to disk
                     await self.repo.state.mkdir(
@@ -2803,13 +2835,11 @@ class State:
                         deadline=self.deadline,
                     )
                 except:  # noqa: E722
-                    await self.repo.lock.unlock(ignore_errors=True)
-                    if exc_value is None:
+                    if not ignore_errors:  # do not mask original exception
+                        ignore_errors = True  # ignore subsequent unlock errors
                         raise
-                    return
-
-                # release lock
-                await self.repo.lock.unlock()
+                finally:
+                    await self.repo.lock.unlock(ignore_errors=ignore_errors)
 
             def _assert_active_context(self, action: str) -> None:
                 if self._depth < 1:
@@ -2869,16 +2899,13 @@ class State:
                 self._assert_active_context("unlink")
                 path = abspath(path)
 
-                if symlink_points_to(path, self.repo.mount):
+                remove = symlink_points_to(path, self.repo.mount)
+                if remove:
                     path.unlink()
-                    self.aliases.discard(path)
-                    return True
-                if path in self.aliases:
-                    self.aliases.discard(path)
-                    return True
-                return False
 
-            # TODO: review the actual transfer() logic itself
+                n = len(self.aliases)
+                self.aliases.discard(path)
+                return remove or len(self.aliases) < n
 
             def transfer(self, target: State.Repository.Aliases) -> int:
                 """Transfer active aliases from this repository to another.
@@ -2892,43 +2919,23 @@ class State:
                 -------
                 int
                     Number of live aliases transferred to the target context.
-
-                Raises
-                ------
-                OSError
-                    If a recorded alias path is occupied by unmanaged content.
                 """
                 self._assert_active_context("transfer")
                 target._assert_active_context("transfer")
                 if self is target or self.repo.mount == target.repo.mount:
                     return 0
 
-                moves: list[tuple[Path, bool]] = []
-                missing: list[Path] = []
+                # loop over all recorded aliases to the source repository and discard
+                # or retarget them to the new repository
+                moves = 0
                 for alias in sorted(self.aliases):
                     if symlink_points_to(alias, self.repo.mount):
-                        moves.append((alias, True))
-                    elif symlink_points_to(alias, target.repo.mount):
-                        moves.append((alias, False))
-                    elif alias.exists() or alias.is_symlink():
-                        msg = (
-                            f"recorded repository alias path {alias} is occupied but "
-                            f"is not a managed symlink to {self.repo.mount} or "
-                            f"{target.repo.mount}"
-                        )
-                        raise OSError(msg)
-                    else:
-                        missing.append(alias)
-
-                for alias in missing:
+                        atomic_symlink(alias, target.repo.mount)
+                        target.aliases.add(alias)
+                        moves += 1
                     self.aliases.discard(alias)
 
-                for alias, retarget in moves:
-                    if retarget:
-                        atomic_symlink(target.repo.mount, alias)
-                    self.aliases.discard(alias)
-                    target.aliases.add(alias)
-                return len(moves)
+                return moves
 
         def aliases(self, *, deadline: Deadline) -> Aliases:
             """Return a locked alias symlink mutation context for this repository.
@@ -3015,7 +3022,9 @@ class State:
             # explicitly unmount source after transferring aliases so as not to
             # interfere with any recursive ancestors; the Ceph layer will resurrect the
             # mount at the correct location if needed using the updated mount ID
-            await self.unmount(deadline=deadline, force=False)
+            mount = Mount.search(self.mount)
+            if mount is not None:
+                await mount.unmount(deadline=deadline, force=False)
             return result
 
         async def normalize(self, *, deadline: Deadline) -> State.Repository:
@@ -3033,64 +3042,47 @@ class State:
             """
             return await self._normalize(deadline=deadline, visited=set())
 
-        async def gc(
-            self,
-            *,
-            deadline: Deadline,
-            force: bool,
-            mount: Mount | None = None,
-        ) -> bool:
+        async def gc(self, *, deadline: Deadline) -> bool:
             """Prune this repository's safe host-local mount residue.
+
+            Parameters
+            ----------
+            deadline : Deadline
+                Overall deadline for pruning host-local residue.
 
             Returns
             -------
             bool
                 True if a hidden mount or empty catalog root was removed.
             """
-            removed = False
-            current = (
-                Mount.search(self.mount)
-                if mount is None
-                else Mount.search(mount.mount_point)
-            )
-            if current is not None:
-                try:
-                    async with self.aliases(deadline=deadline) as aliases:
-                        live = bool(aliases.aliases)
-                except (OSError, TypeError):
-                    return False
-                if live:
-                    return False
-                await current.unmount(deadline=deadline, force=force)
-                removed = True
+            # skip this repository if we can't immediately acquire its lock
+            if not await self.lock.try_lock():
+                return False
 
-            if (
-                not self.root.exists()
-                or not self.root.is_dir()
-                or self.root.is_symlink()
-            ):
-                return removed
+            # load the live aliases for this repository and skip if any are present
+            ignore_errors = False
             try:
                 async with self.aliases(deadline=deadline) as aliases:
-                    live = bool(aliases.aliases)
-            except (OSError, TypeError):
-                return removed
-            if live:
-                return removed
+                    if aliases.aliases:
+                        return False
 
-            allowed = {self.mount, self.alias_file}
-            for child in self.root.iterdir():
-                if child not in allowed:
-                    return removed
-                if child == self.alias_file:
-                    if child.is_symlink() or not child.is_file():
-                        return removed
-                elif child == self.mount and (
-                    child.is_symlink() or not child.is_dir() or any(child.iterdir())
-                ):
-                    return removed
+                # otherwise, if there are no active aliases, attempt to unmount the
+                # repository
+                mount = Mount.search(self.mount)
+                if mount is not None:
+                    try:
+                        await mount.unmount(deadline=deadline, force=False)
+                    except OSError:
+                        return False
 
-            shutil.rmtree(self.root)
+                # remove the repository entry
+                shutil.rmtree(self.root)
+            except:
+                ignore_errors = True
+                raise
+            finally:
+                await self.lock.unlock(ignore_errors=ignore_errors)
+
             return True
 
     def repo(self, mount_id: str) -> State.Repository:
@@ -3127,10 +3119,13 @@ class State:
             lock=HostLock(self.mount_locks / f"{mount_id}.lock"),
         )
 
-    # TODO: review everything below this line
-
     def managed_alias_ancestor(self, path: Path) -> tuple[Path, str] | None:
         """Return the nearest managed alias at or above `path`, if any.
+
+        Parameters
+        ----------
+        path : Path
+            Path whose ancestors should be checked for managed repository aliases.
 
         Returns
         -------
@@ -3181,20 +3176,22 @@ class State:
             return candidate, repo_id
         return None
 
-    async def gc(
-        self,
-        *,
-        deadline: Deadline,
-        limit: int,
-        force: bool,
-    ) -> tuple[str, ...]:
+    async def gc(self, *, deadline: Deadline, limit: int) -> list[State.Repository]:
         """Prune bounded host-local hidden repository mounts with no live aliases.
+
+        Parameters
+        ----------
+        deadline : Deadline
+            Overall deadline for the bounded GC pass.
+        limit : int
+            Maximum number of repository mount entries to inspect.  Zero disables
+            pruning.
 
         Returns
         -------
-        tuple[str, ...]
-            Repository mount IDs whose hidden mounts or empty catalog roots were
-            detached.
+        list[State.Repository]
+            Repository mount objects whose hidden mounts or empty catalog roots were
+            removed.
 
         Raises
         ------
@@ -3205,59 +3202,25 @@ class State:
             msg = "repository mount prune limit cannot be negative"
             raise ValueError(msg)
         if limit == 0 or not self.mount.exists():
-            return ()
+            return []
 
-        roots: dict[str, State.Repository] = {}
+        # gather all repository mounts on the local system in deterministic order
+        mounts: list[State.Repository] = []
         with contextlib.suppress(OSError):
-            for child in self.mount.iterdir():
+            for child in sorted(self.mount.iterdir()):
                 if child.is_dir() and not child.is_symlink():
+                    # only consider directories with valid UUID names
                     with contextlib.suppress(ValueError):
-                        repo = self.repo(child.name)
-                        roots[repo.mount_id] = repo
+                        mounts.append(self.repo(child.name))
 
-        mounted: list[tuple[str, Mount]] = []
-        for mount in Mount.under(self.mount).values():
-            mount_point = abspath(mount.mount_point)
-            try:
-                relative = mount_point.relative_to(self.mount)
-            except ValueError:
-                continue
-            if len(relative.parts) != 2:
-                continue
-            try:
-                repo_id = uuid.UUID(relative.parts[0]).hex
-            except ValueError:
-                continue
-            if mount_point == self.mount / repo_id / "mount":
-                mounted.append((repo_id, mount))
-        for repo_id, _ in mounted:
-            roots[repo_id] = self.repo(repo_id)
-        if not roots:
-            return ()
+        # extract a rotating, random slice of mounts to include in this GC pass
+        if len(mounts) > limit:
+            p = secrets.randbelow(len(mounts))
+            q = (p + limit) % len(mounts)
+            mounts = mounts[p:q] if p < q else mounts[p:] + mounts[:q]
 
-        cursor_file = self.cache / "repository-mount-gc-cursor"
-        cursor = ""
-        with contextlib.suppress(OSError):
-            cursor = cursor_file.read_text(encoding="utf-8").strip()
-        start = 0
-        ids = sorted(roots)
-        if cursor in ids:
-            start = (ids.index(cursor) + 1) % len(ids)
-        rotated = ids[start:] + ids[:start]
-
-        pruned: list[str] = []
-        last_seen = cursor
-        mounts = dict(mounted)
-        for repo_id in rotated[:limit]:
-            last_seen = repo_id
-            repo = roots[repo_id]
-            mount = mounts.get(repo_id)
-            if await repo.gc(deadline=deadline, force=force, mount=mount):
-                pruned.append(repo_id)
-
-        if last_seen:
-            await self.write(cursor_file, last_seen + "\n", deadline=deadline)
-        return tuple(pruned)
+        # delegate to repository-level GC method
+        return [repo for repo in mounts if await repo.gc(deadline=deadline)]
 
 
 STATE = State()
@@ -3804,6 +3767,11 @@ class GitRepository:
 
     def __eq__(self, other: object) -> bool:
         """Compare GitRepositories based on their logical identity.
+
+        Parameters
+        ----------
+        other : object
+            Object to compare against this repository.
 
         Returns
         -------
