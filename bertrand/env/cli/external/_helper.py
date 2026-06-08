@@ -6,12 +6,12 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from bertrand.env.config.core import Config
-from bertrand.env.git import Deadline, GitRepository, abspath
+from bertrand.env.git import STATE, Deadline, GitRepository, abspath
 from bertrand.env.git.bertrand_git import warn
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.ceph.mount import (
     prune_repository_mounts,
-    refresh_repository_alias_for_path,
+    refresh_repository_alias,
 )
 
 if TYPE_CHECKING:
@@ -80,9 +80,6 @@ async def resolve_project_worktree(
         If no initialized repository is found or HEAD cannot identify a worktree.
     """
     repo, worktree = await resolve_project_scope(kube, target, deadline=deadline)
-    if not await repo.exists(deadline=deadline):
-        msg = f"no initialized Git repository found for target: {target}"
-        raise OSError(msg)
     if worktree is not None:
         return repo, worktree
     head = await repo.head_worktree(deadline=deadline)
@@ -118,10 +115,38 @@ async def resolve_project_scope(
     tuple[GitRepository, GitRepository.Worktree | None]
         Resolved repository and explicit worktree, if the target points to one.
         Repository roots return None.
+
+    Raises
+    ------
+    OSError
+        If the target is not a Bertrand-managed alias, or if the managed alias does
+        not point to an initialized Git repository.
     """
     raw = abspath(target)
-    await refresh_repository_alias_for_path(kube, raw, deadline=deadline)
-    return await GitRepository.resolve(raw.resolve(), deadline=deadline)
+    managed = STATE.resolve_alias(raw)
+    if managed is None:
+        msg = (
+            f"target is not a Bertrand-managed repository: {raw}. Run "
+            f"`bertrand init {raw}` before using this command."
+        )
+        raise OSError(msg)
+
+    alias, repo_state = managed
+    repo_state = await refresh_repository_alias(
+        kube,
+        alias=alias,
+        repo=repo_state,
+        deadline=deadline,
+    )
+    relative = raw.relative_to(alias)
+    repo, worktree = await GitRepository.resolve(
+        repo_state.path(relative),
+        deadline=deadline,
+    )
+    if not await repo.exists(deadline=deadline):
+        msg = f"no initialized Git repository found for target: {target}"
+        raise OSError(msg)
+    return repo, worktree
 
 
 async def prune_repository_mounts_quietly(

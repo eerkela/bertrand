@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import shutil
 import sys
-import uuid
 from dataclasses import dataclass
 from importlib import resources as importlib_resources
 from pathlib import Path
@@ -20,7 +19,6 @@ from bertrand.env.git import (
     CommandError,
     Deadline,
     GitRepository,
-    Mount,
     State,
     abspath,
     atomic_write_text,
@@ -49,8 +47,7 @@ from bertrand.env.kube.ceph.mount import (
     ensure_repository_mount,
     finalize_repository_mount,
     prune_repository_mount_aliases,
-    refresh_repository_alias_for_path,
-    resurrect_repository_mount,
+    refresh_repository_alias,
 )
 from bertrand.env.kube.ceph.storage import ensure_ceph_storage_controller
 from bertrand.env.kube.ceph.volume import (
@@ -192,7 +189,7 @@ async def _ensure_bare_worktrees(state: _RepoState) -> None:
     if state.mount_alias is None:
         msg = "bare-worktree convergence requires a mounted repository alias"
         raise OSError(msg)
-    mount = GitRepository(state.repo_state.mount / ".git")
+    mount = state.repo_state.git
     target_branch = _target_worktree_branch(state)
     source_exists = await state.repo.exists(deadline=state.deadline)
 
@@ -568,11 +565,13 @@ async def _finalize(state: _RepoState) -> None:
         replace_existing=replace_existing,
         deadline=state.deadline,
     )
-    await refresh_repository_alias_for_path(
+    state.repo_state = await refresh_repository_alias(
         state.kube,
-        state.mount_alias,
+        alias=state.mount_alias,
+        repo=state.repo_state,
         deadline=state.deadline,
     )
+    state.repo_id = state.repo_state.repo_id or state.repo_state.mount_id
     await prune_repository_mount_aliases(
         state.kube,
         repo_id=state.repo_id,
@@ -614,26 +613,32 @@ async def _resolve_repo_target(
     path: Path,
     *,
     deadline: Deadline,
-) -> tuple[GitRepository, GitRepository.Worktree | None, Path, str | None]:
+) -> tuple[GitRepository, GitRepository.Worktree | None, Path, State.Repository | None]:
     raw_path = abspath(path)
 
-    # run managed-alias resurrection before git path resolution so repository
-    # discovery sees the recovered hidden mount layout if one was detached
-    resurrected = await resurrect_repository_mount(
-        kube,
-        raw_path,
-        deadline=deadline,
-    )
-    recovered_repo_id = resurrected[0] if resurrected is not None else None
+    managed = STATE.resolve_alias(raw_path)
+    if managed is not None:
+        alias, repo_state = managed
+        repo_state = await refresh_repository_alias(
+            kube,
+            alias=alias,
+            repo=repo_state,
+            deadline=deadline,
+        )
+        repo, worktree = await GitRepository.resolve(
+            repo_state.path(raw_path.relative_to(alias)),
+            deadline=deadline,
+        )
+        return repo, worktree, alias, repo_state
 
-    # search for parent Git repository on target path, and then identify the
-    # ancestor symlink that points to it, if any
+    # No managed alias was found, so init is allowed to interpret the target as a new
+    # repository initialization or unmanaged repository conversion.
     repo, worktree = await GitRepository.resolve(raw_path.resolve(), deadline=deadline)
     return (
         repo,
         worktree,
         _repository_destination_path(raw_path, repo),
-        recovered_repo_id,
+        None,
     )
 
 
@@ -651,26 +656,11 @@ def _repository_destination_path(raw_path: Path, repo: GitRepository) -> Path:
     raise OSError(msg)
 
 
-def _repository_mount_id(mount: Mount) -> str | None:
-    mount_point = abspath(mount.mount_point)
-    try:
-        relative = mount_point.relative_to(STATE.mount)
-    except ValueError:
-        return None
-    if len(relative.parts) != 2:
-        return None
-    try:
-        mount_id = uuid.UUID(relative.parts[0]).hex
-    except ValueError:
-        return None
-    return mount_id if mount_point == STATE.mount / mount_id / "mount" else None
-
-
 async def _repository_identity(
     kube: Kube,
     repo: GitRepository,
     *,
-    recovered_repo_id: str | None,
+    repo_state: State.Repository | None,
     deadline: Deadline,
 ) -> tuple[str, GitRepository, State.Repository]:
     """Resolve the stable repository ID and repair local catalogue drift.
@@ -680,31 +670,20 @@ async def _repository_identity(
     tuple[str, GitRepository, State.Repository]
         Stable repository UUID and the repository object to converge.
     """
-    mount = Mount.search(repo.root)
-    mount_id = _repository_mount_id(mount) if mount is not None else None
-    if mount_id is not None:
-        mounted = STATE.repo(mount_id)
-        repaired = await mounted.normalize(deadline=deadline)
+    if repo_state is not None:
+        repaired = await repo_state.normalize(deadline=deadline)
         repo_id = repaired.repo_id or repaired.mount_id
-        converged_repo = (
-            repo
-            if repaired.mount == mounted.mount
-            else GitRepository(repaired.mount / ".git")
-        )
-        return repo_id, converged_repo, repaired
+        return repo_id, repaired.git, repaired
 
-    if recovered_repo_id is not None:
-        repo_id = recovered_repo_id
+    metadata_id = repo.metadata_id
+    if metadata_id is None or await repository_volume_ready(
+        kube,
+        repo_id=metadata_id,
+        deadline=deadline,
+    ):
+        repo_id = repo.path_id
     else:
-        metadata_id = repo.metadata_id
-        if metadata_id is None or await repository_volume_ready(
-            kube,
-            repo_id=metadata_id,
-            deadline=deadline,
-        ):
-            repo_id = repo.path_id
-        else:
-            repo_id = metadata_id
+        repo_id = metadata_id
     repo_state = STATE.repo(repo_id)
     return repo_id, repo, repo_state
 
@@ -715,7 +694,7 @@ async def _converge_repository(
     repo: GitRepository,
     worktree: GitRepository.Worktree | None,
     target: Path,
-    recovered_repo_id: str | None,
+    repo_state: State.Repository | None,
     enable: set[Resource[Any]],
     disable: set[Resource[Any]],
     deadline: Deadline,
@@ -724,7 +703,7 @@ async def _converge_repository(
     repo_id, repo, repo_state = await _repository_identity(
         kube,
         repo,
-        recovered_repo_id=recovered_repo_id,
+        repo_state=repo_state,
         deadline=deadline,
     )
     repo_lock = repo_state.lock
@@ -919,7 +898,7 @@ class ExternalInit:
                 raise ValueError(*err.args) from None
             _ensure_git_available()
 
-            repo, worktree, target, recovered_repo_id = await _resolve_repo_target(
+            repo, worktree, target, repo_state = await _resolve_repo_target(
                 kube,
                 path,
                 deadline=deadline,
@@ -929,7 +908,7 @@ class ExternalInit:
                 repo=repo,
                 worktree=worktree,
                 target=target,
-                recovered_repo_id=recovered_repo_id,
+                repo_state=repo_state,
                 enable=enabled,
                 disable=disabled,
                 deadline=deadline,

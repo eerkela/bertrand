@@ -81,13 +81,7 @@ async def bertrand_secret_list(
     json_output: bool,
     deadline: Deadline,
 ) -> None:
-    """List path-relevant secret capabilities.
-
-    Raises
-    ------
-    OSError
-        If the target path is not inside an initialized Git repository.
-    """
+    """List path-relevant secret capabilities."""
     with await Kube.host(deadline=deadline) as kube:
         repo, worktree = await resolve_project_scope(
             kube,
@@ -98,9 +92,6 @@ async def bertrand_secret_list(
             kube,
             deadline=deadline,
         )
-        if not await repo.exists(deadline=deadline):
-            msg = f"no initialized Git repository found for target: {path}"
-            raise OSError(msg)
         targets: list[tuple[CapabilityScope, str | None]] = []
         if worktree is not None:
             targets.append(("worktree", worktree.id))
@@ -330,9 +321,6 @@ async def _path_capability_ref(
         Path(path),
         deadline=deadline,
     )
-    if not await repo.exists(deadline=deadline):
-        msg = f"no initialized Git repository found for target: {path}"
-        raise OSError(msg)
     if worktree is None:
         return CapabilityRef(
             kind=kind,

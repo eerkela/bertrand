@@ -15,8 +15,10 @@ from bertrand.env.git import (
     HOST_MOUNTS,
     STATE,
     Deadline,
-    Mount,
+    HostMount,
+    State,
     abspath,
+    require_bertrand_group,
     run,
     sudo,
     symlink_points_to,
@@ -81,23 +83,12 @@ def _single_repository_volume(
     raise OSError(msg)
 
 
-def _managed_alias_ancestor(
-    path: Path,
-) -> tuple[Path, UUIDHex, Mount | None] | None:
-    managed = STATE.managed_alias_ancestor(path)
-    if managed is None:
-        return None
-    alias, repo_id = managed
-    repo = STATE.repo(repo_id)
-    return alias, repo_id, Mount.search(repo.mount)
-
-
-def ceph_mount_path(mount: Mount) -> PosixPath | None:
+def ceph_mount_path(mount: HostMount) -> PosixPath | None:
     """Best-effort parsed CephFS path suffix from a host mount source.
 
     Parameters
     ----------
-    mount : Mount
+    mount : HostMount
         Host mount entry to parse.
 
     Returns
@@ -123,7 +114,7 @@ async def _normalize_mounted_repository_catalog(
     mount_id: str,
     *,
     deadline: Deadline,
-) -> tuple[UUIDHex, Mount | None]:
+) -> tuple[UUIDHex, HostMount | None]:
     """Make mounted repository metadata and local mount identity agree.
 
     Parameters
@@ -135,19 +126,19 @@ async def _normalize_mounted_repository_catalog(
 
     Returns
     -------
-    tuple[UUIDHex, Mount | None]
+    tuple[UUIDHex, HostMount | None]
         Authoritative repository ID and the mounted entry when present.
     """
     mount_id = _check_uuid(mount_id)
     repo = STATE.repo(mount_id)
-    mounted = Mount.search(repo.mount)
+    mounted = HostMount.search(repo.mount)
     if mounted is None:
         return mount_id, None
 
     repaired = await repo.normalize(deadline=deadline)
     repo_id = repaired.repo_id or repaired.mount_id
     repo_id = _check_uuid(repo_id)
-    mounted = Mount.search(repaired.mount)
+    mounted = HostMount.search(repaired.mount)
     return repo_id, mounted
 
 
@@ -159,7 +150,7 @@ async def ensure_repository_host_mount(
     ceph_user: str,
     ceph_secretfile: Path,
     deadline: Deadline,
-) -> Mount:
+) -> HostMount:
     """Ensure a repository hidden Ceph mount exists and return its mount entry.
 
     Parameters
@@ -179,7 +170,7 @@ async def ensure_repository_host_mount(
 
     Returns
     -------
-    Mount
+    HostMount
         Mounted hidden repository entry.
 
     Raises
@@ -212,6 +203,8 @@ async def ensure_repository_host_mount(
         msg = "repository Ceph monitor endpoints cannot contain comma separators"
         raise ValueError(msg)
 
+    require_bertrand_group()
+
     ceph_secretfile = ceph_secretfile.expanduser().resolve()
     if not ceph_secretfile.exists():
         msg = f"repository Ceph secret file does not exist: {ceph_secretfile}"
@@ -225,7 +218,7 @@ async def ensure_repository_host_mount(
 
     await repo_state.lock.lock(deadline)
     try:
-        mounted = Mount.search(mount_path)
+        mounted = HostMount.search(mount_path)
         if mounted is None:
             mount_opts = [
                 f"name={ceph_user}",
@@ -249,7 +242,7 @@ async def ensure_repository_host_mount(
                 capture_output=True,
                 deadline=deadline,
             )
-            mounted = Mount.search(mount_path)
+            mounted = HostMount.search(mount_path)
             if mounted is None:
                 msg = (
                     f"repository mount target {mount_path!r} failed to appear in "
@@ -332,7 +325,7 @@ async def ensure_repository_mount(
             pvc=volume,
             deadline=deadline,
         )
-        mounted = Mount.search(hidden_mount)
+        mounted = HostMount.search(hidden_mount)
         mounted_ceph_path = ceph_mount_path(mounted) if mounted is not None else None
         if mounted is not None and mounted_ceph_path != ceph_path:
             msg = (
@@ -604,7 +597,7 @@ async def _mount_repository_volume(
     *,
     repo_id: str,
     deadline: Deadline,
-) -> tuple[UUIDHex, Mount]:
+) -> tuple[UUIDHex, HostMount]:
     volumes = await list_repository_volume_claims(
         kube,
         repo_id,
@@ -652,188 +645,55 @@ async def _mount_repository_volume(
     return repo_id, mount
 
 
-async def _resurrect_repository_mount_record(
+async def refresh_repository_alias(
     kube: Kube,
-    path: Path,
     *,
+    alias: Path,
+    repo: State.Repository,
     deadline: Deadline,
-) -> tuple[UUIDHex, Mount] | None:
-    inspected = abspath(path)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, deadline=deadline)
-    states = await REPOSITORY_STATE_RESOURCE.list(
-        kube,
-        namespace=BERTRAND_NAMESPACE,
-        deadline=deadline,
-    )
-
-    for candidate in (inspected, *inspected.parents):
-        alias_path = candidate.as_posix()
-        records = [
-            record
-            for state in states
-            for record in state.status.mounts.values()
-            if record.alias_path == alias_path and record.phase == "Active"
-        ]
-        if not records:
-            continue
-
-        repo_ids = {record.repo_id for record in records}
-        if len(repo_ids) != 1:
-            ids = ", ".join(sorted(repo_ids))
-            msg = (
-                f"repository mount recovery for {alias_path} is ambiguous: "
-                f"multiple repository identities match ({ids})"
-            )
-            raise OSError(msg)
-        repo_id = next(iter(repo_ids))
-        repo_state = STATE.repo(repo_id)
-        hidden_mount = repo_state.mount
-        if (candidate.exists() or candidate.is_symlink()) and not symlink_points_to(
-            candidate,
-            hidden_mount,
-        ):
-            msg = (
-                f"cannot recover repository mount at {candidate}: path is occupied "
-                f"and is not a managed symlink to {hidden_mount}"
-            )
-            raise OSError(msg)
-
-        repo_id, mount = await _mount_repository_volume(
-            kube,
-            repo_id=repo_id,
-            deadline=deadline,
-        )
-        repo_state = STATE.repo(repo_id)
-        async with repo_state.aliases(deadline=deadline) as aliases:
-            aliases.link(candidate)
-        await ensure_repository_mount_record(
-            kube,
-            repo_id=repo_id,
-            host_id=_current_host_id(),
-            alias_path=candidate.as_posix(),
-            node_name=platform.node(),
-            deadline=deadline,
-        )
-        return repo_id, mount
-
-    return None
-
-
-async def resurrect_repository_mount(
-    kube: Kube,
-    path: Path,
-    *,
-    deadline: Deadline,
-) -> tuple[UUIDHex, Mount] | None:
-    """Restore a managed repository mount from symlinks or CRD records.
+) -> State.Repository:
+    """Refresh one managed repository alias and return its mounted repository.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    path : Path
-        Host path to inspect for managed alias ancestry or recorded mount aliases.
-    deadline : Deadline
-        Maximum resurrection budget in seconds.
-
-    Returns
-    -------
-    tuple[UUIDHex, Mount] | None
-        `(repo_id, mount)` when a managed alias or mount record is found and mounted,
-        or None when no managed recovery metadata is present.
-
-    """
-    # Search for managed Bertrand symlink alias pointing to a mounted volume.
-    managed = _managed_alias_ancestor(path)
-    if managed is None:
-        return await _resurrect_repository_mount_record(
-            kube,
-            path,
-            deadline=deadline,
-        )
-    alias, repo_id, mount = managed
-    repo_id, mount = await _normalize_mounted_repository_catalog(
-        repo_id,
-        deadline=deadline,
-    )
-    if mount is not None:
-        repo_state = STATE.repo(repo_id)
-        async with repo_state.aliases(deadline=deadline) as aliases:
-            aliases.link(alias)
-        return repo_id, mount
-
-    # Managed alias ancestry is authoritative: if the mount is missing, recover it
-    # from cluster state or fail closed to avoid silently drifting ownership.
-    repo_id, mount = await _mount_repository_volume(
-        kube,
-        repo_id=repo_id,
-        deadline=deadline,
-    )
-    repo_state = STATE.repo(repo_id)
-    async with repo_state.aliases(deadline=deadline) as aliases:
-        aliases.link(alias)
-    return repo_id, mount
-
-
-async def refresh_repository_alias_for_path(
-    kube: Kube,
-    path: Path,
-    *,
-    deadline: Deadline,
-) -> UUIDHex | None:
-    """Refresh mount metadata for a managed alias used by a host path.
-
-    Parameters
-    ----------
-    kube : Kube
-        Active Kubernetes API context.
-    path : Path
-        Host path to inspect before resolving symlinks.
+    alias : Path
+        Absolute managed alias path to register.
+    repo : State.Repository
+        Repository catalog entry encoded by the managed alias target.
     deadline : Deadline
         Maximum refresh budget in seconds.
 
     Returns
     -------
-    UUIDHex | None
-        Repository UUID when a managed alias was refreshed or resurrected, otherwise
-        None.
-
+    State.Repository
+        Authoritative repository catalog entry after normalization and remount.
     """
-    managed = _managed_alias_ancestor(path)
-    if managed is not None:
-        alias, repo_id, mount = managed
-        repo_id, mount = await _normalize_mounted_repository_catalog(
-            repo_id,
-            deadline=deadline,
-        )
-        if mount is None:
-            repo_id, _ = await _mount_repository_volume(
-                kube,
-                repo_id=repo_id,
-                deadline=deadline,
-            )
-        repo_state = STATE.repo(repo_id)
-        async with repo_state.aliases(deadline=deadline) as aliases:
-            aliases.link(alias)
-        await ensure_repository_mount_record(
-            kube,
-            repo_id=repo_id,
-            host_id=_current_host_id(),
-            alias_path=alias.as_posix(),
-            node_name=platform.node(),
-            deadline=deadline,
-        )
-        return repo_id
-
-    resurrected = await _resurrect_repository_mount_record(
-        kube,
-        path,
+    alias = abspath(alias)
+    repo_id, mount = await _normalize_mounted_repository_catalog(
+        repo.mount_id,
         deadline=deadline,
     )
-    if resurrected is None:
-        return None
-    repo_id, _ = resurrected
-    return repo_id
+    if mount is None:
+        repo_id, _ = await _mount_repository_volume(
+            kube,
+            repo_id=repo_id,
+            deadline=deadline,
+        )
+
+    repo_state = STATE.repo(repo_id)
+    async with repo_state.aliases(deadline=deadline) as aliases:
+        aliases.link(alias)
+    await ensure_repository_mount_record(
+        kube,
+        repo_id=repo_id,
+        host_id=_current_host_id(),
+        alias_path=alias.as_posix(),
+        node_name=platform.node(),
+        deadline=deadline,
+    )
+    return repo_state
 
 
 async def prune_repository_mount_aliases(
