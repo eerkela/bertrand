@@ -15,8 +15,7 @@ from bertrand.env.git import (
     until,
     warn,
 )
-from bertrand.env.kube.api.bootstrap import uninstall_k0s
-from bertrand.env.kube.api.client import Kube
+from bertrand.env.kube.api.client import Kube, uninstall_k0s
 from bertrand.env.kube.ceph.api import (
     ceph_health,
     delete_loop_fallback_substrate,

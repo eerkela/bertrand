@@ -70,6 +70,10 @@ NORMALIZE_ARCH = {
     "amd64": "amd64",
     "aarch64": "arm64",
     "arm64": "arm64",
+    "arm": "arm",
+    "armhf": "arm",
+    "armv7": "arm",
+    "armv7l": "arm",
 }
 GIT_REF_HEADS_PREFIX = "refs/heads/"
 GIT_REF_STATES: frozenset[GitRefState] = frozenset({"prepared", "committed", "aborted"})
@@ -2447,6 +2451,7 @@ class State:
                 self.mount_locks,
                 self.kube.cache,
                 self.kube.runtime,
+                self.kube.lock.parent,
             ):
                 await self.mkdir(path, deadline=deadline)
 

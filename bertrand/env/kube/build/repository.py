@@ -21,11 +21,11 @@ from bertrand.env.git import (
     NO_DEADLINE,
     Deadline,
 )
-from bertrand.env.kube.api.bootstrap import configure_k0s_registries
 from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
     Kube,
+    configure_k0s_registries,
 )
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.build.daemon import (

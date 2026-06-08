@@ -12,8 +12,7 @@ from bertrand.env.cli.external._storage import (
 )
 from bertrand.env.cli.util import emit_json
 from bertrand.env.git import STATE
-from bertrand.env.kube.api.bootstrap import k0s_cluster_ready
-from bertrand.env.kube.api.client import Kube
+from bertrand.env.kube.api.client import Kube, k0s_cluster_ready
 from bertrand.env.kube.capability.device import (
     delete_device_inventory,
     list_device_inventory,

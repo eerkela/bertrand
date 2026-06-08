@@ -6,7 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import Deadline, until
-from bertrand.env.kube.api.bootstrap import kubectl
+from bertrand.env.kube.api.client import kubectl
 from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.deployment import Deployment
 

@@ -21,14 +21,14 @@ from bertrand.env.cli.external.init import (
 )
 from bertrand.env.cli.util import emit_json
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
-from bertrand.env.kube.api.bootstrap import (
+from bertrand.env.kube.api.client import (
     K0sRole,
+    Kube,
     join_k0s_cluster,
     k0s_cluster_ready,
     k0s_join_bundle,
     normalize_k0s_role,
 )
-from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.daemon import (
     buildkit_pool_status,
     ensure_buildkit_pool,

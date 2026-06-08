@@ -67,10 +67,10 @@ async def _port_forward_dashboard(
     timeout: float,
 ) -> None:
     process = await asyncio.create_subprocess_exec(
-        str(STATE.path(STATE.k0s_binary)),
+        str(STATE.kube.bin),
         "kubectl",
         "--kubeconfig",
-        str(STATE.path(STATE.kubeconfig)),
+        str(STATE.kube.config),
         "port-forward",
         "--namespace",
         BERTRAND_NAMESPACE,

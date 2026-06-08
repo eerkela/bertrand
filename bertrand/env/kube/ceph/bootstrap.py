@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline, until
-from bertrand.env.kube.api.bootstrap import kubectl
+from bertrand.env.kube.api.client import kubectl
 from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
 from bertrand.env.kube.crd import CustomResourceDefinition
 from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource

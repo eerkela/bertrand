@@ -26,13 +26,11 @@ from bertrand.env.git import (
     run,
     symlink_points_to,
 )
-from bertrand.env.kube.api.bootstrap import (
-    assert_k0s_installed,
+from bertrand.env.kube.api.client import (
+    Kube,
     ensure_k0s_kubeconfig,
-    install_k0s,
     start_k0s,
 )
-from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
 from bertrand.env.kube.build.daemon import ensure_buildkit_pool
 from bertrand.env.kube.build.repository import (
@@ -786,8 +784,7 @@ class ExternalInit:
         *,
         deadline: Deadline,
     ) -> None:
-        await install_k0s(yes=self.yes, deadline=deadline)
-        assert_k0s_installed()
+        await Kube.install(yes=self.yes, deadline=deadline)
         await start_k0s(deadline=deadline, yes=self.yes)
         ensure_k0s_kubeconfig(deadline=deadline)
 
@@ -865,19 +862,23 @@ class ExternalInit:
             raise OSError(msg)
 
         # idempotently bootstrap host cluster infrastructure
+        ignore_errors = False
         kube: Kube | None = None
         await STATE.init(yes=self.yes, deadline=deadline)
         try:
             await self._bootstrap_cluster(deadline=deadline)
             kube = Kube.external()
             await self._bootstrap_control_plane(kube=kube, deadline=deadline)
+            # TODO: acquire the repo lock within this context, then include a following
+            # try/catch block that transitions from the cluster lock to the repository
+            # lock
         except:
-            await STATE.lock.unlock(ignore_errors=True)
+            ignore_errors = True
             if kube is not None:
                 kube.close()
             raise
-        else:
-            await STATE.lock.unlock()
+        finally:
+            await STATE.lock.unlock(ignore_errors=ignore_errors)
 
         # finish bootstrapping cluster control plane, then converge repository volume
         # under a separate lock to reduce contention
