@@ -768,12 +768,15 @@ class ExternalInit:
         corresponding, unique `Resource` implementations.
     yes : bool
         Whether to auto-accept prompts during host bootstrap stages.
+    join_url : str | None
+        Stable k0s API URL joining hosts should use, if explicitly provided.
     """
 
     path: Path | str | None
     enable: list[str]
     disable: list[str]
     yes: bool
+    join_url: str | None
 
     async def _bootstrap_control_plane(
         self,
@@ -853,7 +856,11 @@ class ExternalInit:
         kube: Kube | None = None
         await STATE.init(deadline=deadline, yes=self.yes)
         try:
-            await Kube.init(deadline=deadline, yes=self.yes)
+            await Kube.init(
+                deadline=deadline,
+                yes=self.yes,
+                join_url=self.join_url,
+            )
             kube = Kube.external()
             await self._bootstrap_control_plane(kube=kube, deadline=deadline)
             # TODO: acquire the repo lock within this context, then include a following
@@ -925,6 +932,12 @@ async def _converge_host_cluster_runtime(
     """Converge the local cluster control plane after host runtime installation."""
     if start:
         await Kube.init(deadline=deadline, yes=False)
-    runtime = ExternalInit(path=None, enable=[], disable=[], yes=False)
+    runtime = ExternalInit(
+        path=None,
+        enable=[],
+        disable=[],
+        yes=False,
+        join_url=None,
+    )
     with Kube.external() as kube:
         await runtime._bootstrap_control_plane(kube, deadline)

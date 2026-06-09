@@ -80,7 +80,7 @@ if TYPE_CHECKING:
 
     from bertrand.env.kube.capability.device import BertrandDeviceRecord
 
-JOIN_BUNDLE_VERSION = 2
+JOIN_BUNDLE_VERSION = 3
 
 
 def _flatten(values: Sequence[Sequence[str]] | None) -> tuple[str, ...]:
@@ -144,7 +144,6 @@ async def bertrand_cluster_invite(
     *,
     name: str | None,
     role: str,
-    server_url: str | None,
     deadline: Deadline,
 ) -> None:
     """Generate a sensitive Bertrand distributed-runtime join bundle.
@@ -155,16 +154,13 @@ async def bertrand_cluster_invite(
         Desired name for the joining node.
     role : str
         k0s node role for the joining host.
-    server_url : str | None
-        Optional externally reachable k0s server URL.
     deadline : Deadline
         Token generation budget.
 
     """
     normalized_role: K0sRole = _normalize_k0s_role(role)
-    resolved_server, token_value, kubeconfig = await Kube.join_bundle(
+    token_value, kubeconfig = await Kube.join_bundle(
         role=normalized_role,
-        server_url=server_url,
         deadline=deadline,
     )
     node_name = (
@@ -175,7 +171,6 @@ async def bertrand_cluster_invite(
         "created_at": datetime.now(UTC).isoformat(),
         "node_name": node_name,
         "role": normalized_role,
-        "server_url": resolved_server,
         "token": token_value,
         "kubeconfig": kubeconfig,
     }
@@ -211,7 +206,6 @@ async def bertrand_cluster_join(
         role or str(bundle.get("role") or "worker")
     )
     await Kube.join_cluster(
-        server_url=str(bundle["server_url"]),
         token=str(bundle["token"]),
         role=resolved_role,
         kubeconfig=str(bundle["kubeconfig"]),
@@ -827,7 +821,7 @@ def _decode_bundle(token: str) -> dict[str, object]:
     if not isinstance(payload, dict) or payload.get("version") != JOIN_BUNDLE_VERSION:
         msg = "unsupported Bertrand cluster join token"
         raise ValueError(msg)
-    for key in ("server_url", "token", "kubeconfig"):
+    for key in ("token", "kubeconfig"):
         if not isinstance(payload.get(key), str) or not payload[key]:
             msg = f"Bertrand cluster join token is missing {key!r}"
             raise ValueError(msg)

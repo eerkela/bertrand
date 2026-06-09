@@ -465,12 +465,6 @@ class External:
                 default="worker",
                 help="k0s role for the joining Bertrand host.",
             )
-            invite.add_argument(
-                "--server-url",
-                default=None,
-                metavar="URL",
-                help="Externally reachable k0s controller URL for joining hosts.",
-            )
             self._add_timeout(
                 invite,
                 help="Maximum time in seconds for join-token generation.",
@@ -483,7 +477,6 @@ class External:
                 kwargs=(
                     ("name", "name"),
                     ("role", "role"),
-                    ("server_url", "server_url"),
                     ("timeout", "timeout"),
                 ),
             )
@@ -606,6 +599,15 @@ class External:
                 "wait indefinitely.",
             )
             command.add_argument(
+                "--join-url",
+                default=None,
+                metavar="URL",
+                help=(
+                    "Override the auto-derived k0s API URL joining Bertrand hosts "
+                    "should use. Accepts https://host[:port] or host[:port]."
+                ),
+            )
+            command.add_argument(
                 "-e",
                 "--enable",
                 action="append",
@@ -642,6 +644,7 @@ class External:
                     enable=args.enable,
                     disable=args.disable,
                     yes=args.yes,
+                    join_url=args.join_url,
                 ),
                 command_timeout_attr="timeout",
                 command_timeout=math.inf,

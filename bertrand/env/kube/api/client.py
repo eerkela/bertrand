@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import contextlib
 import ipaddress
 import json
 import math
@@ -12,13 +10,13 @@ import os
 import platform
 import shlex
 import shutil
+import socket
 import tempfile
-from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 import kubernetes
 import yaml
@@ -43,7 +41,7 @@ from bertrand.env.git import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 CLUSTER_REGISTRY_READY_LABEL = "bertrand.dev/registry-ready"
 CLUSTER_REGISTRY_READY_VALUE = "true"
@@ -51,137 +49,11 @@ _KUBE_CONFIG_ERRORS = (ConfigException, OSError, ValueError)
 
 type K0sRole = Literal["controller", "worker"]
 
-K0S_CONTEXT = "bertrand"
 K0S_VERSION = "v1.35.4+k0s.0"
 K0S_SERVICE_NAME = "bertrand-k0s"
 K0S_API_PORT = 16443
 K0S_CONTROLLER_API_PORT = 19443
 K0S_ROLES: tuple[K0sRole, ...] = ("controller", "worker")
-
-
-def kubeconfig_identity(payload: str, *, source: str) -> tuple[str, str]:
-    """Return the API server identity encoded in a kubeconfig payload.
-
-    Parameters
-    ----------
-    payload : str
-        Raw kubeconfig YAML.
-    source : str
-        Human-readable source label for diagnostics.
-
-    Returns
-    -------
-    tuple[str, str]
-        API server URL and certificate-authority data.
-
-    Raises
-    ------
-    OSError
-        If the payload is malformed or does not describe Bertrand's k0s context.
-    """
-    try:
-        raw = yaml.safe_load(payload)
-    except yaml.YAMLError as err:
-        msg = f"{source} is not valid kubeconfig YAML: {err}"
-        raise OSError(msg) from err
-    if not isinstance(raw, Mapping):
-        msg = f"{source} kubeconfig must deserialize into a mapping"
-        raise OSError(msg)
-
-    current_context = str(raw.get("current-context") or "").strip()
-    if not current_context:
-        msg = f"{source} kubeconfig is missing 'current-context'"
-        raise OSError(msg)
-    if current_context != K0S_CONTEXT:
-        msg = (
-            f"{source} kubeconfig must use current-context {K0S_CONTEXT!r}, "
-            f"got {current_context!r}"
-        )
-        raise OSError(msg)
-
-    cluster_name = ""
-    contexts = raw.get("contexts")
-    if not isinstance(contexts, list):
-        msg = f"{source} kubeconfig is missing context list"
-        raise OSError(msg)
-    for entry in contexts:
-        if not isinstance(entry, Mapping):
-            continue
-        if str(entry.get("name") or "").strip() != current_context:
-            continue
-        context = entry.get("context")
-        if isinstance(context, Mapping):
-            cluster_name = str(context.get("cluster") or "").strip()
-            break
-    if not cluster_name:
-        msg = f"{source} kubeconfig has no cluster bound to context {current_context!r}"
-        raise OSError(msg)
-
-    clusters = raw.get("clusters")
-    if not isinstance(clusters, list):
-        msg = f"{source} kubeconfig is missing cluster list"
-        raise OSError(msg)
-    cluster_payload: Mapping[str, object] | None = None
-    for entry in clusters:
-        if not isinstance(entry, Mapping):
-            continue
-        if str(entry.get("name") or "").strip() != cluster_name:
-            continue
-        cluster = entry.get("cluster")
-        if isinstance(cluster, Mapping):
-            cluster_payload = cluster
-            break
-    if cluster_payload is None:
-        msg = f"{source} kubeconfig has no cluster payload named {cluster_name!r}"
-        raise OSError(msg)
-
-    server = str(cluster_payload.get("server") or "").strip()
-    if not server:
-        msg = f"{source} kubeconfig is missing cluster.server"
-        raise OSError(msg)
-    parsed = urlparse(server)
-    if parsed.scheme != "https" or not parsed.hostname:
-        msg = (
-            f"{source} kubeconfig cluster.server must be a valid HTTPS URL, "
-            f"got {server!r}"
-        )
-        raise OSError(msg)
-
-    ca_data = str(cluster_payload.get("certificate-authority-data") or "").strip()
-    if not ca_data:
-        msg = f"{source} kubeconfig is missing cluster.certificate-authority-data"
-        raise OSError(msg)
-    return server, ca_data
-
-
-def managed_kubeconfig_payload(*, source: str = "managed kubeconfig") -> str:
-    """Return the current Bertrand-managed k0s kubeconfig payload.
-
-    Parameters
-    ----------
-    source : str, optional
-        Human-readable source label for diagnostics.
-
-    Returns
-    -------
-    str
-        Kubeconfig payload.
-
-    Raises
-    ------
-    OSError
-        If the kubeconfig is missing or empty.
-    """
-    kubeconfig = STATE.kube.config
-    try:
-        text = kubeconfig.read_text(encoding="utf-8").strip()
-    except OSError as err:
-        msg = f"failed to read {source} at {kubeconfig}: {err}"
-        raise OSError(msg) from err
-    if not text:
-        msg = f"{source} at {kubeconfig} is empty"
-        raise OSError(msg)
-    return text if text.endswith("\n") else f"{text}\n"
 
 
 async def kubectl(
@@ -252,95 +124,23 @@ async def kubectl(
     )
 
 
-def _normalize_server_url(value: str) -> str:
-    text = value.strip()
-    if not text:
-        msg = "k0s server URL cannot be empty"
-        raise ValueError(msg)
-    if "://" not in text:
-        text = f"https://{text}"
-    parsed = urlparse(text)
-    if parsed.scheme != "https" or not parsed.hostname:
-        msg = f"k0s server URL must be an HTTPS host:port URL, got {value!r}"
-        raise ValueError(msg)
-    netloc = parsed.netloc
-    if parsed.port is None:
-        netloc = f"{parsed.hostname}:{K0S_API_PORT}"
-    return urlunparse(("https", netloc, "", "", "", ""))
+def is_missing_api_resource(err: OSError) -> bool:
+    """Return whether a Kubernetes 404 means the REST resource is unavailable.
 
+    Parameters
+    ----------
+    err : OSError
+        Error raised by :meth:`Kube.run`.
 
-# TODO: rewrite_kubeconfig_payload is an absolute mess, and should be replaced with
-# something simpler
-
-
-def _rewrite_kubeconfig_payload(payload: str, *, server_url: str | None) -> str:
-    raw = yaml.safe_load(payload)
-    if not isinstance(raw, dict):
-        msg = "cannot rewrite malformed kubeconfig payload"
-        raise OSError(msg)
-    clusters = raw.get("clusters")
-    if not isinstance(clusters, list):
-        msg = "cannot rewrite kubeconfig without cluster list"
-        raise OSError(msg)
-    cluster_name = ""
-    for entry in clusters:
-        if not isinstance(entry, dict):
-            continue
-        if not cluster_name:
-            cluster_name = str(entry.get("name") or "").strip()
-        cluster = entry.get("cluster")
-        if server_url is not None and isinstance(cluster, dict):
-            cluster["server"] = server_url
-    if not cluster_name:
-        msg = "cannot rewrite kubeconfig without a named cluster"
-        raise OSError(msg)
-
-    users = raw.get("users")
-    user_name = ""
-    if isinstance(users, list):
-        for entry in users:
-            if isinstance(entry, dict):
-                user_name = str(entry.get("name") or "").strip()
-                if user_name:
-                    break
-
-    contexts = raw.get("contexts")
-    if not isinstance(contexts, list):
-        contexts = []
-        raw["contexts"] = contexts
-    context_payload: dict[str, str] = {"cluster": cluster_name}
-    if user_name:
-        context_payload["user"] = user_name
-    contexts[:] = [
-        entry
-        for entry in contexts
-        if not isinstance(entry, dict) or entry.get("name") != K0S_CONTEXT
-    ]
-    contexts.append({"name": K0S_CONTEXT, "context": context_payload})
-    raw["current-context"] = K0S_CONTEXT
-    return yaml.safe_dump(raw, sort_keys=False)
-
-
-def _token_with_server(token: str, server_url: str) -> str:
-    token = token.strip()
-    try:
-        decoded = base64.b64decode(
-            token + "=" * (-len(token) % 4),
-            validate=False,
-        ).decode("utf-8")
-    except (ValueError, UnicodeDecodeError) as err:
-        msg = "k0s join token must be a base64-encoded kubeconfig"
-        raise OSError(msg) from err
-    rewritten = _rewrite_kubeconfig_payload(decoded, server_url=server_url)
-    return base64.b64encode(rewritten.encode("utf-8")).decode("ascii")
-
-
-def _client_from_config(config_file: Path) -> kubernetes.client.ApiClient:
-    try:
-        return kubernetes.config.new_client_from_config(config_file=str(config_file))
-    except _KUBE_CONFIG_ERRORS as err:
-        msg = f"failed to initialize kubernetes client from {config_file}: {err}"
-        raise OSError(msg) from err
+    Returns
+    -------
+    bool
+        Whether the API server could not resolve the requested resource endpoint,
+        rather than simply reporting a missing object instance.
+    """
+    if not isinstance(err, KubeApiError) or err.status != 404:
+        return False
+    return "the server could not find the requested resource" in err.detail.lower()
 
 
 class KubeApiError(OSError):
@@ -368,25 +168,6 @@ class KubeApiError(OSError):
         super().__init__(
             f"{context} failed with kubernetes API status {status}: {detail}"
         )
-
-
-def is_missing_api_resource(err: OSError) -> bool:
-    """Return whether a Kubernetes 404 means the REST resource is unavailable.
-
-    Parameters
-    ----------
-    err : OSError
-        Error raised by :meth:`Kube.run`.
-
-    Returns
-    -------
-    bool
-        Whether the API server could not resolve the requested resource endpoint,
-        rather than simply reporting a missing object instance.
-    """
-    if not isinstance(err, KubeApiError) or err.status != 404:
-        return False
-    return "the server could not find the requested resource" in err.detail.lower()
 
 
 @dataclass
@@ -515,7 +296,87 @@ class Kube:
             download.unlink(missing_ok=True)
 
     @staticmethod
-    async def _dump_k0s_config(deadline: Deadline) -> None:
+    def _default_route_ipv4() -> str | None:
+        port = 80
+        for ip in ("8.8.8.8", "1.1.1.1"):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.connect((ip, port))
+                    host_addr, _ = sock.getsockname()
+                host = str(host_addr)
+                address = ipaddress.ip_address(host)
+            except (OSError, ValueError):
+                continue
+            if (
+                address.version == 4
+                and not address.is_loopback
+                and not address.is_unspecified
+            ):
+                return host
+        return None
+
+    @staticmethod
+    def _parse_join_url(value: str) -> tuple[str, int]:
+        text = value.strip()
+        if not text:
+            msg = "k0s join URL cannot be empty"
+            raise ValueError(msg)
+        if "://" not in text:
+            text = f"https://{text}"
+
+        # parse and validate URL structure
+        parsed = urlparse(text)
+        if parsed.scheme != "https" or not parsed.hostname:
+            msg = f"k0s join URL must be an HTTPS host:port URL, got {value!r}"
+            raise ValueError(msg)
+        if (
+            parsed.username
+            or parsed.password
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            msg = "k0s join URL must not include credentials, path, query, or fragment"
+            raise ValueError(msg)
+
+        # use specified port if given or fall back to a global default
+        try:
+            port = parsed.port or K0S_API_PORT
+        except ValueError as err:
+            msg = f"k0s join URL has invalid port: {value!r}"
+            raise ValueError(msg) from err
+
+        # ensure no host loopback or unspecified address
+        host = parsed.hostname.strip()
+        if host.lower() in {"localhost", "localhost.localdomain"}:
+            msg = "k0s join URL must not use a loopback host"
+            raise ValueError(msg)
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            if address.is_loopback or address.is_unspecified:
+                msg = "k0s join URL must not use a loopback or unspecified address"
+                raise ValueError(msg)
+
+        return host, port
+
+    @staticmethod
+    async def _dump_k0s_config(
+        *,
+        join_address: tuple[str, int] | None,
+        deadline: Deadline,
+    ) -> None:
+        api: dict[str, object] = {
+            "port": K0S_API_PORT,
+            "k0sApiPort": K0S_CONTROLLER_API_PORT,
+        }
+        if join_address is not None:
+            host, port = join_address
+            api["port"] = port
+            api["externalAddress"] = host
+            api["sans"] = [host]
         await STATE.write(
             STATE.kube.bootstrap,
             yaml.safe_dump(
@@ -524,10 +385,7 @@ class Kube:
                     "kind": "ClusterConfig",
                     "metadata": {"name": "bertrand"},
                     "spec": {
-                        "api": {
-                            "port": K0S_API_PORT,
-                            "k0sApiPort": K0S_CONTROLLER_API_PORT,
-                        },
+                        "api": api,
                         "storage": {"type": "etcd"},
                         "network": {"provider": "calico"},
                     },
@@ -642,20 +500,30 @@ class Kube:
         )
 
     @classmethod
-    async def _start_k0s(cls, *, deadline: Deadline, yes: bool) -> None:
+    async def _start_k0s(
+        cls,
+        *,
+        deadline: Deadline,
+        yes: bool,
+        restart: bool = False,
+    ) -> None:
         ignore_errors = False
         await STATE.lock.lock(deadline=deadline)
         try:
             try:
                 # short-circuit if the cluster is already running
-                if await cls._cluster_ready(deadline):
+                if not restart and await cls._cluster_ready(deadline):
                     await cls._register_bertrand_namespace(deadline=deadline)
                     return
 
                 # start systemd service and wait for k0s to report ready
                 await run(
                     sudo(
-                        ["systemctl", "start", K0S_SERVICE_NAME],
+                        [
+                            "systemctl",
+                            "restart" if restart else "start",
+                            K0S_SERVICE_NAME,
+                        ],
                         non_interactive=True,
                     ),
                     deadline=deadline,
@@ -692,7 +560,7 @@ class Kube:
                     raise OSError(msg)
                 await STATE.write(
                     STATE.kube.config,
-                    _rewrite_kubeconfig_payload(payload, server_url=None),
+                    f"{payload}\n",
                     deadline=deadline,
                 )
 
@@ -737,6 +605,7 @@ class Kube:
         *,
         role: K0sRole = "controller",
         token: str | None = None,
+        join_url: str | None = None,
         yes: bool,
         force: bool = False,
         deadline: Deadline,
@@ -749,6 +618,10 @@ class Kube:
             k0s role for the local runtime.
         token : str | None, optional
             Join token for joining an existing cluster.
+        join_url : str | None, optional
+            Optional stable HTTPS k0s API URL override for joining hosts.  If omitted
+            for the initial controller, Bertrand attempts to use the host's
+            default-route IPv4 address.
         yes : bool
             Whether interactive confirmations should be auto-accepted.
         force : bool, optional
@@ -761,10 +634,20 @@ class Kube:
         PermissionError
             If the user declines installation.
         """
+        explicit_join_url = join_url is not None
+        join_address: tuple[str, int] | None = None
+        if join_url is not None:
+            join_address = cls._parse_join_url(join_url)
+        elif role == "controller" and token is None:
+            host = cls._default_route_ipv4()
+            if host is not None:
+                join_address = (host, K0S_API_PORT)
+
         # short-circuit if the service appears active and the k0s binary and config
         # are in-place
         if (
             not force
+            and not explicit_join_url
             and STATE.kube.bin.is_file()
             and STATE.kube.config.is_file()
             and await cls._systemd_ready(deadline)
@@ -785,7 +668,7 @@ class Kube:
             await cls._download_k0s(deadline)
 
         # write output artifacts
-        await cls._dump_k0s_config(deadline)
+        await cls._dump_k0s_config(join_address=join_address, deadline=deadline)
         token_file = await cls._dump_join_token(token, deadline)
         await cls._dump_unit(role, token_file, deadline)
 
@@ -800,7 +683,7 @@ class Kube:
         )
 
         # start the service and wait for the API to become ready
-        await cls._start_k0s(deadline=deadline, yes=yes)
+        await cls._start_k0s(deadline=deadline, yes=yes, restart=explicit_join_url)
 
     # TODO: split start() out of init() and implement a separate stop() method for
     # stopping the cluster, but not necessarily deleting it, unlike clean()
@@ -830,7 +713,14 @@ class Kube:
                 "to converge k0s API access first."
             )
             raise OSError(msg)
-        return cls(client=_client_from_config(config_file))
+        try:
+            client = kubernetes.config.new_client_from_config(
+                config_file=str(config_file),
+            )
+            return cls(client=client)
+        except _KUBE_CONFIG_ERRORS as err:
+            msg = f"failed to initialize kubernetes client from {config_file}: {err}"
+            raise OSError(msg) from err
 
     @classmethod
     def internal(cls) -> Self:
@@ -861,24 +751,21 @@ class Kube:
         cls,
         *,
         role: K0sRole,
-        server_url: str | None,
         deadline: Deadline,
-    ) -> tuple[str, str, str]:
-        """Return `(server_url, token, kubeconfig)` for a joining node.
+    ) -> tuple[str, str]:
+        """Return `(token, kubeconfig)` for a joining node.
 
         Parameters
         ----------
         role : K0sRole
             k0s role for the joining host.
-        server_url : str | None
-            Optional externally reachable server URL.
         deadline : Deadline
             Active operation deadline.
 
         Returns
         -------
-        tuple[str, str, str]
-            Reachable server URL, rewritten join token, and rewritten kubeconfig.
+        tuple[str, str]
+            Raw k0s join token and managed kubeconfig.
 
         Raises
         ------
@@ -888,27 +775,33 @@ class Kube:
         if not await cls._cluster_ready(deadline):
             msg = "k0s must be running before generating a join token"
             raise OSError(msg)
+        try:
+            raw = yaml.safe_load(STATE.kube.bootstrap.read_text(encoding="utf-8"))
+            api = raw["spec"]["api"] if isinstance(raw, dict) else {}
+        except (KeyError, OSError, TypeError, yaml.YAMLError):
+            api = {}
+        if (
+            not isinstance(api, dict)
+            or not str(api.get("externalAddress") or "").strip()
+        ):
+            msg = (
+                "cluster invite requires a configured k0s join URL. Re-run "
+                "`bertrand init --join-url https://HOST:PORT` on the controller "
+                "before inviting additional hosts."
+            )
+            raise OSError(msg)
 
-        payload = managed_kubeconfig_payload()
-        default_server, _ca = kubeconfig_identity(payload, source="managed kubeconfig")
-        explicit_server = server_url is not None and bool(server_url.strip())
-        chosen_source = (
-            server_url.strip() if explicit_server and server_url else default_server
-        )
-        chosen_server = _normalize_server_url(chosen_source)
-        if not explicit_server:
-            host = urlparse(chosen_server).hostname or ""
-            is_loopback = host.lower() in {"localhost", "localhost.localdomain"}
-            if not is_loopback:
-                with contextlib.suppress(ValueError):
-                    is_loopback = ipaddress.ip_address(host).is_loopback
-            if is_loopback:
-                msg = (
-                    "managed kubeconfig points at a loopback k0s API endpoint. Re-run "
-                    "`bertrand cluster invite` with --server-url https://HOST:PORT for a "
-                    "reachable controller address."
-                )
-                raise OSError(msg)
+        # load kubeconfig
+        kubeconfig = STATE.kube.config
+        try:
+            text = kubeconfig.read_text(encoding="utf-8")
+        except OSError as err:
+            msg = f"failed to read managed kubeconfig at {kubeconfig}: {err}"
+            raise OSError(msg) from err
+        if not text.strip():
+            msg = f"managed kubeconfig at {kubeconfig} is empty"
+            raise OSError(msg)
+        payload = text if text.endswith("\n") else f"{text}\n"
 
         result = await run(
             sudo(
@@ -932,17 +825,12 @@ class Kube:
             msg = "k0s token create returned an empty join token"
             raise OSError(msg)
 
-        return (
-            chosen_server,
-            _token_with_server(token, chosen_server),
-            _rewrite_kubeconfig_payload(payload, server_url=chosen_server),
-        )
+        return token, payload
 
     @classmethod
     async def join_cluster(
         cls,
         *,
-        server_url: str,
         token: str,
         role: K0sRole,
         kubeconfig: str,
@@ -953,8 +841,6 @@ class Kube:
 
         Parameters
         ----------
-        server_url : str
-            Reachable server URL for the existing cluster.
         token : str
             k0s join token.
         role : K0sRole
@@ -974,18 +860,19 @@ class Kube:
         if await cls._cluster_ready(deadline):
             msg = (
                 "local k0s already reports a ready cluster; refusing to join it to "
-                "another cluster. Run `bertrand clean --force` first if this host should "
-                "join a different Bertrand cluster."
+                "another cluster. Run `bertrand clean --force` first if this host "
+                "should join a different Bertrand cluster."
             )
             raise OSError(msg)
 
-        server = _normalize_server_url(server_url)
         token = token.strip()
         if not token:
             msg = "k0s join token cannot be empty"
             raise OSError(msg)
-        kubeconfig_identity(kubeconfig, source="join bundle kubeconfig")
-        token = _token_with_server(token, server)
+        if not kubeconfig.strip():
+            msg = "join bundle kubeconfig cannot be empty"
+            raise OSError(msg)
+        kubeconfig = kubeconfig if kubeconfig.endswith("\n") else f"{kubeconfig}\n"
 
         lock = HostLock(STATE.kube.lock)
         await lock.lock(deadline)
@@ -993,7 +880,7 @@ class Kube:
         try:
             await STATE.write(
                 STATE.kube.config,
-                _rewrite_kubeconfig_payload(kubeconfig, server_url=server),
+                kubeconfig,
                 deadline=deadline,
             )
             await Kube.init(
