@@ -37,7 +37,7 @@ async def bertrand_secret_add(
     deadline: Deadline,
 ) -> None:
     """Create or update a path-scoped secret capability."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         ref = await _path_capability_ref(
             kube,
             path,
@@ -62,7 +62,7 @@ async def bertrand_secret_rm(
     deadline: Deadline,
 ) -> None:
     """Remove a path-scoped secret capability."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         ref = await _path_capability_ref(
             kube,
             path,
@@ -82,7 +82,7 @@ async def bertrand_secret_list(
     deadline: Deadline,
 ) -> None:
     """List path-relevant secret capabilities."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         repo, worktree = await resolve_project_scope(
             kube,
             Path(path),
@@ -116,7 +116,7 @@ async def bertrand_shared_secret_add(
     deadline: Deadline,
 ) -> None:
     """Create or update a shared cluster secret capability."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         ref = CapabilityRef(kind=kind, capability_id=capability_id, scope="shared")
         await _add_capability(
             kube,
@@ -133,7 +133,7 @@ async def bertrand_shared_secret_rm(
     deadline: Deadline,
 ) -> None:
     """Remove a shared cluster secret capability."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         ref = CapabilityRef(kind=kind, capability_id=capability_id, scope="shared")
         await _remove_capability(kube, ref, deadline=deadline)
 
@@ -145,7 +145,7 @@ async def bertrand_shared_secret_list(
     deadline: Deadline,
 ) -> None:
     """List shared cluster secret capabilities."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         await _list_capabilities(
             kube,
             (("shared", None),),
@@ -163,7 +163,7 @@ async def bertrand_node_secret_add(
     deadline: Deadline,
 ) -> None:
     """Create or update a local-node secret capability."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         node = await ensure_local_bertrand_node(
             kube,
             deadline=deadline,
@@ -189,7 +189,7 @@ async def bertrand_node_secret_rm(
     deadline: Deadline,
 ) -> None:
     """Remove a local-node secret capability."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         node = await ensure_local_bertrand_node(
             kube,
             deadline=deadline,
@@ -210,7 +210,7 @@ async def bertrand_node_secret_list(
     deadline: Deadline,
 ) -> None:
     """List local-node secret capabilities and shared fallbacks."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         node = await ensure_local_bertrand_node(
             kube,
             deadline=deadline,

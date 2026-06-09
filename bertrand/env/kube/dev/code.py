@@ -74,7 +74,7 @@ async def send_code_open_request(
         msg = "deadline exhausted before editor request could be submitted"
         raise TimeoutError(msg)
     request_deadline = Deadline(remaining)
-    with await Kube.internal() as kube:
+    with Kube.internal() as kube:
         record = await CODE_OPEN_RESOURCE.create(
             kube,
             name=code_open_request_name(spec.session_id, spec.request_id),
@@ -110,7 +110,7 @@ async def _request_spec(
     request_deadline = Deadline(max(0.001, deadline - time.time()))
     repo = GitRepository(git_dir=REPO_MOUNT / ".git")
     repo_id = repo.id
-    with await Kube.internal() as kube:
+    with Kube.internal() as kube:
         config = await Config.load(
             WORKTREE_MOUNT,
             kube=kube,

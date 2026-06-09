@@ -22,12 +22,9 @@ from bertrand.env.cli.external.init import (
 from bertrand.env.cli.util import emit_json
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.client import (
+    K0S_ROLES,
     K0sRole,
     Kube,
-    join_k0s_cluster,
-    k0s_cluster_ready,
-    k0s_join_bundle,
-    normalize_k0s_role,
 )
 from bertrand.env.kube.build.daemon import (
     buildkit_pool_status,
@@ -92,6 +89,14 @@ def _flatten(values: Sequence[Sequence[str]] | None) -> tuple[str, ...]:
     return tuple(item for group in values for item in group)
 
 
+def _normalize_k0s_role(role: str) -> K0sRole:
+    normalized = role.strip().lower()
+    if normalized in K0S_ROLES:
+        return cast("K0sRole", normalized)
+    msg = f"k0s role must be one of {', '.join(K0S_ROLES)}, got {role!r}"
+    raise ValueError(msg)
+
+
 async def bertrand_cluster_status(*, json_output: bool, deadline: Deadline) -> None:
     """Print shared Bertrand cluster status.
 
@@ -102,7 +107,7 @@ async def bertrand_cluster_status(*, json_output: bool, deadline: Deadline) -> N
     deadline : Deadline
         Kubernetes request budget.
     """
-    k0s_status = await _probe_bool(lambda: k0s_cluster_ready(deadline=deadline))
+    k0s_status = await _probe_bool(lambda: Kube.ready(deadline=deadline))
     status: dict[str, object] = {"k0s": k0s_status}
     kube_checks = (
         ("rook_ceph", _rook_ceph_status),
@@ -114,7 +119,7 @@ async def bertrand_cluster_status(*, json_output: bool, deadline: Deadline) -> N
         ("dev", _dev_status),
     )
     try:
-        with await Kube.host(deadline=deadline) as kube:
+        with Kube.external() as kube:
             for name, probe in kube_checks:
                 try:
                     status[name] = await probe(kube, deadline=deadline)
@@ -156,8 +161,8 @@ async def bertrand_cluster_invite(
         Token generation budget.
 
     """
-    normalized_role: K0sRole = normalize_k0s_role(role)
-    resolved_server, token_value, kubeconfig = await k0s_join_bundle(
+    normalized_role: K0sRole = _normalize_k0s_role(role)
+    resolved_server, token_value, kubeconfig = await Kube.join_bundle(
         role=normalized_role,
         server_url=server_url,
         deadline=deadline,
@@ -202,10 +207,10 @@ async def bertrand_cluster_join(
     """
     bundle = _decode_bundle(token)
     await ensure_shared_runtime_installed(deadline=deadline, yes=False)
-    resolved_role: K0sRole = normalize_k0s_role(
+    resolved_role: K0sRole = _normalize_k0s_role(
         role or str(bundle.get("role") or "worker")
     )
-    await join_k0s_cluster(
+    await Kube.join_cluster(
         server_url=str(bundle["server_url"]),
         token=str(bundle["token"]),
         role=resolved_role,
@@ -237,7 +242,7 @@ async def bertrand_cluster_device_list(
     deadline : Deadline
         Kubernetes request budget.
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         records = await list_device_inventory(
             kube,
             capability_id=capability_id,
@@ -282,7 +287,7 @@ async def bertrand_cluster_storage_status(
     deadline : Deadline
         Kubernetes request budget.
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         snapshot = await storage_cli_snapshot(kube, deadline=deadline)
     payload = snapshot.status_payload()
     if json_output:
@@ -369,7 +374,7 @@ async def bertrand_cluster_network_lb_status(
     deadline : Deadline
         Kubernetes request budget.
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         status = await metallb_status(kube, deadline=deadline)
     if json_output:
         emit_json(status)
@@ -386,7 +391,7 @@ async def bertrand_cluster_network_lb_install(*, deadline: Deadline) -> None:
         Convergence budget.
 
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         await ensure_metallb(kube, deadline=deadline)
     print("MetalLB installed and ready.")
 
@@ -399,7 +404,7 @@ async def bertrand_cluster_network_lb_pool_upsert(
     deadline: Deadline,
 ) -> None:
     """Create or patch a Bertrand-managed MetalLB IPAddressPool."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         pool = await upsert_ip_address_pool(
             kube,
             name=name,
@@ -418,7 +423,7 @@ async def bertrand_cluster_network_lb_l2_upsert(
     deadline: Deadline,
 ) -> None:
     """Create or patch a Bertrand-managed L2Advertisement."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         advertisement = await upsert_l2_advertisement(
             kube,
             name=name,
@@ -441,7 +446,7 @@ async def bertrand_cluster_network_lb_bgp_peer_upsert(
     deadline: Deadline,
 ) -> None:
     """Create or patch a Bertrand-managed BGPPeer."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         peer = await upsert_bgp_peer(
             kube,
             name=name,
@@ -466,7 +471,7 @@ async def bertrand_cluster_network_lb_bgp_advertise_upsert(
     deadline: Deadline,
 ) -> None:
     """Create or patch a Bertrand-managed BGPAdvertisement."""
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         advertisement = await upsert_bgp_advertisement(
             kube,
             name=name,
@@ -480,7 +485,7 @@ async def bertrand_cluster_network_lb_bgp_advertise_upsert(
 
 
 async def _network_report(*, deadline: Deadline) -> dict[str, object]:
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         (
             profile,
             config_hash,
@@ -788,7 +793,7 @@ async def _apply_network_profile(
     *,
     deadline: Deadline,
 ) -> None:
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         await Namespace.upsert(
             kube,
             name=BERTRAND_NAMESPACE,

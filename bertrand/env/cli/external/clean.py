@@ -285,7 +285,7 @@ async def bertrand_clean(*, deadline: Deadline, yes: bool, force: bool) -> None:
         raise PermissionError(msg)
     kube: Kube | None = None
     try:
-        kube = await Kube.host(deadline=deadline)
+        kube = Kube.external()
     except _CLEAN_ERROR_TYPES as err:
         if not force:
             msg = (

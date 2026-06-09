@@ -34,7 +34,7 @@ async def _project_command_context(
     *,
     deadline: Deadline,
 ) -> AsyncIterator[tuple[Kube, GitRepository, Path, Config]]:
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         repo, worktree = await resolve_project_worktree(
             kube,
             target,

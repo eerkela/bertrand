@@ -50,7 +50,7 @@ async def bertrand_dashboard(
         msg = "dashboard port must be between 0 and 65535"
         raise ValueError(msg)
     local_port = _free_port() if port == 0 else port
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         await ensure_dashboard_backend(kube, deadline=deadline)
 
     await _port_forward_dashboard(

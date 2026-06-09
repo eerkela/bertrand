@@ -1704,7 +1704,7 @@ async def run_ceph_storage_controller(*, deadline: Deadline = NO_DEADLINE) -> No
     loop_offload_offset = 0
     repository_volume_gc = MaintenanceClock()
     repository_snapshot = MaintenanceClock()
-    with await Kube.internal() as kube:
+    with Kube.internal() as kube:
         async with asyncio.TaskGroup() as group:
             for client, context in (
                 (STORAGE_STATE_RESOURCE, STORAGE_STATE_PLURAL),

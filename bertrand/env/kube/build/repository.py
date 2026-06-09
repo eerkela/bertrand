@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import math
+import os
+import shutil
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from bertrand.env.git import (
@@ -19,13 +24,16 @@ from bertrand.env.git import (
     BERTRAND_LABEL_MANAGED,
     BERTRAND_NAMESPACE,
     NO_DEADLINE,
+    STATE,
     Deadline,
+    run,
+    sudo,
 )
 from bertrand.env.kube.api.client import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
+    K0S_SERVICE_NAME,
     Kube,
-    configure_k0s_registries,
 )
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.build.daemon import (
@@ -90,6 +98,9 @@ IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS = 0.5
 IMAGE_REPOSITORY_ROUTE_REQUEST_TIMEOUT_SECONDS = 2.0
 IMAGE_REPOSITORY_ROUTE_READY_STATUS = frozenset({200, 401})
 IMAGE_REPOSITORY_DELETE_SUCCESS_STATUS = frozenset({202, 404})
+_K0S_CONTAINERD_DROPIN_DIR = Path("/etc/k0s/containerd.d")
+_K0S_CONTAINERD_CERTS_DIR = _K0S_CONTAINERD_DROPIN_DIR / "certs.d"
+_K0S_REGISTRY_DROPIN_FILE = _K0S_CONTAINERD_DROPIN_DIR / "bertrand-registry.toml"
 IMAGE_REPOSITORY_LABELS = {
     "app.kubernetes.io/name": IMAGE_REPOSITORY_NAME,
     "app.kubernetes.io/part-of": "bertrand",
@@ -109,6 +120,141 @@ IMAGE_REPOSITORY_MAINTENANCE_LABELS = {
 def _config_hash(data: Mapping[str, str]) -> str:
     payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def _install_root_file(
+    path: Path,
+    payload: str,
+    *,
+    mode: str = "0644",
+    group: str = "root",
+    deadline: Deadline,
+) -> bool:
+    with contextlib.suppress(OSError):
+        if path.read_text(encoding="utf-8") == payload:
+            return False
+    fd: int | None = None
+    temp_file: Path | None = None
+    try:
+        fd, name = tempfile.mkstemp(prefix="bertrand-k0s.", suffix=".tmp")
+        temp_file = Path(name)
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        await run(
+            sudo(
+                [
+                    "install",
+                    "-D",
+                    "-m",
+                    mode,
+                    "-o",
+                    "root",
+                    "-g",
+                    group,
+                    str(temp_file),
+                    str(path),
+                ]
+            ),
+            deadline=deadline,
+        )
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        if temp_file is not None:
+            temp_file.unlink(missing_ok=True)
+    return True
+
+
+async def _k0s_service_active(*, deadline: Deadline) -> bool:
+    if not shutil.which("systemctl"):
+        return False
+    result = await run(
+        sudo(["systemctl", "is-active", "--quiet", K0S_SERVICE_NAME]),
+        check=False,
+        deadline=deadline,
+    )
+    return result.returncode == 0
+
+
+async def _configure_k0s_registry_trust(
+    *,
+    hosts: tuple[str, ...],
+    deadline: Deadline,
+) -> None:
+    normalized = tuple(sorted({item.strip() for item in hosts if item.strip()}))
+    await run(
+        sudo(
+            [
+                "install",
+                "-d",
+                "-m",
+                "0755",
+                "-o",
+                "root",
+                "-g",
+                "root",
+                str(_K0S_CONTAINERD_DROPIN_DIR),
+            ]
+        ),
+        deadline=deadline,
+    )
+    changed = await _install_root_file(
+        _K0S_REGISTRY_DROPIN_FILE,
+        "\n".join(
+            (
+                'version = 2',
+                '',
+                '[plugins."io.containerd.grpc.v1.cri".registry]',
+                f'  config_path = "{_K0S_CONTAINERD_CERTS_DIR}"',
+                '',
+            )
+        ),
+        deadline=deadline,
+    )
+    for host in normalized:
+        cert_dir = _K0S_CONTAINERD_CERTS_DIR / host
+        await run(
+            sudo(
+                [
+                    "install",
+                    "-d",
+                    "-m",
+                    "0755",
+                    "-o",
+                    "root",
+                    "-g",
+                    "root",
+                    str(cert_dir),
+                ]
+            ),
+            deadline=deadline,
+        )
+        host_changed = await _install_root_file(
+            cert_dir / "hosts.toml",
+            "\n".join(
+                (
+                    f'server = "http://{host}"',
+                    '',
+                    f'[host."http://{host}"]',
+                    '  capabilities = ["pull", "resolve"]',
+                    '',
+                )
+            ),
+            deadline=deadline,
+        )
+        changed = changed or host_changed
+    if (
+        changed
+        and STATE.kube.bin.is_file()
+        and await _k0s_service_active(deadline=deadline)
+    ):
+        await run(
+            sudo(["systemctl", "restart", K0S_SERVICE_NAME], non_interactive=True),
+            deadline=deadline,
+        )
 
 
 def _registry_route_status(url: str, timeout: float) -> int:
@@ -637,7 +783,7 @@ async def current_buildkit_config_hash(kube: Kube, *, deadline: Deadline) -> str
 
 
 async def _ensure_image_repository_trust(*, deadline: Deadline) -> None:
-    await configure_k0s_registries(
+    await _configure_k0s_registry_trust(
         hosts=IMAGE_REPOSITORY_TRUST_HOSTS,
         deadline=deadline,
     )

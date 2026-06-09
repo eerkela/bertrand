@@ -51,7 +51,7 @@ async def live_project_context(
 
     repo = GitRepository(git_dir=REPO_MOUNT / ".git")
     repo_id = repo.id
-    with await Kube.internal() as kube:
+    with Kube.internal() as kube:
         config = await Config.load(
             WORKTREE_MOUNT,
             kube=kube,

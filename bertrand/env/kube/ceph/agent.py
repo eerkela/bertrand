@@ -800,7 +800,7 @@ class CephStorageAgent:
         """
         wake = asyncio.Event()
         wake.set()
-        with await Kube.internal(namespace=BERTRAND_NAMESPACE) as kube:
+        with Kube.internal() as kube:
             async with asyncio.TaskGroup() as group:
                 group.create_task(
                     self._watch_actions(kube, wake=wake, deadline=deadline)

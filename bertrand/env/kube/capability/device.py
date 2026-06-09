@@ -895,7 +895,7 @@ async def run_dra_provider_agent(*, deadline: Deadline = NO_DEADLINE) -> None:
     if not node_name:
         msg = "DRA provider agent requires NODE_NAME from the Downward API"
         raise OSError(msg)
-    with await Kube.internal(namespace=BERTRAND_NAMESPACE) as kube:
+    with Kube.internal() as kube:
         while True:
             remaining = deadline.remaining
             if remaining <= 0:

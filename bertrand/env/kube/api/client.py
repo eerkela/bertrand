@@ -10,13 +10,14 @@ import json
 import math
 import os
 import platform
+import shlex
 import shutil
 import tempfile
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self, cast
+from typing import TYPE_CHECKING, Literal, Self
 from urllib.parse import urlparse, urlunparse
 
 import kubernetes
@@ -29,7 +30,6 @@ from bertrand.env.git import (
     BERTRAND_LABEL_MANAGED,
     BERTRAND_NAMESPACE,
     NO_DEADLINE,
-    NORMALIZE_ARCH,
     ROOT_DIR,
     STATE,
     CommandError,
@@ -56,9 +56,6 @@ K0S_VERSION = "v1.35.4+k0s.0"
 K0S_SERVICE_NAME = "bertrand-k0s"
 K0S_API_PORT = 16443
 K0S_CONTROLLER_API_PORT = 19443
-K0S_CONTAINERD_DROPIN_DIR = Path("/etc/k0s/containerd.d")
-K0S_CONTAINERD_CERTS_DIR = K0S_CONTAINERD_DROPIN_DIR / "certs.d"
-K0S_REGISTRY_DROPIN_FILE = K0S_CONTAINERD_DROPIN_DIR / "bertrand-registry.toml"
 K0S_ROLES: tuple[K0sRole, ...] = ("controller", "worker")
 
 
@@ -255,17 +252,6 @@ async def kubectl(
     )
 
 
-async def _k0s_service_active(*, deadline: Deadline) -> bool:
-    if not shutil.which("systemctl"):
-        return False
-    result = await run(
-        sudo(["systemctl", "is-active", "--quiet", K0S_SERVICE_NAME]),
-        check=False,
-        deadline=deadline,
-    )
-    return result.returncode == 0
-
-
 def _normalize_server_url(value: str) -> str:
     text = value.strip()
     if not text:
@@ -349,171 +335,6 @@ def _token_with_server(token: str, server_url: str) -> str:
     return base64.b64encode(rewritten.encode("utf-8")).decode("ascii")
 
 
-async def _install_root_file(
-    path: Path,
-    payload: str,
-    *,
-    mode: str = "0644",
-    group: str = "root",
-    deadline: Deadline,
-) -> bool:
-    with contextlib.suppress(OSError):
-        if path.read_text(encoding="utf-8") == payload:
-            return False
-    fd: int | None = None
-    temp_file: Path | None = None
-    try:
-        fd, name = tempfile.mkstemp(prefix="bertrand-k0s.", suffix=".tmp")
-        temp_file = Path(name)
-        os.write(fd, payload.encode("utf-8"))
-        os.fsync(fd)
-        os.close(fd)
-        fd = None
-        await run(
-            sudo(
-                [
-                    "install",
-                    "-D",
-                    "-m",
-                    mode,
-                    "-o",
-                    "root",
-                    "-g",
-                    group,
-                    str(temp_file),
-                    str(path),
-                ]
-            ),
-            deadline=deadline,
-        )
-    finally:
-        if fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-        if temp_file is not None:
-            temp_file.unlink(missing_ok=True)
-    return True
-
-
-def _require_k0s_installed() -> None:
-    k0s_binary = STATE.kube.bin
-    k0s_config = STATE.kube.bootstrap
-    if not k0s_binary.is_file():
-        msg = f"Bertrand k0s binary is missing at {k0s_binary}; rerun `bertrand init`"
-        raise OSError(msg)
-    if not k0s_config.is_file():
-        msg = f"Bertrand k0s config is missing at {k0s_config}; rerun `bertrand init`"
-        raise OSError(msg)
-
-
-def ensure_k0s_kubeconfig(*, deadline: Deadline) -> Path:
-    """Return Bertrand's managed k0s kubeconfig path after validating it.
-
-    Parameters
-    ----------
-    deadline : Deadline
-        Active operation deadline.
-
-    Returns
-    -------
-    Path
-        Path to Bertrand's managed kubeconfig.
-    """
-    deadline.check("k0s kubeconfig validation timed out")
-    _require_k0s_installed()
-    payload = managed_kubeconfig_payload()
-    kubeconfig = STATE.kube.config
-    kubeconfig_identity(payload, source=f"managed kubeconfig {kubeconfig}")
-    return kubeconfig
-
-
-async def configure_k0s_registries(
-    *,
-    hosts: tuple[str, ...],
-    deadline: Deadline,
-) -> None:
-    """Converge k0s/containerd registry mirror configuration for local pulls.
-
-    Parameters
-    ----------
-    hosts : tuple[str, ...]
-        Registry hosts to configure as local containerd mirrors.
-    deadline : Deadline
-        Active operation deadline.
-    """
-    normalized = tuple(sorted({item.strip() for item in hosts if item.strip()}))
-    await run(
-        sudo(
-            [
-                "install",
-                "-d",
-                "-m",
-                "0755",
-                "-o",
-                "root",
-                "-g",
-                "root",
-                str(K0S_CONTAINERD_DROPIN_DIR),
-            ]
-        ),
-        deadline=deadline,
-    )
-    changed = await _install_root_file(
-        K0S_REGISTRY_DROPIN_FILE,
-        "\n".join(
-            (
-                'version = 2',
-                '',
-                '[plugins."io.containerd.grpc.v1.cri".registry]',
-                f'  config_path = "{K0S_CONTAINERD_CERTS_DIR}"',
-                '',
-            )
-        ),
-        deadline=deadline,
-    )
-    for host in normalized:
-        cert_dir = K0S_CONTAINERD_CERTS_DIR / host
-        await run(
-            sudo(
-                [
-                    "install",
-                    "-d",
-                    "-m",
-                    "0755",
-                    "-o",
-                    "root",
-                    "-g",
-                    "root",
-                    str(cert_dir),
-                ]
-            ),
-            deadline=deadline,
-        )
-        host_changed = await _install_root_file(
-            cert_dir / "hosts.toml",
-            "\n".join(
-                (
-                    f'server = "http://{host}"',
-                    '',
-                    f'[host."http://{host}"]',
-                    '  capabilities = ["pull", "resolve"]',
-                    '',
-                )
-            ),
-            deadline=deadline,
-        )
-        changed = changed or host_changed
-    if (
-        changed
-        and STATE.kube.bin.is_file()
-        and await _k0s_service_active(deadline=deadline)
-    ):
-        await run(
-            sudo(["systemctl", "restart", K0S_SERVICE_NAME], non_interactive=True),
-            deadline=deadline,
-        )
-
-
 def _client_from_config(config_file: Path) -> kubernetes.client.ApiClient:
     try:
         return kubernetes.config.new_client_from_config(config_file=str(config_file))
@@ -574,8 +395,6 @@ class Kube:
 
     Attributes
     ----------
-    namespace : str
-        Default namespace used for namespaced Kubernetes resources.
     client : kubernetes.client.ApiClient
         Underlying Kubernetes API transport instance.
     core : kubernetes.client.CoreV1Api
@@ -598,7 +417,6 @@ class Kube:
         Coordination v1 API surface for Lease resources.
     """
 
-    namespace: str
     client: kubernetes.client.ApiClient = field(repr=False)
     core: kubernetes.client.CoreV1Api = field(init=False, repr=False)
     apps: kubernetes.client.AppsV1Api = field(init=False, repr=False)
@@ -638,7 +456,7 @@ class Kube:
             raise
 
     @staticmethod
-    async def _systemd_ready(*, deadline: Deadline) -> bool:
+    async def _systemd_ready(deadline: Deadline) -> bool:
         return (
             await run(
                 sudo(["systemctl", "is-active", "--quiet", K0S_SERVICE_NAME]),
@@ -648,7 +466,7 @@ class Kube:
         ).returncode == 0
 
     @staticmethod
-    async def _cluster_ready(*, deadline: Deadline) -> bool:
+    async def _cluster_ready(deadline: Deadline) -> bool:
         return (
             await kubectl(
                 ["get", "--raw=/readyz"],
@@ -659,13 +477,18 @@ class Kube:
         ).returncode == 0
 
     @staticmethod
-    async def _download_k0s(*, deadline: Deadline) -> None:
+    async def _download_k0s(deadline: Deadline) -> None:
         fd, name = tempfile.mkstemp(prefix="bertrand-k0s.", suffix=".download")
         os.close(fd)
         download = Path(name)
         arch = platform.machine().lower()
-        norm = NORMALIZE_ARCH.get(arch)
-        if norm is None:
+        if arch in {"x86_64", "amd64"}:
+            norm = "amd64"
+        elif arch in {"aarch64", "arm64"}:
+            norm = "arm64"
+        elif arch in {"armv7l", "armv7", "armhf", "arm"}:
+            norm = "arm"
+        else:
             msg = f"unsupported architecture for k0s binary download: {arch!r}"
             raise OSError(msg)
         try:
@@ -692,7 +515,7 @@ class Kube:
             download.unlink(missing_ok=True)
 
     @staticmethod
-    async def _dump_k0s_config(*, deadline: Deadline) -> None:
+    async def _dump_k0s_config(deadline: Deadline) -> None:
         await STATE.write(
             STATE.kube.bootstrap,
             yaml.safe_dump(
@@ -709,13 +532,13 @@ class Kube:
                         "network": {"provider": "calico"},
                     },
                 },
-                sort_keys=False
+                sort_keys=False,
             ),
             deadline=deadline,
         )
 
     @staticmethod
-    async def _dump_join_token(*, token: str | None, deadline: Deadline) -> Path | None:
+    async def _dump_join_token(token: str | None, deadline: Deadline) -> Path | None:
         if token is None:
             return None
 
@@ -732,42 +555,39 @@ class Kube:
 
     @staticmethod
     async def _dump_unit(
-        *,
         role: K0sRole,
         token_file: Path | None,
-        deadline: Deadline
+        deadline: Deadline,
     ) -> None:
         node_name = f"bertrand-{STATE.id[:32]}"
         if role == "controller":
-            exec_start = " ".join(
-                (
-                    str(STATE.kube.bin),
-                    "controller",
-                    "--config",
-                    str(STATE.kube.bootstrap),
-                    "--data-dir",
-                    str(STATE.kube.cache),
-                    "--enable-worker",
-                    "--no-taints",
-                    f"--kubelet-extra-args=--hostname-override={node_name}",
-                    *(("--token-file", str(token_file)) if token_file is not None else ()),
-                )
-            )
+            cmd = [
+                str(STATE.kube.bin),
+                "controller",
+                "--config",
+                str(STATE.kube.bootstrap),
+                "--data-dir",
+                str(STATE.kube.cache),
+                "--enable-worker",
+                "--no-taints",
+                f"--kubelet-extra-args=--hostname-override={node_name}",
+            ]
+            if token_file is not None:
+                cmd.append("--token-file")
+                cmd.append(str(token_file))
         else:
             if token_file is None:
                 msg = "k0s worker join requires a token file"
                 raise ValueError(msg)
-            exec_start = " ".join(
-                (
-                    str(STATE.kube.bin),
-                    "worker",
-                    "--data-dir",
-                    str(STATE.kube.cache),
-                    "--token-file",
-                    str(token_file),
-                    f"--kubelet-extra-args=--hostname-override={node_name}",
-                )
-            )
+            cmd = [
+                str(STATE.kube.bin),
+                "worker",
+                "--data-dir",
+                str(STATE.kube.cache),
+                "--token-file",
+                str(token_file),
+                f"--kubelet-extra-args=--hostname-override={node_name}",
+            ]
 
         await STATE.write(
             STATE.kube.runtime,
@@ -785,7 +605,7 @@ class Kube:
                     "Restart=always",
                     "RestartSec=5",
                     "LimitNOFILE=1048576",
-                    f"ExecStart={exec_start}",
+                    f"ExecStart={' '.join(shlex.quote(part) for part in cmd)}",
                     "",
                     "[Install]",
                     "WantedBy=multi-user.target",
@@ -797,11 +617,9 @@ class Kube:
 
     @classmethod
     async def _k0s_ready(cls, deadline: Deadline) -> None:
-        if (
-            not await cls._systemd_ready(deadline=deadline)
-            or not await cls._cluster_ready(deadline=deadline)
-        ):
-            raise TimeoutError
+        if await cls._systemd_ready(deadline) and await cls._cluster_ready(deadline):
+            return
+        raise TimeoutError
 
     @staticmethod
     async def _register_bertrand_namespace(*, deadline: Deadline) -> None:
@@ -830,7 +648,7 @@ class Kube:
         try:
             try:
                 # short-circuit if the cluster is already running
-                if await cls._cluster_ready(deadline=deadline):
+                if await cls._cluster_ready(deadline):
                     await cls._register_bertrand_namespace(deadline=deadline)
                     return
 
@@ -909,12 +727,9 @@ class Kube:
         return (
             STATE.kube.bin.is_file()
             and STATE.kube.config.is_file()
-            and await cls._systemd_ready(deadline=deadline)
-            and await cls._cluster_ready(deadline=deadline)
+            and await cls._systemd_ready(deadline)
+            and await cls._cluster_ready(deadline)
         )
-
-    # TODO: Kube.init() should probably return an external Kube client instance,
-    # and avoid a follow-up call to Kube.external()
 
     @classmethod
     async def init(
@@ -952,7 +767,7 @@ class Kube:
             not force
             and STATE.kube.bin.is_file()
             and STATE.kube.config.is_file()
-            and await cls._systemd_ready(deadline=deadline)
+            and await cls._systemd_ready(deadline)
         ):
             await cls._start_k0s(deadline=deadline, yes=yes)
             return
@@ -967,12 +782,12 @@ class Kube:
 
         # get k0s binary if missing or if we're forcing a refresh
         if force or not STATE.kube.bin.is_file():
-            await cls._download_k0s(deadline=deadline)
+            await cls._download_k0s(deadline)
 
         # write output artifacts
-        await cls._dump_k0s_config(deadline=deadline)
-        token_file = await cls._dump_join_token(token=token, deadline=deadline)
-        await cls._dump_unit(role=role, token_file=token_file, deadline=deadline)
+        await cls._dump_k0s_config(deadline)
+        token_file = await cls._dump_join_token(token, deadline)
+        await cls._dump_unit(role, token_file, deadline)
 
         # refresh systemd + enable unit on future startup
         await run(
@@ -987,26 +802,15 @@ class Kube:
         # start the service and wait for the API to become ready
         await cls._start_k0s(deadline=deadline, yes=yes)
 
-    # TODO: `external()` is called from outside the cluster to implement the external
-    # CLI.  `internal()` is called within the cluster to service the internal CLI.
-    # `host()` or `control_plane()` should be called within a cluster control plane
-    # context to get a client with permissions out to the host node???  Ideally, we
-    # would collapse to just `external()` and `internal()`, but I'm not sure if that's
-    # possible.  It might also be affected by
+    # TODO: split start() out of init() and implement a separate stop() method for
+    # stopping the cluster, but not necessarily deleting it, unlike clean()
 
     @classmethod
-    def external(
-        cls,
-        *,
-        namespace: str = BERTRAND_NAMESPACE,
-        config_file: Path | None = None,
-    ) -> Self:
+    def external(cls, *, config_file: Path = STATE.kube.config) -> Self:
         """Build a host-side API client from Bertrand's managed kubeconfig.
 
         Parameters
         ----------
-        namespace : str, optional
-            Default namespace for namespaced operations.
         config_file : Path, optional
             Path to the kubeconfig file used for host-side API access.
 
@@ -1018,33 +822,19 @@ class Kube:
         Raises
         ------
         OSError
-            If the kubeconfig is missing or cannot be loaded.  This constructor does
-            not run managed k0s convergence checks; use :meth:`host` for the
-            strict Bertrand-managed path.
+            If the kubeconfig is missing or cannot be loaded.
         """
-        if config_file is None:
-            config_file = STATE.kube.config
         if not config_file.is_file():
             msg = (
                 f"kubernetes config is missing at {config_file}.  Run `bertrand init` "
                 "to converge k0s API access first."
             )
             raise OSError(msg)
-        return cls(namespace=namespace, client=_client_from_config(config_file))
+        return cls(client=_client_from_config(config_file))
 
     @classmethod
-    async def internal(
-        cls,
-        *,
-        namespace: str | None = None,
-    ) -> Self:
+    def internal(cls) -> Self:
         """Build an in-cluster API client from projected ServiceAccount credentials.
-
-        Parameters
-        ----------
-        namespace : str | None, optional
-            Default namespace for namespaced operations.  If omitted, this is read
-            from the projected ServiceAccount namespace file.
 
         Returns
         -------
@@ -1054,8 +844,7 @@ class Kube:
         Raises
         ------
         OSError
-            If the in-cluster configuration cannot be loaded, or if the namespace is not
-            projected and cannot be read from the default location.
+            If the in-cluster configuration cannot be loaded.
         """
         configuration = kubernetes.client.Configuration()
         try:
@@ -1063,75 +852,7 @@ class Kube:
         except _KUBE_CONFIG_ERRORS as err:
             msg = f"failed to load in-cluster kubernetes configuration: {err}"
             raise OSError(msg) from err
-        resolved_namespace = namespace
-        if resolved_namespace is None:
-            namespace_path = Path(
-                "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
-            )
-            resolved_namespace = (
-                namespace_path.read_text(encoding="utf-8").strip()
-                if namespace_path.is_file()
-                else ""
-            )
-        if not resolved_namespace:
-            resolved_namespace = BERTRAND_NAMESPACE
-
-        return cls(
-            namespace=str(resolved_namespace),
-            client=kubernetes.client.ApiClient(configuration=configuration),
-        )
-
-    @classmethod
-    async def host(
-        cls,
-        *,
-        deadline: Deadline,
-        namespace: str = BERTRAND_NAMESPACE,
-    ) -> Self:
-        """Build a host-side Kubernetes client with strict local k0s identity.
-
-        Parameters
-        ----------
-        deadline : Deadline
-            Maximum runtime budget.  If infinite, wait indefinitely.
-        namespace : str, optional
-            Default namespace for namespaced operations.
-
-        Returns
-        -------
-        Kube
-            Configured Kubernetes API wrapper.
-
-        Raises
-        ------
-        OSError
-            If managed kubeconfig convergence fails, identity proof fails, or API
-            client initialization fails.
-        """
-        config_file = ensure_k0s_kubeconfig(deadline=deadline)
-        try:
-            managed_payload = config_file.read_text(encoding="utf-8")
-        except OSError as err:
-            msg = f"failed to read managed kubeconfig at {config_file}: {err}"
-            raise OSError(msg) from err
-        fresh_payload = managed_kubeconfig_payload()
-
-        managed_server, managed_ca = kubeconfig_identity(
-            managed_payload,
-            source=f"managed kubeconfig {config_file}",
-        )
-        local_server, local_ca = kubeconfig_identity(
-            fresh_payload,
-            source="managed k0s kubeconfig",
-        )
-        if managed_server != local_server or managed_ca != local_ca:
-            msg = (
-                "managed kubeconfig identity does not match local k0s identity; "
-                "run `bertrand init` to reconverge host kube access."
-            )
-            raise OSError(msg)
-
-        return cls(namespace=namespace, client=_client_from_config(config_file))
+        return cls(client=kubernetes.client.ApiClient(configuration=configuration))
 
     # TODO: review join logic and how/if it should interact with other bootstrap steps
 
@@ -1164,7 +885,7 @@ class Kube:
         OSError
             If k0s is not ready or a join token cannot be generated.
         """
-        if not await cls._cluster_ready(deadline=deadline):
+        if not await cls._cluster_ready(deadline):
             msg = "k0s must be running before generating a join token"
             raise OSError(msg)
 
@@ -1250,7 +971,7 @@ class Kube:
         OSError
             If the local runtime is already ready or the join payload is invalid.
         """
-        if await cls._cluster_ready(deadline=deadline):
+        if await cls._cluster_ready(deadline):
             msg = (
                 "local k0s already reports a ready cluster; refusing to join it to "
                 "another cluster. Run `bertrand clean --force` first if this host should "
@@ -1302,7 +1023,7 @@ class Kube:
             await run(
                 sudo(
                     [systemctl, "disable", "--now", K0S_SERVICE_NAME],
-                    non_interactive=True
+                    non_interactive=True,
                 ),
                 check=False,
                 deadline=deadline,
@@ -1328,8 +1049,11 @@ class Kube:
                     "rm",
                     "-rf",
                     str(
-                        ROOT_DIR / "etc" / "systemd" / "system" /
-                        f"{K0S_SERVICE_NAME}.service"
+                        ROOT_DIR
+                        / "etc"
+                        / "systemd"
+                        / "system"
+                        / f"{K0S_SERVICE_NAME}.service"
                     ),
                     str(STATE.kube.cache),
                     str(STATE.kube.runtime),

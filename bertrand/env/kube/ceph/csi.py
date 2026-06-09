@@ -366,7 +366,7 @@ class BertrandOSDCSIDriver(
         func: Callable[[Kube], Awaitable[ResultT]],
     ) -> ResultT:
         async def invoke() -> ResultT:
-            with await Kube.internal() as kube:
+            with Kube.internal() as kube:
                 return await func(kube)
 
         try:

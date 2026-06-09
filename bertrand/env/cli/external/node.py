@@ -12,7 +12,7 @@ from bertrand.env.cli.external._storage import (
 )
 from bertrand.env.cli.util import emit_json
 from bertrand.env.git import STATE
-from bertrand.env.kube.api.client import Kube, k0s_cluster_ready
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.capability.device import (
     delete_device_inventory,
     list_device_inventory,
@@ -75,7 +75,7 @@ async def bertrand_node_name_set(*, display_name: str, deadline: Deadline) -> No
     deadline : Deadline
         Kubernetes convergence budget.
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         record = await ensure_local_bertrand_node(
             kube,
             display_name=display_name,
@@ -99,7 +99,7 @@ async def bertrand_node_device_list(
     deadline : Deadline
         Kubernetes request budget.
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         node = await ensure_local_bertrand_node(kube, deadline=deadline)
         records = await list_device_inventory(
             kube,
@@ -140,7 +140,7 @@ async def bertrand_node_device_add(
     deadline : Deadline
         Kubernetes request budget.
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         node = await ensure_local_bertrand_node(kube, deadline=deadline)
         record = await upsert_device_inventory(
             kube,
@@ -177,7 +177,7 @@ async def bertrand_node_device_rm(
     deadline : Deadline
         Kubernetes request budget.
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         node = await ensure_local_bertrand_node(kube, deadline=deadline)
         deleted = await delete_device_inventory(
             kube,
@@ -210,7 +210,7 @@ async def bertrand_node_storage_status(
     deadline : Deadline
         Kubernetes request budget.
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         node = await ensure_local_bertrand_node(kube, deadline=deadline)
         snapshot = await storage_cli_snapshot(
             kube,
@@ -238,7 +238,7 @@ async def bertrand_node_storage_doctor(
     deadline : Deadline
         Kubernetes request budget.
     """
-    with await Kube.host(deadline=deadline) as kube:
+    with Kube.external() as kube:
         node = await ensure_local_bertrand_node(kube, deadline=deadline)
         snapshot = await storage_cli_snapshot(
             kube,
@@ -284,7 +284,7 @@ async def _node_status_payload(*, deadline: Deadline) -> dict[str, object]:
     except OSError:
         host_id = ""
     try:
-        k0s_ready = await k0s_cluster_ready(deadline=deadline)
+        k0s_ready = await Kube.ready(deadline=deadline)
     except (OSError, TimeoutError, RuntimeError, ValueError):
         k0s_ready = False
     payload: dict[str, object] = {
@@ -298,7 +298,7 @@ async def _node_status_payload(*, deadline: Deadline) -> dict[str, object]:
         "devices": [],
     }
     try:
-        with await Kube.host(deadline=deadline) as kube:
+        with Kube.external() as kube:
             payload["rook_ceph_ready"] = await rook_ceph_ready(
                 kube,
                 deadline=deadline,

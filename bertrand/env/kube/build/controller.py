@@ -593,7 +593,7 @@ async def run_buildkit_build_controller(*, deadline: Deadline = NO_DEADLINE) -> 
     project_image_gc = MaintenanceClock()
     registry_storage_gc = MaintenanceClock()
     build_source_gc = MaintenanceClock()
-    with await Kube.internal(namespace=BERTRAND_NAMESPACE) as kube:
+    with Kube.internal() as kube:
         await _restore_registry_writable(kube, deadline=deadline)
         while deadline.remaining > 0:
             requests: list[BuildKitBuildRecord] | None = None
