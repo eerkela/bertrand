@@ -29,7 +29,6 @@ from bertrand.env.git import (
 from bertrand.env.kube.api.client import (
     Kube,
     ensure_k0s_kubeconfig,
-    start_k0s,
 )
 from bertrand.env.kube.build.controller import ensure_buildkit_build_controller
 from bertrand.env.kube.build.daemon import ensure_buildkit_pool
@@ -779,15 +778,6 @@ class ExternalInit:
     disable: list[str]
     yes: bool
 
-    async def _bootstrap_cluster(
-        self,
-        *,
-        deadline: Deadline,
-    ) -> None:
-        await Kube.install(yes=self.yes, deadline=deadline)
-        await start_k0s(deadline=deadline, yes=self.yes)
-        ensure_k0s_kubeconfig(deadline=deadline)
-
     async def _bootstrap_control_plane(
         self,
         kube: Kube,
@@ -864,9 +854,10 @@ class ExternalInit:
         # idempotently bootstrap host cluster infrastructure
         ignore_errors = False
         kube: Kube | None = None
-        await STATE.init(yes=self.yes, deadline=deadline)
+        await STATE.init(deadline=deadline, yes=self.yes)
         try:
-            await self._bootstrap_cluster(deadline=deadline)
+            await Kube.init(deadline=deadline, yes=self.yes)
+            ensure_k0s_kubeconfig(deadline=deadline)
             kube = Kube.external()
             await self._bootstrap_control_plane(kube=kube, deadline=deadline)
             # TODO: acquire the repo lock within this context, then include a following
@@ -937,7 +928,7 @@ async def _converge_host_cluster_runtime(
 ) -> None:
     """Converge the local cluster control plane after host runtime installation."""
     if start:
-        await start_k0s(deadline=deadline, yes=False)
+        await Kube.init(deadline=deadline, yes=False)
     ensure_k0s_kubeconfig(deadline=deadline)
     runtime = ExternalInit(path=None, enable=[], disable=[], yes=False)
     with Kube.external() as kube:

@@ -15,7 +15,7 @@ from bertrand.env.git import (
     until,
     warn,
 )
-from bertrand.env.kube.api.client import Kube, uninstall_k0s
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.ceph.api import (
     ceph_health,
     delete_loop_fallback_substrate,
@@ -256,10 +256,6 @@ async def _delete_final_cluster_repository_volumes(state: CleanState) -> None:
         warn(f"deleted final Bertrand repository volume(s): {names}")
 
 
-async def _uninstall_owned_k0s(state: CleanState) -> None:
-    await uninstall_k0s(deadline=state.deadline)
-
-
 async def bertrand_clean(*, deadline: Deadline, yes: bool, force: bool) -> None:
     """Clean Bertrand-managed runtime objects and local state on the host.
 
@@ -433,7 +429,7 @@ async def bertrand_clean(*, deadline: Deadline, yes: bool, force: bool) -> None:
                     "bertrand clean stage 'uninstall_owned_k0s' timed out before "
                     "execution"
                 )
-                await _uninstall_owned_k0s(state)
+                await Kube.clean(deadline=state.deadline)
             except _CLEAN_ERROR_TYPES as err:
                 _handle_clean_error(state, "uninstall_owned_k0s", err)
 
