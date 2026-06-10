@@ -3,26 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
 
 
 @dataclass(frozen=True)
-class ServiceAccount(
-    BuiltinResourceObject[kube_client.V1ServiceAccount],
-    NamespacedKubeMetadata[kube_client.V1ServiceAccount],
-):
+class ServiceAccount(KubeObject[kube_client.V1ServiceAccount]):
     """General-purpose wrapper around one Kubernetes ServiceAccount object.
 
     Parameters
@@ -32,18 +29,6 @@ class ServiceAccount(
     """
 
     _obj: kube_client.V1ServiceAccount
-
-    resource: ClassVar[BuiltinResource[kube_client.V1ServiceAccount]] = BuiltinResource(
-        scope="namespaced",
-        api="core",
-        kind="ServiceAccount",
-        slug="service_account",
-        expected=kube_client.V1ServiceAccount,
-        list_type=kube_client.V1ServiceAccountList,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-    )
 
     @staticmethod
     def _manifest(
@@ -74,7 +59,7 @@ class ServiceAccount(
         deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> ServiceAccount:
         """Create or patch one Kubernetes ServiceAccount.
 
         Parameters
@@ -113,12 +98,27 @@ class ServiceAccount(
             labels=labels,
             annotations=annotations,
         )
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await SERVICE_ACCOUNT_RESOURCE.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
+
+
+SERVICE_ACCOUNT_RESOURCE: BuiltinResource[
+    kube_client.V1ServiceAccount,
+    ServiceAccount,
+] = BuiltinResource(
+    scope="namespaced",
+    api="core",
+    kind="ServiceAccount",
+    slug="service_account",
+    expected=kube_client.V1ServiceAccount,
+    list_type=kube_client.V1ServiceAccountList,
+    wrapper=ServiceAccount.from_payload,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
+)

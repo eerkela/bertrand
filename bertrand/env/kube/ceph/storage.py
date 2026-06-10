@@ -74,7 +74,7 @@ from bertrand.env.kube.ceph.volume import (
 from bertrand.env.kube.control import MaintenanceClock
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
-from bertrand.env.kube.node import Node
+from bertrand.env.kube.node import NODE_RESOURCE
 from bertrand.env.kube.rbac import (
     CLUSTER_ROLE_BINDING_RESOURCE,
     CLUSTER_ROLE_RESOURCE,
@@ -420,7 +420,7 @@ async def _watch_storage_resource(
 
 
 async def _ready_storage_nodes(kube: Kube, *, deadline: Deadline) -> list[str]:
-    nodes = await Node.list(
+    nodes = await NODE_RESOURCE.list(
         kube,
         labels={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
         deadline=deadline,

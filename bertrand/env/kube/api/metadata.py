@@ -1,36 +1,49 @@
-"""Shared metadata bases for typed Kubernetes wrappers."""
+"""Shared metadata view for typed Kubernetes wrappers."""
 
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, Self, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from datetime import datetime
 
     import kubernetes
 
 
-class _KubeObject(Protocol):
+class _KubePayload(Protocol):
     @property
     def metadata(self) -> kubernetes.client.V1ObjectMeta | None: ...
 
 
-class KubeMetadata[T: _KubeObject]:
-    """Shared metadata view for typed Kubernetes API wrappers.
-
-    This base is intended for wrapper classes that hold a typed Kubernetes client
-    model in a private `_obj` field.  It centralizes read-only access to standard
-    Kubernetes object metadata while keeping raw client models private.
+class KubeObject[PayloadT: _KubePayload]:
+    """Read-only metadata view for typed Kubernetes API payloads.
 
     Attributes
     ----------
-    _obj : T
+    _obj : PayloadT
         Typed Kubernetes client model with standard `metadata`.
     """
 
-    _obj: T
+    _obj: PayloadT
+
+    @classmethod
+    def from_payload(cls, payload: PayloadT) -> Self:
+        """Wrap one typed Kubernetes API payload.
+
+        Parameters
+        ----------
+        payload : PayloadT
+            Typed Kubernetes client model returned by the cluster API.
+
+        Returns
+        -------
+        KubeObject
+            Read-only wrapper around `payload`.
+        """
+        wrapper = cast("Callable[..., Self]", cls)
+        return wrapper(_obj=payload)
 
     @property
     def name(self) -> str:
@@ -43,6 +56,18 @@ class KubeMetadata[T: _KubeObject]:
         """
         metadata = self._obj.metadata
         return (metadata.name or "").strip() if metadata is not None else ""
+
+    @property
+    def namespace(self) -> str:
+        """Return the Kubernetes object namespace.
+
+        Returns
+        -------
+        str
+            Trimmed `metadata.namespace`, or an empty string when unavailable.
+        """
+        metadata = self._obj.metadata
+        return (metadata.namespace or "").strip() if metadata is not None else ""
 
     @property
     def labels(self) -> Mapping[str, str]:
@@ -116,7 +141,7 @@ class KubeMetadata[T: _KubeObject]:
         name: str | None = None,
         namespace: str | None = None,
     ) -> str:
-        namespace = (namespace or "").strip()
+        namespace = (namespace or self.namespace).strip()
         name = (name or self.name).strip()
         if namespace and name:
             return f"{type(self).__name__} {namespace}/{name}"
@@ -130,43 +155,6 @@ class KubeMetadata[T: _KubeObject]:
             msg = f"cannot {action} with missing metadata.name"
             raise OSError(msg)
         return name
-
-
-class NamespacedKubeMetadata[T: _KubeObject](KubeMetadata[T]):
-    """Shared namespace-aware metadata view for typed Kubernetes wrappers.
-
-    This base extends `KubeMetadata` for namespaced Kubernetes resources.
-
-    Attributes
-    ----------
-    _obj : T
-        Typed Kubernetes client model with standard `metadata.namespace`.
-    """
-
-    @property
-    def namespace(self) -> str:
-        """Return the Kubernetes object namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
-
-    def _object_label(
-        self,
-        name: str | None = None,
-        namespace: str | None = None,
-    ) -> str:
-        namespace = (namespace or self.namespace).strip()
-        name = (name or self.name).strip()
-        if namespace and name:
-            return f"{type(self).__name__} {namespace}/{name}"
-        if name:
-            return f"{type(self).__name__} {name}"
-        return type(self).__name__
 
     def _require_namespace_name(self, action: str) -> tuple[str, str]:
         namespace = self.namespace

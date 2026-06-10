@@ -7,15 +7,15 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import PosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING
 
 import kubernetes
 
 from bertrand.env.git import Deadline, until
 
 from .api.client import Kube
-from .api.metadata import KubeMetadata, NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -43,10 +43,7 @@ STORAGE_FACTORS: dict[str, Decimal] = {
 
 
 @dataclass(frozen=True)
-class StorageClass(
-    BuiltinResourceObject[kubernetes.client.V1StorageClass],
-    KubeMetadata[kubernetes.client.V1StorageClass],
-):
+class StorageClass(KubeObject[kubernetes.client.V1StorageClass]):
     """General-purpose wrapper around one Kubernetes StorageClass object.
 
     Parameters
@@ -57,17 +54,6 @@ class StorageClass(
 
     _obj: kubernetes.client.V1StorageClass
 
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1StorageClass]] = (
-        BuiltinResource(
-            scope="cluster",
-            api="storage",
-            kind="StorageClass",
-            slug="storage_class",
-            expected=kubernetes.client.V1StorageClass,
-            list_type=kubernetes.client.V1StorageClassList,
-        )
-    )
-
     @classmethod
     async def select(
         cls,
@@ -76,7 +62,7 @@ class StorageClass(
         deadline: Deadline,
         preferences: Collection[str],
         require_expansion: bool = False,
-    ) -> Self:
+    ) -> StorageClass:
         """Select the first available StorageClass from a preference list.
 
         Parameters
@@ -111,7 +97,9 @@ class StorageClass(
             msg = "storage class preferences cannot be empty"
             raise ValueError(msg)
         for name in normalized:
-            storage = await cls.get(kube, deadline=deadline, name=name)
+            storage = await STORAGE_CLASS_RESOURCE.get(
+                kube, deadline=deadline, name=name
+            )
             if storage is None:
                 continue
             if require_expansion and not storage.allow_volume_expansion:
@@ -201,10 +189,7 @@ def _normalize_pvc_fields(
 
 
 @dataclass(frozen=True)
-class PersistentVolumeClaim(
-    BuiltinResourceObject[kubernetes.client.V1PersistentVolumeClaim],
-    NamespacedKubeMetadata[kubernetes.client.V1PersistentVolumeClaim],
-):
+class PersistentVolumeClaim(KubeObject[kubernetes.client.V1PersistentVolumeClaim]):
     """General-purpose wrapper around one Kubernetes PersistentVolumeClaim object.
 
     Parameters
@@ -220,19 +205,6 @@ class PersistentVolumeClaim(
     """
 
     _obj: kubernetes.client.V1PersistentVolumeClaim
-
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1PersistentVolumeClaim]] = (
-        BuiltinResource(
-            scope="namespaced",
-            api="core",
-            kind="PersistentVolumeClaim",
-            slug="persistent_volume_claim",
-            expected=kubernetes.client.V1PersistentVolumeClaim,
-            list_type=kubernetes.client.V1PersistentVolumeClaimList,
-            can_create=True,
-            can_delete=True,
-        )
-    )
 
     @staticmethod
     def _manifest(
@@ -282,7 +254,7 @@ class PersistentVolumeClaim(
         deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> PersistentVolumeClaim:
         """Create a PVC if missing and converge its requested storage size.
 
         Parameters
@@ -336,25 +308,23 @@ class PersistentVolumeClaim(
         )
 
         try:
-            return cls(
-                _obj=await cls.resource.create(
-                    kube,
-                    namespace=namespace,
-                    name=name,
-                    manifest=manifest,
-                    deadline=deadline,
-                    malformed_message=(
-                        "malformed Kubernetes PVC payload while creating "
-                        f"{namespace}/{name}"
-                    ),
-                    missing_ok=False,
-                )
+            return await PERSISTENT_VOLUME_CLAIM_RESOURCE.create(
+                kube,
+                namespace=namespace,
+                name=name,
+                manifest=manifest,
+                deadline=deadline,
+                malformed_message=(
+                    "malformed Kubernetes PVC payload while creating "
+                    f"{namespace}/{name}"
+                ),
+                missing_ok=False,
             )
         except OSError as err:
             if not isinstance(err, Kube.APIError) or err.status != 409:
                 raise
 
-        live = await cls.get(
+        live = await PERSISTENT_VOLUME_CLAIM_RESOURCE.get(
             kube,
             namespace=namespace,
             deadline=deadline,
@@ -389,7 +359,7 @@ class PersistentVolumeClaim(
         deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> PersistentVolumeClaim:
         """Create a PVC restored from a `VolumeSnapshot`.
 
         Parameters
@@ -455,25 +425,23 @@ class PersistentVolumeClaim(
                 "name": snapshot_name,
             },
         )
-        return cls(
-            _obj=await cls.resource.create(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-                context=(
-                    "failed to create PersistentVolumeClaim "
-                    f"{namespace}/{name} from VolumeSnapshot "
-                    f"{snapshot_name!r}"
-                ),
-                missing_ok=False,
-                malformed_message=(
-                    "malformed Kubernetes PVC payload while creating "
-                    f"{namespace}/{name} from VolumeSnapshot "
-                    f"{snapshot_name!r}"
-                ),
-            )
+        return await PERSISTENT_VOLUME_CLAIM_RESOURCE.create(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
+            context=(
+                "failed to create PersistentVolumeClaim "
+                f"{namespace}/{name} from VolumeSnapshot "
+                f"{snapshot_name!r}"
+            ),
+            missing_ok=False,
+            malformed_message=(
+                "malformed Kubernetes PVC payload while creating "
+                f"{namespace}/{name} from VolumeSnapshot "
+                f"{snapshot_name!r}"
+            ),
         )
 
     def _assert_upsert_compatible(
@@ -522,8 +490,8 @@ class PersistentVolumeClaim(
         namespace: str,
         name: str,
         deadline: Deadline,
-    ) -> Self:
-        live = await cls.get(
+    ) -> PersistentVolumeClaim:
+        live = await PERSISTENT_VOLUME_CLAIM_RESOURCE.get(
             kube,
             namespace=namespace,
             deadline=deadline,
@@ -540,7 +508,7 @@ class PersistentVolumeClaim(
         *,
         kube: Kube,
         deadline: Deadline,
-    ) -> Self:
+    ) -> PersistentVolumeClaim:
         """Resize the PVC if current requested storage is below target.
 
         Parameters
@@ -619,7 +587,9 @@ class PersistentVolumeClaim(
         msg = f"PVC {name!r} did not converge to requested size {requested!r}"
         raise OSError(msg)
 
-    async def wait_bound(self, kube: Kube, *, deadline: Deadline) -> Self:
+    async def wait_bound(
+        self, kube: Kube, *, deadline: Deadline
+    ) -> PersistentVolumeClaim:
         """Wait until this PVC reaches a bound state.
 
         Parameters
@@ -635,8 +605,9 @@ class PersistentVolumeClaim(
             Fresh wrapper whose phase is `Bound`.
         """
         namespace, name = self._require_namespace_name("wait for PVC binding")
-        return await self._wait_until(
+        return await PERSISTENT_VOLUME_CLAIM_RESOURCE.wait_until(
             kube,
+            self,
             deadline=deadline,
             predicate=lambda live: live.is_bound,
             pending_message=f"PVC {namespace}/{name} is not bound yet",
@@ -744,10 +715,7 @@ class PersistentVolumeClaim(
 
 
 @dataclass(frozen=True)
-class PersistentVolume(
-    BuiltinResourceObject[kubernetes.client.V1PersistentVolume],
-    KubeMetadata[kubernetes.client.V1PersistentVolume],
-):
+class PersistentVolume(KubeObject[kubernetes.client.V1PersistentVolume]):
     """General-purpose wrapper around one Kubernetes PersistentVolume object.
 
     Parameters
@@ -758,17 +726,6 @@ class PersistentVolume(
 
     _obj: kubernetes.client.V1PersistentVolume
 
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1PersistentVolume]] = (
-        BuiltinResource(
-            scope="cluster",
-            api="core",
-            kind="PersistentVolume",
-            slug="persistent_volume",
-            expected=kubernetes.client.V1PersistentVolume,
-            list_type=kubernetes.client.V1PersistentVolumeList,
-        )
-    )
-
     @classmethod
     async def wait_present(
         cls,
@@ -776,7 +733,7 @@ class PersistentVolume(
         *,
         deadline: Deadline,
         name: str,
-    ) -> Self:
+    ) -> PersistentVolume:
         """Wait until a PersistentVolume exists by name.
 
         Parameters
@@ -799,8 +756,10 @@ class PersistentVolume(
             If the volume is still absent when `deadline` expires.
         """
 
-        async def present(attempt_deadline: Deadline) -> Self:
-            live = await cls.get(kube, deadline=attempt_deadline, name=name)
+        async def present(attempt_deadline: Deadline) -> PersistentVolume:
+            live = await PERSISTENT_VOLUME_RESOURCE.get(
+                kube, deadline=attempt_deadline, name=name
+            )
             if live is not None:
                 return live
             msg = f"PersistentVolume {name!r} is not present yet"
@@ -890,6 +849,43 @@ class PersistentVolume(
                 continue
             return PosixPath(value if value.startswith("/") else f"/{value}")
         return None
+
+
+STORAGE_CLASS_RESOURCE: BuiltinResource[
+    kubernetes.client.V1StorageClass, StorageClass
+] = BuiltinResource(
+    scope="cluster",
+    api="storage",
+    kind="StorageClass",
+    slug="storage_class",
+    expected=kubernetes.client.V1StorageClass,
+    list_type=kubernetes.client.V1StorageClassList,
+    wrapper=StorageClass.from_payload,
+)
+PERSISTENT_VOLUME_CLAIM_RESOURCE: BuiltinResource[
+    kubernetes.client.V1PersistentVolumeClaim, PersistentVolumeClaim
+] = BuiltinResource(
+    scope="namespaced",
+    api="core",
+    kind="PersistentVolumeClaim",
+    slug="persistent_volume_claim",
+    expected=kubernetes.client.V1PersistentVolumeClaim,
+    list_type=kubernetes.client.V1PersistentVolumeClaimList,
+    wrapper=PersistentVolumeClaim.from_payload,
+    can_create=True,
+    can_delete=True,
+)
+PERSISTENT_VOLUME_RESOURCE: BuiltinResource[
+    kubernetes.client.V1PersistentVolume, PersistentVolume
+] = BuiltinResource(
+    scope="cluster",
+    api="core",
+    kind="PersistentVolume",
+    slug="persistent_volume",
+    expected=kubernetes.client.V1PersistentVolume,
+    list_type=kubernetes.client.V1PersistentVolumeList,
+    wrapper=PersistentVolume.from_payload,
+)
 
 
 def parse_pvc_size(value: str) -> Decimal:

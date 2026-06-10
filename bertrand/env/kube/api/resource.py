@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import kubernetes
 
@@ -16,20 +16,12 @@ from .watch import watch as kube_watch
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
+    from collections.abc import AsyncIterator, Callable, Collection, Mapping
 
 type ResourceScope = Literal["cluster", "namespaced"]
 type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
 type _BuiltinOperation = Literal["read", "list", "create", "patch", "delete"]
 RESOURCE_WAIT_POLL_INTERVAL_SECONDS = 0.5
-
-
-# TODO: I really want the resource model to be clearer and easier to understand, rather
-# than committing to class variables that increase indirection in a non-intuitive,
-# opaque way.  Mixins are good for centralizing boilerplate, but I hate the callback
-# model and resource configuration as a class variable.  The only clean approaches I
-# think we should entertain are inheritance and/or class decorators, if those would
-# prove to be useful.
 
 
 def _label_selector(labels: Mapping[str, str] | None) -> str | None:
@@ -76,8 +68,24 @@ def _validate_delete_status(payload: object, *, label: str) -> None:
         raise OSError(msg)
 
 
+def raw_payload[PayloadT](payload: PayloadT) -> PayloadT:
+    """Return a Kubernetes payload unchanged.
+
+    Parameters
+    ----------
+    payload : PayloadT
+        Typed Kubernetes client payload.
+
+    Returns
+    -------
+    PayloadT
+        The original payload.
+    """
+    return payload
+
+
 @dataclass(frozen=True)
-class BuiltinResource[PayloadT]:
+class BuiltinResource[PayloadT, ObjectT]:
     """Raw adapter for one generated Kubernetes resource API.
 
     Parameters
@@ -94,6 +102,8 @@ class BuiltinResource[PayloadT]:
         Kubernetes client payload type returned by single-object operations.
     list_type : type[object]
         Kubernetes client list payload type returned by list operations.
+    wrapper : Callable[[PayloadT], ObjectT]
+        Factory that wraps typed payloads returned by the generated API.
     can_create : bool, default=False
         Whether the generated API supports create for this resource.
     can_patch : bool, default=False
@@ -110,6 +120,7 @@ class BuiltinResource[PayloadT]:
     slug: str
     expected: type[PayloadT]
     list_type: type[object]
+    wrapper: Callable[[PayloadT], ObjectT]
     can_create: bool = False
     can_patch: bool = False
     can_delete: bool = False
@@ -135,7 +146,7 @@ class BuiltinResource[PayloadT]:
         deadline: Deadline,
         namespace: str | None = None,
         context: str | None = None,
-    ) -> PayloadT | None:
+    ) -> ObjectT | None:
         """Read one resource by name.
 
         Parameters
@@ -153,8 +164,8 @@ class BuiltinResource[PayloadT]:
 
         Returns
         -------
-        PayloadT | None
-            Raw Kubernetes payload, or `None` when absent.
+        ObjectT | None
+            Wrapped Kubernetes object, or `None` when absent.
         """
         namespace = self._single_namespace(namespace, action="read")
         label = self._object_label(name=name, namespace=namespace)
@@ -169,7 +180,7 @@ class BuiltinResource[PayloadT]:
         )
         if payload is None:
             return None
-        return self._typed(payload)
+        return self._wrap(self._typed(payload))
 
     async def list(
         self,
@@ -180,7 +191,7 @@ class BuiltinResource[PayloadT]:
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
         field_selector: str | None = None,
-    ) -> builtins.list[PayloadT]:
+    ) -> builtins.list[ObjectT]:
         """List resources with optional namespace and selector filtering.
 
         Parameters
@@ -200,8 +211,8 @@ class BuiltinResource[PayloadT]:
 
         Returns
         -------
-        list[PayloadT]
-            Raw Kubernetes payloads matching the filters.
+        list[ObjectT]
+            Wrapped Kubernetes objects matching the filters.
         """
         selected = self._list_namespaces(namespace=namespace, namespaces=namespaces)
         payloads = await self._list_payloads(
@@ -211,9 +222,9 @@ class BuiltinResource[PayloadT]:
             label_selector=_label_selector(labels),
             field_selector=self._field_selector(field_selector),
         )
-        items: builtins.list[PayloadT] = []
+        items: builtins.list[ObjectT] = []
         for payload in payloads:
-            items.extend(self._list_items(payload))
+            items.extend(self._wrap(item) for item in self._list_items(payload))
         return items
 
     async def watch(
@@ -225,13 +236,13 @@ class BuiltinResource[PayloadT]:
         labels: Mapping[str, str] | None = None,
         field_selector: str | None = None,
         resource_version: str | None = None,
-    ) -> AsyncIterator[WatchEvent[PayloadT]]:
+    ) -> AsyncIterator[WatchEvent[ObjectT]]:
         """Watch this generated resource type.
 
         Yields
         ------
-        WatchEvent[PayloadT]
-            Typed watch events containing raw Kubernetes payloads.
+        WatchEvent[ObjectT]
+            Typed watch events containing wrapped Kubernetes objects.
         """
         namespace = self._watch_namespace(namespace)
         if not self.can_watch:
@@ -240,7 +251,9 @@ class BuiltinResource[PayloadT]:
         watch_fn, api_kwargs, context = self._watch_request(kube, namespace=namespace)
         async for event in kube_watch(
             watch_fn,
-            wrapper=lambda payload: self._typed(payload, context=f"{self.kind} watch"),
+            wrapper=lambda payload: self._wrap(
+                self._typed(payload, context=f"{self.kind} watch")
+            ),
             deadline=deadline,
             context=context,
             resource_version=resource_version,
@@ -261,7 +274,7 @@ class BuiltinResource[PayloadT]:
         context: str | None = None,
         malformed_message: str | None = None,
         missing_ok: bool = True,
-    ) -> PayloadT:
+    ) -> ObjectT:
         """Create one resource from a complete Kubernetes manifest.
 
         Parameters
@@ -286,8 +299,8 @@ class BuiltinResource[PayloadT]:
 
         Returns
         -------
-        PayloadT
-            Raw created Kubernetes payload.
+        ObjectT
+            Wrapped created Kubernetes object.
         """
         if not self.can_create:
             msg = f"{self.kind} does not define a create endpoint"
@@ -303,7 +316,7 @@ class BuiltinResource[PayloadT]:
             context=context or f"failed to create {self.kind} {label}",
             missing_ok=missing_ok,
         )
-        return self._typed(payload, malformed_message=malformed_message)
+        return self._wrap(self._typed(payload, malformed_message=malformed_message))
 
     async def upsert(
         self,
@@ -313,7 +326,7 @@ class BuiltinResource[PayloadT]:
         manifest: Mapping[str, object],
         deadline: Deadline,
         namespace: str | None = None,
-    ) -> PayloadT:
+    ) -> ObjectT:
         """Create or patch one resource from a complete Kubernetes manifest.
 
         Parameters
@@ -331,8 +344,8 @@ class BuiltinResource[PayloadT]:
 
         Returns
         -------
-        PayloadT
-            Raw created or patched Kubernetes payload.
+        ObjectT
+            Wrapped created or patched Kubernetes object.
 
         Raises
         ------
@@ -367,7 +380,85 @@ class BuiltinResource[PayloadT]:
                 context=f"failed to patch {self.kind} {label}",
                 missing_ok=False,
             )
-        return self._typed(payload)
+        return self._wrap(self._typed(payload))
+
+    async def refresh(
+        self,
+        kube: Kube,
+        resource: ObjectT,
+        *,
+        deadline: Deadline,
+    ) -> ObjectT | None:
+        """Re-read a resource by its metadata identity.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        resource : ObjectT
+            Wrapped object to refresh.
+        deadline : Deadline
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        ObjectT | None
+            Fresh wrapped object, or `None` when absent.
+        """
+        if self.scope == "cluster":
+            name = _resource_name(resource, f"refresh {self.kind}")
+            return await self.get(kube, name=name, deadline=deadline)
+        namespace, name = _resource_namespace_name(resource, f"refresh {self.kind}")
+        return await self.get(
+            kube,
+            namespace=namespace,
+            name=name,
+            deadline=deadline,
+        )
+
+    async def delete(
+        self,
+        kube: Kube,
+        resource: ObjectT,
+        *,
+        deadline: Deadline,
+        propagation_policy: DeletionPropagationPolicy | None = "Background",
+        grace_period_seconds: int | None = None,
+    ) -> None:
+        """Delete one wrapped resource from the cluster.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        resource : ObjectT
+            Wrapped object to delete.
+        deadline : Deadline
+            Maximum request budget in seconds.
+        propagation_policy : {"Background", "Foreground", "Orphan"} | None, optional
+            Optional Kubernetes deletion propagation policy.
+        grace_period_seconds : int | None, optional
+            Optional Kubernetes deletion grace period.
+        """
+        if self.scope == "cluster":
+            name = _resource_name(resource, f"delete {self.kind}")
+            await self.delete_by_name(
+                kube,
+                name=name,
+                deadline=deadline,
+                propagation_policy=propagation_policy,
+                grace_period_seconds=grace_period_seconds,
+            )
+            return
+        namespace, name = _resource_namespace_name(resource, f"delete {self.kind}")
+        await self.delete_by_name(
+            kube,
+            namespace=namespace,
+            name=name,
+            deadline=deadline,
+            propagation_policy=propagation_policy,
+            grace_period_seconds=grace_period_seconds,
+        )
 
     async def delete_by_name(
         self,
@@ -422,30 +513,39 @@ class BuiltinResource[PayloadT]:
 
     async def wait_deleted(
         self,
+        kube: Kube,
+        resource: ObjectT,
         *,
-        label: str,
         deadline: Deadline,
-        refresh: Callable[[Deadline], Awaitable[object | None]],
     ) -> None:
         """Wait for a resource to disappear.
 
         Parameters
         ----------
-        label : str
-            Human-readable resource label.
+        kube : Kube
+            Active Kubernetes API context.
+        resource : ObjectT
+            Wrapped object whose deletion should be observed.
         deadline : Deadline
             Deadline for the resource to be deleted.
-        refresh : Callable[[Deadline], Awaitable[object | None]]
-            Callback that returns the live object, or `None` when absent.
 
         Raises
         ------
         TimeoutError
             If the resource still exists when `deadline` expires.
         """
+        if self.scope == "cluster":
+            name = _resource_name(resource, f"wait for {self.kind} deletion")
+            namespace = None
+        else:
+            namespace, name = _resource_namespace_name(
+                resource,
+                f"wait for {self.kind} deletion",
+            )
+        label = _resource_label(resource, name=name, namespace=namespace)
 
         async def deleted(attempt_deadline: Deadline) -> None:
-            if await refresh(attempt_deadline) is None:
+            if await self.refresh(kube, resource, deadline=attempt_deadline) is None:
                 return
             msg = f"{label} still exists"
             raise TimeoutError(msg)
@@ -459,6 +559,73 @@ class BuiltinResource[PayloadT]:
         except TimeoutError as err:
             msg = f"timed out waiting for {label} deletion"
             raise TimeoutError(msg) from err
+
+    async def wait_until(
+        self,
+        kube: Kube,
+        resource: ObjectT,
+        *,
+        deadline: Deadline,
+        predicate: Callable[[ObjectT], bool],
+        pending_message: str,
+        missing_message: str,
+        timeout_message: str,
+        check_current: bool = False,
+    ) -> ObjectT:
+        """Wait until a refreshed object satisfies `predicate`.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        resource : ObjectT
+            Wrapped object to refresh while waiting.
+        deadline : Deadline
+            Maximum wait budget.
+        predicate : Callable[[ObjectT], bool]
+            Predicate that returns `True` when the object is ready.
+        pending_message : str
+            Retry reason used while the object is still pending.
+        missing_message : str
+            Error raised if the object disappears.
+        timeout_message : str
+            Error raised if the wait expires.
+        check_current : bool, optional
+            Whether to check `resource` before the first refresh.
+
+        Returns
+        -------
+        ObjectT
+            Fresh object satisfying `predicate`.
+
+        Raises
+        ------
+        TimeoutError
+            If the object disappears or does not satisfy `predicate` before the
+            deadline expires.
+        """
+        current = resource
+
+        async def ready(attempt_deadline: Deadline) -> ObjectT:
+            nonlocal current
+            if check_current and predicate(current):
+                return current
+            refreshed = await self.refresh(kube, current, deadline=attempt_deadline)
+            if refreshed is None:
+                raise OSError(missing_message)
+            current = refreshed
+            if predicate(current):
+                return current
+            raise TimeoutError(pending_message)
+
+        try:
+            return await until(
+                ready,
+                deadline=deadline,
+                delay=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
+            )
+        except TimeoutError as err:
+            raise TimeoutError(timeout_message) from err
 
     async def _run_request(
         self,
@@ -687,6 +854,9 @@ class BuiltinResource[PayloadT]:
             out.append(item)
         return out
 
+    def _wrap(self, payload: PayloadT) -> ObjectT:
+        return self.wrapper(payload)
+
     @staticmethod
     def _field_selector(field_selector: str | None) -> str | None:
         field_selector = field_selector.strip() if field_selector is not None else None
@@ -698,236 +868,6 @@ class BuiltinResource[PayloadT]:
             msg = f"cannot {action} namespaced resource without namespace"
             raise RuntimeError(msg)
         return namespace
-
-
-class BuiltinResourceObject[PayloadT]:
-    """Base methods for wrappers backed by a :class:`BuiltinResource`.
-
-    Attributes
-    ----------
-    resource : BuiltinResource[PayloadT]
-        Raw descriptor for the generated Kubernetes API backing the wrapper.
-    """
-
-    resource: ClassVar[BuiltinResource[Any]]
-
-    @classmethod
-    async def get(
-        cls,
-        kube: Kube,
-        *,
-        name: str,
-        deadline: Deadline,
-        namespace: str | None = None,
-    ) -> Self | None:
-        """Read one Kubernetes resource by name.
-
-        Returns
-        -------
-        Self | None
-            Wrapped Kubernetes object, or `None` when absent.
-        """
-        payload = await cls.resource.get(
-            kube,
-            name=name,
-            namespace=namespace,
-            deadline=deadline,
-        )
-        wrapper = cast("Callable[..., Self]", cls)
-        return None if payload is None else wrapper(_obj=payload)
-
-    @classmethod
-    async def list(
-        cls,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        namespace: str | None = None,
-        namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
-    ) -> builtins.list[Self]:
-        """List Kubernetes resources.
-
-        Returns
-        -------
-        list[Self]
-            Wrapped Kubernetes resources matching the filters.
-        """
-        payloads = await cls.resource.list(
-            kube,
-            deadline=deadline,
-            namespace=namespace,
-            namespaces=namespaces,
-            labels=labels,
-            field_selector=field_selector,
-        )
-        wrapper = cast("Callable[..., Self]", cls)
-        return [wrapper(_obj=payload) for payload in payloads]
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
-        resource_version: str | None = None,
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Kubernetes resources.
-
-        Yields
-        ------
-        WatchEvent[Self]
-            Typed watch events containing wrapped resources.
-        """
-        async for event in cls.resource.watch(
-            kube,
-            deadline=deadline,
-            namespace=namespace,
-            labels=labels,
-            field_selector=field_selector,
-            resource_version=resource_version,
-        ):
-            yield WatchEvent(
-                type=event.type,
-                object=cast("Callable[..., Self]", cls)(_obj=event.object),
-                resource_version=event.resource_version,
-                raw_type=event.raw_type,
-            )
-
-    async def refresh(self, kube: Kube, *, deadline: Deadline) -> Self | None:
-        """Re-read this resource by its metadata identity.
-
-        Returns
-        -------
-        Self | None
-            Fresh wrapper for the same object, or `None` if it no longer exists.
-        """
-        resource = type(self).resource
-        if resource.scope == "cluster":
-            name = _resource_name(self, f"refresh {type(self).__name__}")
-            return await type(self).get(kube, name=name, deadline=deadline)
-        namespace, name = _resource_namespace_name(
-            self,
-            f"refresh {type(self).__name__}",
-        )
-        return await type(self).get(
-            kube,
-            namespace=namespace,
-            name=name,
-            deadline=deadline,
-        )
-
-    async def delete(
-        self,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        propagation_policy: DeletionPropagationPolicy | None = "Background",
-        grace_period_seconds: int | None = None,
-    ) -> None:
-        """Delete this resource from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum request budget in seconds.
-        propagation_policy : {"Background", "Foreground", "Orphan"} | None, optional
-            Optional Kubernetes deletion propagation policy. Defaults to
-            `"Background"`.
-        grace_period_seconds : int | None, optional
-            Optional Kubernetes deletion grace period.
-        """
-        resource = type(self).resource
-        if resource.scope == "cluster":
-            name = _resource_name(self, f"delete {type(self).__name__}")
-            await resource.delete_by_name(
-                kube,
-                name=name,
-                deadline=deadline,
-                propagation_policy=propagation_policy,
-                grace_period_seconds=grace_period_seconds,
-            )
-            return
-        namespace, name = _resource_namespace_name(
-            self,
-            f"delete {type(self).__name__}",
-        )
-        await resource.delete_by_name(
-            kube,
-            namespace=namespace,
-            name=name,
-            deadline=deadline,
-            propagation_policy=propagation_policy,
-            grace_period_seconds=grace_period_seconds,
-        )
-
-    async def wait_deleted(self, kube: Kube, *, deadline: Deadline) -> None:
-        """Wait until this resource is deleted from the cluster.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum wait budget in seconds.
-        """
-        resource = type(self).resource
-        if resource.scope == "cluster":
-            name = _resource_name(
-                self,
-                f"wait for {type(self).__name__} deletion",
-            )
-            namespace = None
-        else:
-            namespace, name = _resource_namespace_name(
-                self,
-                f"wait for {type(self).__name__} deletion",
-            )
-        await resource.wait_deleted(
-            label=_resource_label(self, name=name, namespace=namespace),
-            deadline=deadline,
-            refresh=lambda remaining: self.refresh(kube, deadline=remaining),
-        )
-
-    async def _wait_until(
-        self,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        predicate: Callable[[Self], bool],
-        pending_message: str,
-        missing_message: str,
-        timeout_message: str,
-        check_current: bool = False,
-    ) -> Self:
-        current: Self = self
-
-        async def ready(attempt_deadline: Deadline) -> Self:
-            nonlocal current
-            if check_current and predicate(current):
-                return current
-            refreshed = await current.refresh(kube, deadline=attempt_deadline)
-            if refreshed is None:
-                raise OSError(missing_message)
-            current = refreshed
-            if predicate(current):
-                return current
-            raise TimeoutError(pending_message)
-
-        try:
-            return await until(
-                ready,
-                deadline=deadline,
-                delay=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
-            )
-        except TimeoutError as err:
-            raise TimeoutError(timeout_message) from err
 
 
 def _resource_name(resource: object, action: str) -> str:

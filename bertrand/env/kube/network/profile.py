@@ -16,7 +16,7 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
 )
-from bertrand.env.kube.configmap import ConfigMap
+from bertrand.env.kube.configmap import CONFIG_MAP_RESOURCE, ConfigMap
 
 if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
@@ -196,7 +196,7 @@ class NetworkProfile(BaseModel):
         OSError
             If the persisted profile is malformed.
         """
-        config = await ConfigMap.get(
+        config = await CONFIG_MAP_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=NETWORK_PROFILE_NAME,

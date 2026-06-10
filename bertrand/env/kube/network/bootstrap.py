@@ -7,8 +7,11 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.git import Deadline, until
 from bertrand.env.kube.api.client import kubectl
-from bertrand.env.kube.crd import CustomResourceDefinition
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.crd import (
+    CUSTOM_RESOURCE_DEFINITION_RESOURCE,
+    CustomResourceDefinition,
+)
+from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE, Deployment
 
 if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
@@ -75,7 +78,7 @@ async def _wait_crd_established(
     deadline: Deadline,
 ) -> CustomResourceDefinition:
     async def established(attempt_deadline: Deadline) -> CustomResourceDefinition:
-        crd = await CustomResourceDefinition.get(
+        crd = await CUSTOM_RESOURCE_DEFINITION_RESOURCE.get(
             kube,
             name=name,
             deadline=attempt_deadline,
@@ -108,7 +111,7 @@ async def _wait_envoy_gateway_available(
     deadline: Deadline,
 ) -> Deployment:
     async def available(attempt_deadline: Deadline) -> Deployment:
-        deployment = await Deployment.get(
+        deployment = await DEPLOYMENT_RESOURCE.get(
             kube,
             namespace=ENVOY_GATEWAY_NAMESPACE,
             name=ENVOY_GATEWAY_DEPLOYMENT,

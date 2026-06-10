@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from bertrand.env.git import Deadline
-from bertrand.env.kube.daemonset import DaemonSet
-from bertrand.env.kube.node import Node
+from bertrand.env.kube.daemonset import DAEMON_SET_RESOURCE
+from bertrand.env.kube.node import NODE_RESOURCE
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from bertrand.env.git import Deadline
     from bertrand.env.kube.api.client import Kube
 
 CNI_NAMESPACES = frozenset(
@@ -40,7 +40,7 @@ async def inspect_cni(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
     dict[str, object]
         Passive CNI diagnostic payload for status and doctor commands.
     """
-    daemonsets = await DaemonSet.list(
+    daemonsets = await DAEMON_SET_RESOURCE.list(
         kube, deadline=deadline, namespaces=CNI_NAMESPACES
     )
     names = tuple(
@@ -90,7 +90,7 @@ def _detect_cni(daemonsets: tuple[str, ...]) -> tuple[str, str]:
 
 async def _pod_cidrs(kube: Kube, *, deadline: Deadline) -> tuple[str, ...]:
     cidrs: list[str] = []
-    for node in await Node.list(kube, deadline=deadline):
+    for node in await NODE_RESOURCE.list(kube, deadline=deadline):
         for cidr in node.pod_cidrs:
             if cidr not in cidrs:
                 cidrs.append(cidr)

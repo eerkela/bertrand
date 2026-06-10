@@ -4,25 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from bertrand.env.git import Deadline
-from bertrand.env.kube.api.metadata import NamespacedKubeMetadata
-from bertrand.env.kube.api.resource import BuiltinResource, BuiltinResourceObject
+from bertrand.env.kube.api.metadata import KubeObject
+from bertrand.env.kube.api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from bertrand.env.git import Deadline
     from bertrand.env.kube.api.client import Kube
 
 
 @dataclass(frozen=True)
-class ConfigMap(
-    BuiltinResourceObject[kube_client.V1ConfigMap],
-    NamespacedKubeMetadata[kube_client.V1ConfigMap],
-):
+class ConfigMap(KubeObject[kube_client.V1ConfigMap]):
     """General-purpose wrapper around one Kubernetes ConfigMap object.
 
     Parameters
@@ -37,18 +34,6 @@ class ConfigMap(
     """
 
     _obj: kube_client.V1ConfigMap
-
-    resource: ClassVar[BuiltinResource[kube_client.V1ConfigMap]] = BuiltinResource(
-        scope="namespaced",
-        api="core",
-        kind="ConfigMap",
-        slug="config_map",
-        expected=kube_client.V1ConfigMap,
-        list_type=kube_client.V1ConfigMapList,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-    )
 
     @staticmethod
     def _manifest(
@@ -87,7 +72,7 @@ class ConfigMap(
         binary_data: Mapping[str, str] | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> ConfigMap:
         """Create or patch one Kubernetes ConfigMap from intent-level fields.
 
         Parameters
@@ -134,14 +119,12 @@ class ConfigMap(
             annotations=annotations,
         )
 
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await CONFIG_MAP_RESOURCE.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
 
     @property
@@ -165,3 +148,19 @@ class ConfigMap(
             Read-only view of ConfigMap binary data.
         """
         return MappingProxyType(self._obj.binary_data or {})
+
+
+CONFIG_MAP_RESOURCE: BuiltinResource[kube_client.V1ConfigMap, ConfigMap] = (
+    BuiltinResource(
+        scope="namespaced",
+        api="core",
+        kind="ConfigMap",
+        slug="config_map",
+        expected=kube_client.V1ConfigMap,
+        list_type=kube_client.V1ConfigMapList,
+        wrapper=ConfigMap.from_payload,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
+    )
+)

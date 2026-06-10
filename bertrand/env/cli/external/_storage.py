@@ -20,8 +20,8 @@ from bertrand.env.kube.ceph.csi import (
     CSI_DRIVER_NAME,
     CSI_NODE_NAME,
 )
-from bertrand.env.kube.daemonset import DaemonSet
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.daemonset import DAEMON_SET_RESOURCE
+from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE
 
 if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
@@ -366,13 +366,13 @@ async def storage_csi_status(
             deadline=deadline,
             context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
         ),
-        Deployment.get(
+        DEPLOYMENT_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=CSI_CONTROLLER_NAME,
             deadline=deadline,
         ),
-        DaemonSet.get(
+        DAEMON_SET_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=CSI_NODE_NAME,

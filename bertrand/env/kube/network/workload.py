@@ -16,8 +16,8 @@ from bertrand.env.kube.network.gateway import (
     gateway_api_crd_missing,
     upsert_http_route,
 )
-from bertrand.env.kube.network_policy import NetworkPolicy
-from bertrand.env.kube.service import Service, ServicePortView
+from bertrand.env.kube.network_policy import NETWORK_POLICY_RESOURCE, NetworkPolicy
+from bertrand.env.kube.service import SERVICE_RESOURCE, Service, ServicePortView
 
 if TYPE_CHECKING:
     from bertrand.env.config.bertrand import BertrandModel
@@ -66,7 +66,7 @@ async def ensure_workload_service(
         )
         return None
 
-    service = await Service.get(
+    service = await SERVICE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
@@ -103,7 +103,7 @@ async def delete_workload_service(
         Maximum deletion budget in seconds. If infinite, wait indefinitely.
 
     """
-    service = await Service.get(
+    service = await SERVICE_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
@@ -111,7 +111,7 @@ async def delete_workload_service(
     )
     _assert_managed(service, identity=identity, kind="Service")
     if service is not None:
-        await service.delete(kube, deadline=deadline)
+        await SERVICE_RESOURCE.delete(kube, service, deadline=deadline)
 
 
 async def ensure_workload_network_policy(
@@ -164,7 +164,7 @@ async def ensure_workload_network_policy(
         msg = f"unsupported workload network policy: {network.policy!r}"
         raise ValueError(msg)
 
-    network_policy = await NetworkPolicy.get(
+    network_policy = await NETWORK_POLICY_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
@@ -201,7 +201,7 @@ async def delete_workload_network_policy(
         Maximum deletion budget in seconds. If infinite, wait indefinitely.
 
     """
-    network_policy = await NetworkPolicy.get(
+    network_policy = await NETWORK_POLICY_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
@@ -209,7 +209,7 @@ async def delete_workload_network_policy(
     )
     _assert_managed(network_policy, identity=identity, kind="NetworkPolicy")
     if network_policy is not None:
-        await network_policy.delete(kube, deadline=deadline)
+        await NETWORK_POLICY_RESOURCE.delete(kube, network_policy, deadline=deadline)
 
 
 async def ensure_workload_http_routes(

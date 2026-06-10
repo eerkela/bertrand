@@ -39,7 +39,7 @@ from bertrand.env.kube.custom_object import (
     CustomObjectMetadata,
     CustomObjectResource,
 )
-from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.pod import POD_RESOURCE, Pod
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -697,7 +697,7 @@ class _ProjectImageGcInventory:
         records_task = asyncio.create_task(
             BUILDKIT_BUILD_RESOURCE.list(kube, deadline=deadline)
         )
-        pods_task = asyncio.create_task(Pod.list(kube, deadline=deadline))
+        pods_task = asyncio.create_task(POD_RESOURCE.list(kube, deadline=deadline))
         await asyncio.gather(records_task, pods_task)
         return cls(
             records=tuple(records_task.result()),

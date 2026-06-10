@@ -16,7 +16,7 @@ from bertrand.env.kube.dev.mailbox import (
     DEV_GROUP,
     code_open_host_labels,
 )
-from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.pod import POD_RESOURCE, Pod
 from bertrand.env.kube.rbac import (
     CLUSTER_ROLE_BINDING_RESOURCE,
     CLUSTER_ROLE_RESOURCE,
@@ -280,7 +280,7 @@ async def wait_dev_session_running(
         if remaining <= 0:
             msg = f"timed out waiting for dev session Pod {pod.name!r}"
             raise TimeoutError(msg)
-        live = await current.refresh(kube, deadline=deadline)
+        live = await POD_RESOURCE.refresh(kube, current, deadline=deadline)
         if live is None:
             msg = f"dev session Pod {pod.name!r} disappeared before running"
             raise OSError(msg)
@@ -321,15 +321,16 @@ async def delete_dev_backend_state(
         DEV_SESSION_LABEL: DEV_SESSION_LABEL_VALUE,
         DEV_SESSION_HOST_LABEL: _hash_label(host_id),
     }
-    pods = await Pod.list(
+    pods = await POD_RESOURCE.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=pod_labels,
         deadline=deadline,
     )
     for pod in pods:
-        await pod.delete(
+        await POD_RESOURCE.delete(
             kube,
+            pod,
             deadline=deadline,
             grace_period_seconds=1,
         )

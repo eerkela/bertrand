@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, Literal, Self, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import kubernetes
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
 
@@ -24,10 +24,7 @@ _POLICY_TYPES = frozenset({"Ingress", "Egress"})
 
 
 @dataclass(frozen=True)
-class NetworkPolicy(
-    BuiltinResourceObject[kubernetes.client.V1NetworkPolicy],
-    NamespacedKubeMetadata[kubernetes.client.V1NetworkPolicy],
-):
+class NetworkPolicy(KubeObject[kubernetes.client.V1NetworkPolicy]):
     """General-purpose wrapper around one Kubernetes NetworkPolicy object.
 
     Parameters
@@ -42,20 +39,6 @@ class NetworkPolicy(
     """
 
     _obj: kubernetes.client.V1NetworkPolicy
-
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1NetworkPolicy]] = (
-        BuiltinResource(
-            scope="namespaced",
-            api="networking",
-            kind="NetworkPolicy",
-            slug="network_policy",
-            expected=kubernetes.client.V1NetworkPolicy,
-            list_type=kubernetes.client.V1NetworkPolicyList,
-            can_create=True,
-            can_patch=True,
-            can_delete=True,
-        )
-    )
 
     @staticmethod
     def _manifest(
@@ -104,7 +87,7 @@ class NetworkPolicy(
         egress: Collection[Mapping[str, object]] | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> NetworkPolicy:
         """Create or patch one Kubernetes NetworkPolicy from intent fields.
 
         Parameters
@@ -160,14 +143,12 @@ class NetworkPolicy(
             labels=labels,
             annotations=annotations,
         )
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await NETWORK_POLICY_RESOURCE.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
 
     @property
@@ -221,6 +202,23 @@ class NetworkPolicy(
             Whether the NetworkPolicy pod selector exactly matches `selector`.
         """
         return dict(self.pod_selector) == dict(selector)
+
+
+NETWORK_POLICY_RESOURCE: BuiltinResource[
+    kubernetes.client.V1NetworkPolicy,
+    NetworkPolicy,
+] = BuiltinResource(
+    scope="namespaced",
+    api="networking",
+    kind="NetworkPolicy",
+    slug="network_policy",
+    expected=kubernetes.client.V1NetworkPolicy,
+    list_type=kubernetes.client.V1NetworkPolicyList,
+    wrapper=NetworkPolicy.from_payload,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
+)
 
 
 def _policy_types(

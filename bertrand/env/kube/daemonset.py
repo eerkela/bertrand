@@ -4,45 +4,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING
 
 import kubernetes
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
     from .api.spec import PodTemplateSpec
 
 
 @dataclass(frozen=True)
-class DaemonSet(
-    BuiltinResourceObject[kubernetes.client.V1DaemonSet],
-    NamespacedKubeMetadata[kubernetes.client.V1DaemonSet],
-):
+class DaemonSet(KubeObject[kubernetes.client.V1DaemonSet]):
     """General-purpose wrapper around one Kubernetes DaemonSet object."""
 
     _obj: kubernetes.client.V1DaemonSet
-
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1DaemonSet]] = (
-        BuiltinResource(
-            scope="namespaced",
-            api="apps",
-            kind="DaemonSet",
-            slug="daemon_set",
-            expected=kubernetes.client.V1DaemonSet,
-            list_type=kubernetes.client.V1DaemonSetList,
-            can_create=True,
-            can_patch=True,
-            can_delete=True,
-            can_watch=True,
-        )
-    )
 
     @staticmethod
     def _manifest(
@@ -84,7 +66,7 @@ class DaemonSet(
         pod_template: PodTemplateSpec,
         deadline: Deadline,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> DaemonSet:
         """Create or patch one Kubernetes DaemonSet from intent-level fields.
 
         Parameters
@@ -129,14 +111,12 @@ class DaemonSet(
             pod_template=pod_template,
             annotations=annotations,
         )
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await DAEMON_SET_RESOURCE.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
 
     @property
@@ -312,7 +292,7 @@ class DaemonSet(
         *,
         deadline: Deadline,
         minimum: int = 1,
-    ) -> Self:
+    ) -> DaemonSet:
         """Wait until this DaemonSet reports at least `minimum` available pods.
 
         Parameters
@@ -340,8 +320,9 @@ class DaemonSet(
         namespace, name = self._require_namespace_name(
             "wait for DaemonSet availability"
         )
-        return await self._wait_until(
+        return await DAEMON_SET_RESOURCE.wait_until(
             kube,
+            self,
             deadline=deadline,
             predicate=lambda live: live.has_available_pods(minimum),
             pending_message=f"DaemonSet {namespace}/{name} is not available yet",
@@ -360,7 +341,7 @@ class DaemonSet(
         *,
         deadline: Deadline,
         minimum: int = 1,
-    ) -> Self:
+    ) -> DaemonSet:
         """Wait until this DaemonSet completes rollout.
 
         Parameters
@@ -387,8 +368,9 @@ class DaemonSet(
             raise ValueError(msg)
         namespace, name = self._require_namespace_name("wait for DaemonSet rollout")
         target_generation = self.generation
-        return await self._wait_until(
+        return await DAEMON_SET_RESOURCE.wait_until(
             kube,
+            self,
             deadline=deadline,
             predicate=lambda live: (
                 (
@@ -405,3 +387,21 @@ class DaemonSet(
                 f"timed out waiting for DaemonSet {namespace}/{name} rollout"
             ),
         )
+
+
+DAEMON_SET_RESOURCE: BuiltinResource[
+    kubernetes.client.V1DaemonSet,
+    DaemonSet,
+] = BuiltinResource(
+    scope="namespaced",
+    api="apps",
+    kind="DaemonSet",
+    slug="daemon_set",
+    expected=kubernetes.client.V1DaemonSet,
+    list_type=kubernetes.client.V1DaemonSetList,
+    wrapper=DaemonSet.from_payload,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
+    can_watch=True,
+)

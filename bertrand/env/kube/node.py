@@ -5,14 +5,14 @@ from __future__ import annotations
 import os
 import platform
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Literal
 
 import kubernetes
 
 from .api.client import Kube
-from .api.metadata import KubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
-from .pod import Pod
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
+from .pod import POD_RESOURCE, Pod
 
 if TYPE_CHECKING:
     import builtins
@@ -64,10 +64,7 @@ class TaintView:
 
 
 @dataclass(frozen=True)
-class Node(
-    BuiltinResourceObject[kubernetes.client.V1Node],
-    KubeMetadata[kubernetes.client.V1Node],
-):
+class Node(KubeObject[kubernetes.client.V1Node]):
     """General-purpose wrapper around one Kubernetes Node object.
 
     Parameters
@@ -84,18 +81,8 @@ class Node(
 
     _obj: kubernetes.client.V1Node
 
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1Node]] = BuiltinResource(
-        scope="cluster",
-        api="core",
-        kind="Node",
-        slug="node",
-        expected=kubernetes.client.V1Node,
-        list_type=kubernetes.client.V1NodeList,
-        can_watch=True,
-    )
-
     @classmethod
-    async def local(cls, kube: Kube, *, deadline: Deadline) -> Self:
+    async def local(cls, kube: Kube, *, deadline: Deadline) -> Node:
         """Resolve the Kubernetes Node for the current host.
 
         Parameters
@@ -116,7 +103,7 @@ class Node(
             If no node can be matched, the matched node has no name, or multiple
             nodes make host identity ambiguous.
         """
-        nodes = await cls.list(kube=kube, deadline=deadline)
+        nodes = await NODE_RESOURCE.list(kube=kube, deadline=deadline)
         if not nodes:
             msg = "Kubernetes node list is empty"
             raise OSError(msg)
@@ -710,7 +697,7 @@ class Node(
         if not node_name:
             msg = "cannot query pods for Kubernetes node with missing name"
             raise OSError(msg)
-        return await Pod.list(
+        return await POD_RESOURCE.list(
             kube,
             deadline=deadline,
             namespaces=namespaces,
@@ -758,6 +745,18 @@ class Node(
         pending = _node_drain_pending(candidates)
         await _evict_node_drain_candidates(self, kube, candidates, deadline=deadline)
         await _wait_node_drain_convergence(self, kube, pending, deadline=deadline)
+
+
+NODE_RESOURCE: BuiltinResource[kubernetes.client.V1Node, Node] = BuiltinResource(
+    scope="cluster",
+    api="core",
+    kind="Node",
+    slug="node",
+    expected=kubernetes.client.V1Node,
+    list_type=kubernetes.client.V1NodeList,
+    wrapper=Node.from_payload,
+    can_watch=True,
+)
 
 
 def _classify_node_drain_pods(

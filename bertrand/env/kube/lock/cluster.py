@@ -21,7 +21,7 @@ from bertrand.env.git import (
     Deadline,
 )
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.lease import Lease
+from bertrand.env.kube.lease import LEASE_RESOURCE, Lease
 
 CLUSTER_LOCK_DURATION_SECONDS = 30
 CLUSTER_LOCK_RENEW_SECONDS = 10
@@ -182,7 +182,7 @@ class ClusterLock:
         }
 
     async def _get_lease(self, deadline: Deadline) -> _LeaseState | None:
-        lease = await Lease.get(
+        lease = await LEASE_RESOURCE.get(
             self.kube,
             namespace=self.namespace,
             name=self.name,

@@ -3,27 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
 
+    from bertrand.env.git import Deadline
+
     from .api.client import Kube
 
 
 @dataclass(frozen=True)
-class Lease(
-    BuiltinResourceObject[kube_client.V1Lease],
-    NamespacedKubeMetadata[kube_client.V1Lease],
-):
+class Lease(KubeObject[kube_client.V1Lease]):
     """General-purpose wrapper around one Kubernetes Lease object.
 
     Parameters
@@ -33,19 +30,6 @@ class Lease(
     """
 
     _obj: kube_client.V1Lease
-
-    resource: ClassVar[BuiltinResource[kube_client.V1Lease]] = BuiltinResource(
-        scope="namespaced",
-        api="coordination",
-        kind="Lease",
-        slug="lease",
-        expected=kube_client.V1Lease,
-        list_type=kube_client.V1LeaseList,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-        can_watch=True,
-    )
 
     @staticmethod
     def _manifest(
@@ -98,7 +82,7 @@ class Lease(
         renew_time: datetime | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> Lease:
         """Create one Kubernetes Lease.
 
         Parameters
@@ -186,7 +170,7 @@ class Lease(
         renew_time: datetime | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> Lease:
         """Replace one Kubernetes Lease with a resource-version guard.
 
         Parameters
@@ -284,7 +268,7 @@ class Lease(
         renew_time: datetime | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> Lease:
         """Create or patch one Kubernetes Lease.
 
         Parameters
@@ -340,14 +324,12 @@ class Lease(
             labels=labels,
             annotations=annotations,
         )
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await LEASE_RESOURCE.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
 
     @property
@@ -397,3 +379,18 @@ class Lease(
         """
         spec = self._obj.spec
         return spec.renew_time if spec is not None else None
+
+
+LEASE_RESOURCE: BuiltinResource[kube_client.V1Lease, Lease] = BuiltinResource(
+    scope="namespaced",
+    api="coordination",
+    kind="Lease",
+    slug="lease",
+    expected=kube_client.V1Lease,
+    list_type=kube_client.V1LeaseList,
+    wrapper=Lease.from_payload,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
+    can_watch=True,
+)

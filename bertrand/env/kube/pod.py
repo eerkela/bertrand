@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Self
+from typing import TYPE_CHECKING, Any
 
 import kubernetes
 from kubernetes.stream import stream as kubernetes_stream
 
 from bertrand.env.git import Deadline, until
 
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     import builtins
@@ -90,10 +90,7 @@ def _container_status_diagnostics(
 
 
 @dataclass(frozen=True)
-class Pod(
-    BuiltinResourceObject[kubernetes.client.V1Pod],
-    NamespacedKubeMetadata[kubernetes.client.V1Pod],
-):
+class Pod(KubeObject[kubernetes.client.V1Pod]):
     """General-purpose wrapper around one Kubernetes Pod object.
 
     Parameters
@@ -103,18 +100,6 @@ class Pod(
     """
 
     _obj: kubernetes.client.V1Pod
-
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1Pod]] = BuiltinResource(
-        scope="namespaced",
-        api="core",
-        kind="Pod",
-        slug="pod",
-        expected=kubernetes.client.V1Pod,
-        list_type=kubernetes.client.V1PodList,
-        can_create=True,
-        can_delete=True,
-        can_watch=True,
-    )
 
     @staticmethod
     def _manifest(
@@ -168,7 +153,7 @@ class Pod(
         pod_template: PodTemplateSpec,
         deadline: Deadline,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> Pod:
         """Create one Kubernetes Pod from intent-level fields.
 
         Parameters
@@ -210,17 +195,15 @@ class Pod(
             pod_template=pod_template,
             annotations=annotations,
         )
-        return cls(
-            _obj=await cls.resource.create(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-                malformed_message=(
-                    f"malformed Kubernetes Pod payload while creating {name!r}"
-                ),
-            )
+        return await POD_RESOURCE.create(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
+            malformed_message=(
+                f"malformed Kubernetes Pod payload while creating {name!r}"
+            ),
         )
 
     @property
@@ -627,7 +610,7 @@ class Pod(
             context=f"failed to attach to pod {namespace}/{name} container {container}",
         )
 
-    async def wait_terminal(self, kube: Kube, *, deadline: Deadline) -> Self:
+    async def wait_terminal(self, kube: Kube, *, deadline: Deadline) -> Pod:
         """Wait until this pod reaches a terminal phase.
 
         Parameters
@@ -649,8 +632,8 @@ class Pod(
         """
         namespace, name = self._require_namespace_name("wait for pod terminal phase")
 
-        async def terminal(attempt_deadline: Deadline) -> Self:
-            live = await self.refresh(kube, deadline=attempt_deadline)
+        async def terminal(attempt_deadline: Deadline) -> Pod:
+            live = await POD_RESOURCE.refresh(kube, self, deadline=attempt_deadline)
             if live is None:
                 msg = (
                     f"pod {namespace}/{name} was deleted before reaching a "
@@ -707,3 +690,17 @@ class Pod(
             deadline=deadline,
             context=f"failed to evict pod {namespace}/{name}",
         )
+
+
+POD_RESOURCE: BuiltinResource[kubernetes.client.V1Pod, Pod] = BuiltinResource(
+    scope="namespaced",
+    api="core",
+    kind="Pod",
+    slug="pod",
+    expected=kubernetes.client.V1Pod,
+    list_type=kubernetes.client.V1PodList,
+    wrapper=Pod.from_payload,
+    can_create=True,
+    can_delete=True,
+    can_watch=True,
+)

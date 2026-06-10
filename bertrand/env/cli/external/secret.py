@@ -22,7 +22,7 @@ from bertrand.env.kube.capability.base import (
     list_capability_secrets,
 )
 from bertrand.env.kube.node_identity import ensure_local_bertrand_node
-from bertrand.env.kube.secret import Secret
+from bertrand.env.kube.secret import SECRET_RESOURCE, Secret
 
 if TYPE_CHECKING:
     from bertrand.env.config.core import KubeName
@@ -248,7 +248,7 @@ async def _add_capability(
 async def _remove_capability(
     kube: Kube, ref: CapabilityRef, *, deadline: Deadline
 ) -> None:
-    secret = await Secret.get(
+    secret = await SECRET_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=ref.name,
@@ -258,7 +258,7 @@ async def _remove_capability(
         print(f"{ref.kind} {ref.capability_id}: not found")
         return
     capability_ref_from_secret(secret, expected=ref)
-    await secret.delete(kube, deadline=deadline)
+    await SECRET_RESOURCE.delete(kube, secret, deadline=deadline)
     print(f"{ref.kind} {ref.capability_id}: deleted")
 
 

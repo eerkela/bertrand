@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
 from bertrand.env.git import Deadline, until
 
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
-from .pod import Pod
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
+from .pod import POD_RESOURCE, Pod
 
 if TYPE_CHECKING:
     import builtins
@@ -137,10 +137,7 @@ def _job_spec_manifest(
 
 
 @dataclass(frozen=True)
-class Job(
-    BuiltinResourceObject[kubernetes.client.V1Job],
-    NamespacedKubeMetadata[kubernetes.client.V1Job],
-):
+class Job(KubeObject[kubernetes.client.V1Job]):
     """General-purpose wrapper around one Kubernetes Job object.
 
     Parameters
@@ -156,18 +153,6 @@ class Job(
     """
 
     _obj: kubernetes.client.V1Job
-
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1Job]] = BuiltinResource(
-        scope="namespaced",
-        api="batch",
-        kind="Job",
-        slug="job",
-        expected=kubernetes.client.V1Job,
-        list_type=kubernetes.client.V1JobList,
-        can_create=True,
-        can_delete=True,
-        can_watch=True,
-    )
 
     @staticmethod
     def _manifest(
@@ -222,7 +207,7 @@ class Job(
         parallelism: int | None = None,
         completions: int | None = None,
         completion_mode: JobCompletionMode | None = None,
-    ) -> Self:
+    ) -> Job:
         """Create one Kubernetes Job from intent-level fields.
 
         Parameters
@@ -293,17 +278,15 @@ class Job(
             completions=completions,
             completion_mode=completion_mode,
         )
-        return cls(
-            _obj=await cls.resource.create(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-                malformed_message=(
-                    f"malformed Kubernetes Job payload while creating {name!r}"
-                ),
-            )
+        return await JOB_RESOURCE.create(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
+            malformed_message=(
+                f"malformed Kubernetes Job payload while creating {name!r}"
+            ),
         )
 
     @property
@@ -438,7 +421,7 @@ class Job(
             Pods selected by Kubernetes' standard Job ownership labels.
         """
         namespace, name = self._require_namespace_name("list Job pods")
-        pods = await Pod.list(
+        pods = await POD_RESOURCE.list(
             kube,
             namespaces=(namespace,),
             labels={"batch.kubernetes.io/job-name": name},
@@ -446,14 +429,14 @@ class Job(
         )
         if pods:
             return pods
-        return await Pod.list(
+        return await POD_RESOURCE.list(
             kube,
             namespaces=(namespace,),
             labels={"job-name": name},
             deadline=deadline,
         )
 
-    async def wait_complete(self, kube: Kube, *, deadline: Deadline) -> Self:
+    async def wait_complete(self, kube: Kube, *, deadline: Deadline) -> Job:
         """Wait until this Job succeeds or fails.
 
         Parameters
@@ -474,9 +457,9 @@ class Job(
             If the Job does not complete before `timeout`.
         """
         namespace, name = self._require_namespace_name("wait for Job completion")
-        current: Self = self
+        current: Job = self
 
-        async def complete(attempt_deadline: Deadline) -> Self:
+        async def complete(attempt_deadline: Deadline) -> Job:
             nonlocal current
             if current.succeeded > 0:
                 return current
@@ -484,7 +467,11 @@ class Job(
             if failed_condition is not None:
                 msg = f"Job {namespace}/{name} failed: {failed_condition}"
                 raise OSError(msg)
-            refreshed = await current.refresh(kube, deadline=attempt_deadline)
+            refreshed = await JOB_RESOURCE.refresh(
+                kube,
+                current,
+                deadline=attempt_deadline,
+            )
             if refreshed is None:
                 msg = f"Job {namespace}/{name} disappeared while waiting for completion"
                 raise OSError(msg)
@@ -604,13 +591,14 @@ class Job(
         if deadline.remaining <= 0:
             return
         try:
-            await self.delete(
+            await JOB_RESOURCE.delete(
                 kube,
+                self,
                 deadline=deadline,
                 propagation_policy="Foreground",
             )
             if wait:
-                await self.wait_deleted(kube, deadline=deadline)
+                await JOB_RESOURCE.wait_deleted(kube, self, deadline=deadline)
         except (OSError, TimeoutError):
             return
 
@@ -626,7 +614,7 @@ class Job(
         diagnostic_deadline: Deadline,
         cleanup_deadline: Deadline,
         include_log_headers: bool = False,
-    ) -> Self:
+    ) -> Job:
         """Wait for this Job and enrich failures with logs and cleanup.
 
         Parameters
@@ -774,3 +762,17 @@ class Job(
             failure_label=log_failure_label,
             include_headers=include_log_headers,
         )
+
+
+JOB_RESOURCE: BuiltinResource[kubernetes.client.V1Job, Job] = BuiltinResource(
+    scope="namespaced",
+    api="batch",
+    kind="Job",
+    slug="job",
+    expected=kubernetes.client.V1Job,
+    list_type=kubernetes.client.V1JobList,
+    wrapper=Job.from_payload,
+    can_create=True,
+    can_delete=True,
+    can_watch=True,
+)

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import Deadline
 from bertrand.env.kube.ceph.api import PreparedOSD, ceph_osds, kube_quantity
 from bertrand.env.kube.ceph.bootstrap import (
     ROOK_CEPH_CLUSTER_RESOURCE,
@@ -20,10 +19,11 @@ from bertrand.env.kube.ceph.capacity import (
     CephStorageOSD,
     storage_osd_resource_names,
 )
-from bertrand.env.kube.pod import Pod
-from bertrand.env.kube.volume import PersistentVolumeClaim
+from bertrand.env.kube.pod import POD_RESOURCE
+from bertrand.env.kube.volume import PERSISTENT_VOLUME_CLAIM_RESOURCE
 
 if TYPE_CHECKING:
+    from bertrand.env.git import Deadline
     from bertrand.env.kube.api.client import Kube
 
 STORAGE_OSD_WAIT_POLL_SECONDS = 2.0
@@ -159,7 +159,7 @@ async def resize_osd_claim(
     deadline: Deadline,
 ) -> None:
     """Resize Rook PVCs that back one managed OSD record."""
-    claims = await PersistentVolumeClaim.list(
+    claims = await PERSISTENT_VOLUME_CLAIM_RESOURCE.list(
         kube,
         deadline=deadline,
         namespaces=(ROOK_NAMESPACE,),
@@ -201,14 +201,14 @@ async def delete_osd_claims(
     kube: Kube, *, record: CephStorageOSD, deadline: Deadline
 ) -> None:
     """Delete Rook PVCs that back one managed OSD record."""
-    claims = await PersistentVolumeClaim.list(
+    claims = await PERSISTENT_VOLUME_CLAIM_RESOURCE.list(
         kube,
         deadline=deadline,
         namespaces=(ROOK_NAMESPACE,),
         labels={STORAGE_OSD_NAME_LABEL: record.name},
     )
     for claim in claims:
-        await claim.delete(kube, deadline=deadline)
+        await PERSISTENT_VOLUME_CLAIM_RESOURCE.delete(kube, claim, deadline=deadline)
 
 
 async def wait_osd_claims_gone(
@@ -226,7 +226,7 @@ async def wait_osd_claims_gone(
     """
     msg = f"timed out waiting for OSD PVCs for {record.name!r} to delete"
     while deadline.remaining > 0:
-        claims = await PersistentVolumeClaim.list(
+        claims = await PERSISTENT_VOLUME_CLAIM_RESOURCE.list(
             kube,
             deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),
@@ -254,7 +254,7 @@ async def wait_osd_workloads_gone(
     msg = f"timed out waiting for Rook workloads for OSD {record.name!r} to stop"
     claim_names = {
         claim.name
-        for claim in await PersistentVolumeClaim.list(
+        for claim in await PERSISTENT_VOLUME_CLAIM_RESOURCE.list(
             kube,
             deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),
@@ -262,7 +262,7 @@ async def wait_osd_workloads_gone(
         )
     }
     while deadline.remaining > 0:
-        pods = await Pod.list(
+        pods = await POD_RESOURCE.list(
             kube,
             deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),
@@ -311,7 +311,7 @@ async def observe_rook_osd(
     if deadline.remaining <= 0:
         return observed_id, False
     while deadline.remaining > 0:
-        claims = await PersistentVolumeClaim.list(
+        claims = await PERSISTENT_VOLUME_CLAIM_RESOURCE.list(
             kube,
             deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),
@@ -324,7 +324,7 @@ async def observe_rook_osd(
             )
             if osd_id is not None:
                 observed_id = osd_id
-        pods = await Pod.list(
+        pods = await POD_RESOURCE.list(
             kube,
             deadline=deadline,
             namespaces=(ROOK_NAMESPACE,),

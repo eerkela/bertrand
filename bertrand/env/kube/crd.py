@@ -3,43 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import KubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
 
 
 @dataclass(frozen=True)
 class CustomResourceDefinition(
-    BuiltinResourceObject[kube_client.V1CustomResourceDefinition],
-    KubeMetadata[kube_client.V1CustomResourceDefinition],
+    KubeObject[kube_client.V1CustomResourceDefinition],
 ):
     """General-purpose wrapper around one Kubernetes CRD object."""
 
     _obj: kube_client.V1CustomResourceDefinition
-
-    resource: ClassVar[BuiltinResource[kube_client.V1CustomResourceDefinition]] = (
-        BuiltinResource(
-            scope="cluster",
-            api="apiextensions",
-            kind="CustomResourceDefinition",
-            slug="custom_resource_definition",
-            expected=kube_client.V1CustomResourceDefinition,
-            list_type=kube_client.V1CustomResourceDefinitionList,
-            can_create=True,
-            can_patch=True,
-            can_delete=True,
-        )
-    )
 
     @staticmethod
     def _manifest(
@@ -109,7 +94,7 @@ class CustomResourceDefinition(
         annotations: Mapping[str, str] | None = None,
         scope: str = "Namespaced",
         short_names: Collection[str] = (),
-    ) -> Self:
+    ) -> CustomResourceDefinition:
         """Create or patch one Kubernetes CustomResourceDefinition.
 
         Parameters
@@ -175,13 +160,11 @@ class CustomResourceDefinition(
             scope=scope,
             short_names=short_names,
         )
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                name=name,
-                manifest=body,
-                deadline=deadline,
-            )
+        return await CUSTOM_RESOURCE_DEFINITION_RESOURCE.upsert(
+            kube,
+            name=name,
+            manifest=body,
+            deadline=deadline,
         )
 
     @property
@@ -199,7 +182,9 @@ class CustomResourceDefinition(
                 return True
         return False
 
-    async def wait_established(self, kube: Kube, *, deadline: Deadline) -> Self:
+    async def wait_established(
+        self, kube: Kube, *, deadline: Deadline
+    ) -> CustomResourceDefinition:
         """Wait until this CRD reports `Established=True`.
 
         Parameters
@@ -215,8 +200,9 @@ class CustomResourceDefinition(
             Refreshed CRD wrapper that reports `Established=True`.
         """
         name = self.name
-        return await self._wait_until(
+        return await CUSTOM_RESOURCE_DEFINITION_RESOURCE.wait_until(
             kube,
+            self,
             deadline=deadline,
             predicate=lambda live: live.is_established,
             pending_message=f"CRD {name!r} is not established yet",
@@ -224,3 +210,20 @@ class CustomResourceDefinition(
             timeout_message=f"timed out waiting for CRD {name!r} establishment",
             check_current=True,
         )
+
+
+CUSTOM_RESOURCE_DEFINITION_RESOURCE: BuiltinResource[
+    kube_client.V1CustomResourceDefinition,
+    CustomResourceDefinition,
+] = BuiltinResource(
+    scope="cluster",
+    api="apiextensions",
+    kind="CustomResourceDefinition",
+    slug="custom_resource_definition",
+    expected=kube_client.V1CustomResourceDefinition,
+    list_type=kube_client.V1CustomResourceDefinitionList,
+    wrapper=CustomResourceDefinition.from_payload,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
+)

@@ -24,7 +24,7 @@ from bertrand.env.config.bertrand import Bertrand, BertrandModel
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.cronjob import CronJob
 from bertrand.env.kube.deployment import Deployment
-from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.pod import POD_RESOURCE, Pod
 from bertrand.env.kube.workload.project import (
     create_project_workload_job_run,
     ensure_project_workload_controller,
@@ -479,7 +479,7 @@ async def _run_deployment_foreground(
     printed: dict[str, str] = {}
 
     async def source(deadline: Deadline) -> Sequence[Pod]:
-        return await Pod.list(
+        return await POD_RESOURCE.list(
             kube,
             namespaces=(BERTRAND_NAMESPACE,),
             labels=deployment.selector,
@@ -582,7 +582,7 @@ async def _deployment_attach_pod(
     *,
     primary_container: str,
 ) -> Pod | None:
-    pods = await Pod.list(
+    pods = await POD_RESOURCE.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=deployment.selector,

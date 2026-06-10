@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING
 
 import kubernetes
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
     from .api.spec import DeploymentStrategyManifest, PodTemplateSpec
@@ -22,8 +22,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Deployment(
-    BuiltinResourceObject[kubernetes.client.V1Deployment],
-    NamespacedKubeMetadata[kubernetes.client.V1Deployment],
+    KubeObject[kubernetes.client.V1Deployment],
 ):
     """General-purpose wrapper around one Kubernetes Deployment object.
 
@@ -39,21 +38,6 @@ class Deployment(
     """
 
     _obj: kubernetes.client.V1Deployment
-
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1Deployment]] = (
-        BuiltinResource(
-            scope="namespaced",
-            api="apps",
-            kind="Deployment",
-            slug="deployment",
-            expected=kubernetes.client.V1Deployment,
-            list_type=kubernetes.client.V1DeploymentList,
-            can_create=True,
-            can_patch=True,
-            can_delete=True,
-            can_watch=True,
-        )
-    )
 
     @staticmethod
     def _manifest(
@@ -120,7 +104,7 @@ class Deployment(
         progress_deadline_seconds: int | None = None,
         revision_history_limit: int | None = None,
         paused: bool | None = None,
-    ) -> Self:
+    ) -> Deployment:
         """Create or patch one Kubernetes Deployment from intent-level fields.
 
         Parameters
@@ -198,14 +182,12 @@ class Deployment(
             paused=paused,
         )
 
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await DEPLOYMENT_RESOURCE.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
 
     @property
@@ -417,7 +399,7 @@ class Deployment(
         *,
         deadline: Deadline,
         minimum: int = 1,
-    ) -> Self:
+    ) -> Deployment:
         """Wait until this Deployment has at least `minimum` available replicas.
 
         Parameters
@@ -445,8 +427,9 @@ class Deployment(
         namespace, name = self._require_namespace_name(
             "wait for Deployment availability"
         )
-        return await self._wait_until(
+        return await DEPLOYMENT_RESOURCE.wait_until(
             kube,
+            self,
             deadline=deadline,
             predicate=lambda live: live.available_replicas >= minimum,
             pending_message=f"Deployment {namespace}/{name} is not available yet",
@@ -465,7 +448,7 @@ class Deployment(
         *,
         deadline: Deadline,
         minimum: int = 1,
-    ) -> Self:
+    ) -> Deployment:
         """Wait until this Deployment rolls out at least `minimum` replicas.
 
         Parameters
@@ -493,8 +476,9 @@ class Deployment(
             raise ValueError(msg)
         namespace, name = self._require_namespace_name("wait for Deployment rollout")
         target_generation = self.generation
-        return await self._wait_until(
+        return await DEPLOYMENT_RESOURCE.wait_until(
             kube,
+            self,
             deadline=deadline,
             predicate=lambda live: (
                 (
@@ -515,7 +499,9 @@ class Deployment(
             ),
         )
 
-    async def scale(self, kube: Kube, *, replicas: int, deadline: Deadline) -> Self:
+    async def scale(
+        self, kube: Kube, *, replicas: int, deadline: Deadline
+    ) -> Deployment:
         """Patch this Deployment's desired replica count.
 
         Parameters
@@ -556,7 +542,7 @@ class Deployment(
         if payload is None:
             msg = f"Deployment {namespace}/{name} disappeared while scaling"
             raise OSError(msg)
-        live = await type(self).get(
+        live = await DEPLOYMENT_RESOURCE.get(
             kube,
             namespace=namespace,
             deadline=deadline,
@@ -566,3 +552,21 @@ class Deployment(
             msg = f"Deployment {namespace}/{name} disappeared after scaling"
             raise OSError(msg)
         return live
+
+
+DEPLOYMENT_RESOURCE: BuiltinResource[
+    kubernetes.client.V1Deployment,
+    Deployment,
+] = BuiltinResource(
+    scope="namespaced",
+    api="apps",
+    kind="Deployment",
+    slug="deployment",
+    expected=kubernetes.client.V1Deployment,
+    list_type=kubernetes.client.V1DeploymentList,
+    wrapper=Deployment.from_payload,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
+    can_watch=True,
+)

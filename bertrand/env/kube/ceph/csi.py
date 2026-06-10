@@ -37,7 +37,7 @@ from bertrand.env.kube.ceph.capacity import (
 )
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
-from bertrand.env.kube.volume import PersistentVolumeClaim
+from bertrand.env.kube.volume import PERSISTENT_VOLUME_CLAIM_RESOURCE
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
@@ -488,7 +488,7 @@ class BertrandOSDCSIDriver(
         requested = _capacity_request(request.capacity_range)
 
         async def invoke(kube: Kube) -> _csi_pb2.CreateVolumeResponse:
-            claim = await PersistentVolumeClaim.get(
+            claim = await PERSISTENT_VOLUME_CLAIM_RESOURCE.get(
                 kube,
                 namespace=pvc_namespace,
                 name=pvc_name,

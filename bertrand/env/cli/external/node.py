@@ -21,7 +21,7 @@ from bertrand.env.kube.capability.device import (
 )
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
 from bertrand.env.kube.ceph.capacity import read_storage_state
-from bertrand.env.kube.node import Node
+from bertrand.env.kube.node import NODE_RESOURCE, Node
 from bertrand.env.kube.node_identity import (
     BertrandNodeRecord,
     ensure_local_bertrand_node,
@@ -310,7 +310,7 @@ async def _node_status_payload(*, deadline: Deadline) -> dict[str, object]:
                     host_id=host_id,
                     deadline=deadline,
                 )
-                node = await Node.get(
+                node = await NODE_RESOURCE.get(
                     kube,
                     name=bertrand_node.node_name,
                     deadline=deadline,

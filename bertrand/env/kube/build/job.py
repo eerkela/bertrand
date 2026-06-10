@@ -40,7 +40,7 @@ from bertrand.env.kube.capability.device import (
     select_device_claims,
 )
 from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
-from bertrand.env.kube.configmap import ConfigMap
+from bertrand.env.kube.configmap import CONFIG_MAP_RESOURCE, ConfigMap
 from bertrand.env.kube.dra import RESOURCE_CLAIM_TEMPLATE_RESOURCE
 from bertrand.env.kube.job import Job
 
@@ -619,13 +619,13 @@ async def _delete_config_map(
     if deadline is None:
         return
     try:
-        config = await ConfigMap.get(
+        config = await CONFIG_MAP_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=name,
             deadline=deadline,
         )
         if config is not None:
-            await config.delete(kube, deadline=deadline)
+            await CONFIG_MAP_RESOURCE.delete(kube, config, deadline=deadline)
     except (OSError, TimeoutError):
         return

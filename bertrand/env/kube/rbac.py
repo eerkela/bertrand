@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 from kubernetes import client as kube_client
 
-from .api.resource import BuiltinResource
+from .api.resource import BuiltinResource, raw_payload
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -17,48 +17,58 @@ type RoleBindingRoleKind = Literal["Role", "ClusterRole"]
 type _RoleKind = Literal["ClusterRole", "Role"]
 type _BindingKind = Literal["ClusterRoleBinding", "RoleBinding"]
 
-CLUSTER_ROLE_RESOURCE: BuiltinResource[kube_client.V1ClusterRole] = BuiltinResource(
+CLUSTER_ROLE_RESOURCE: BuiltinResource[
+    kube_client.V1ClusterRole, kube_client.V1ClusterRole
+] = BuiltinResource(
     scope="cluster",
     api="rbac",
     kind="ClusterRole",
     slug="cluster_role",
     expected=kube_client.V1ClusterRole,
     list_type=kube_client.V1ClusterRoleList,
+    wrapper=raw_payload,
     can_create=True,
     can_patch=True,
     can_delete=True,
 )
-CLUSTER_ROLE_BINDING_RESOURCE: BuiltinResource[kube_client.V1ClusterRoleBinding] = (
+CLUSTER_ROLE_BINDING_RESOURCE: BuiltinResource[
+    kube_client.V1ClusterRoleBinding, kube_client.V1ClusterRoleBinding
+] = BuiltinResource(
+    scope="cluster",
+    api="rbac",
+    kind="ClusterRoleBinding",
+    slug="cluster_role_binding",
+    expected=kube_client.V1ClusterRoleBinding,
+    list_type=kube_client.V1ClusterRoleBindingList,
+    wrapper=raw_payload,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
+)
+ROLE_RESOURCE: BuiltinResource[kube_client.V1Role, kube_client.V1Role] = (
     BuiltinResource(
-        scope="cluster",
+        scope="namespaced",
         api="rbac",
-        kind="ClusterRoleBinding",
-        slug="cluster_role_binding",
-        expected=kube_client.V1ClusterRoleBinding,
-        list_type=kube_client.V1ClusterRoleBindingList,
+        kind="Role",
+        slug="role",
+        expected=kube_client.V1Role,
+        list_type=kube_client.V1RoleList,
+        wrapper=raw_payload,
         can_create=True,
         can_patch=True,
         can_delete=True,
     )
 )
-ROLE_RESOURCE: BuiltinResource[kube_client.V1Role] = BuiltinResource(
-    scope="namespaced",
-    api="rbac",
-    kind="Role",
-    slug="role",
-    expected=kube_client.V1Role,
-    list_type=kube_client.V1RoleList,
-    can_create=True,
-    can_patch=True,
-    can_delete=True,
-)
-ROLE_BINDING_RESOURCE: BuiltinResource[kube_client.V1RoleBinding] = BuiltinResource(
+ROLE_BINDING_RESOURCE: BuiltinResource[
+    kube_client.V1RoleBinding, kube_client.V1RoleBinding
+] = BuiltinResource(
     scope="namespaced",
     api="rbac",
     kind="RoleBinding",
     slug="role_binding",
     expected=kube_client.V1RoleBinding,
     list_type=kube_client.V1RoleBindingList,
+    wrapper=raw_payload,
     can_create=True,
     can_patch=True,
     can_delete=True,

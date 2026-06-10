@@ -10,11 +10,14 @@ from typing import TYPE_CHECKING
 from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline, until
 from bertrand.env.kube.api.client import kubectl
 from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
-from bertrand.env.kube.crd import CustomResourceDefinition
+from bertrand.env.kube.crd import (
+    CUSTOM_RESOURCE_DEFINITION_RESOURCE,
+    CustomResourceDefinition,
+)
 from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
-from bertrand.env.kube.deployment import Deployment
-from bertrand.env.kube.namespace import Namespace
-from bertrand.env.kube.volume import StorageClass
+from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE, Deployment
+from bertrand.env.kube.namespace import NAMESPACE_RESOURCE, Namespace
+from bertrand.env.kube.volume import STORAGE_CLASS_RESOURCE
 
 if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
@@ -139,7 +142,7 @@ async def rook_ceph_ready(kube: Kube, *, deadline: Deadline) -> bool:
 
 
 async def _ensure_namespace_owned(kube: Kube, name: str, *, deadline: Deadline) -> None:
-    current = await Namespace.get(kube, name=name, deadline=deadline)
+    current = await NAMESPACE_RESOURCE.get(kube, name=name, deadline=deadline)
     if current is not None:
         labels = current.labels
         if labels.get(ROOK_MANAGED_LABEL) != ROOK_MANAGED_VALUE:
@@ -184,7 +187,7 @@ async def _wait_crd_established(
     deadline: Deadline,
 ) -> CustomResourceDefinition:
     async def established(attempt_deadline: Deadline) -> CustomResourceDefinition:
-        crd = await CustomResourceDefinition.get(
+        crd = await CUSTOM_RESOURCE_DEFINITION_RESOURCE.get(
             kube,
             name=name,
             deadline=attempt_deadline,
@@ -216,7 +219,7 @@ async def _wait_deployment(
     deadline: Deadline,
 ) -> Deployment:
     async def available(attempt_deadline: Deadline) -> Deployment:
-        deployment = await Deployment.get(
+        deployment = await DEPLOYMENT_RESOURCE.get(
             kube,
             namespace=namespace,
             name=name,
@@ -388,17 +391,17 @@ async def _wait_ceph_cluster_ready(kube: Kube, *, deadline: Deadline) -> None:
 async def _wait_storage_classes(kube: Kube, *, deadline: Deadline) -> None:
     async def ready(attempt_deadline: Deadline) -> None:
         cephfs, fallback, osd_csi = await asyncio.gather(
-            StorageClass.get(
+            STORAGE_CLASS_RESOURCE.get(
                 kube,
                 name=ROOK_CEPHFS_STORAGE_CLASS,
                 deadline=attempt_deadline,
             ),
-            StorageClass.get(
+            STORAGE_CLASS_RESOURCE.get(
                 kube,
                 name=ROOK_CEPHFS_FALLBACK_STORAGE_CLASS,
                 deadline=attempt_deadline,
             ),
-            StorageClass.get(
+            STORAGE_CLASS_RESOURCE.get(
                 kube,
                 name=ROOK_OSD_STORAGE_CLASS,
                 deadline=attempt_deadline,

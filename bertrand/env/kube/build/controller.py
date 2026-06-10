@@ -50,7 +50,7 @@ from bertrand.env.kube.ceph.capacity import (
 )
 from bertrand.env.kube.ceph.snapshot import cleanup_orphaned_build_sources
 from bertrand.env.kube.control import MaintenanceClock
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE, Deployment
 from bertrand.env.kube.dra import (
     DRA_GROUP,
     RESOURCE_CLAIM_PLURAL,
@@ -402,7 +402,7 @@ async def _maybe_registry_storage_gc(
             )
             return
 
-        deployment = await Deployment.get(
+        deployment = await DEPLOYMENT_RESOURCE.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=IMAGE_REPOSITORY_NAME,

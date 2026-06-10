@@ -42,13 +42,17 @@ from bertrand.env.kube.build.refs import (
     rewrite_registry_ref,
     validate_tag,
 )
-from bertrand.env.kube.configmap import ConfigMap
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.configmap import CONFIG_MAP_RESOURCE, ConfigMap
+from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE, Deployment
 from bertrand.env.kube.job import Job
 from bertrand.env.kube.network.profile import NetworkProfile
-from bertrand.env.kube.node import Node
-from bertrand.env.kube.service import Service, ServicePortView
-from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
+from bertrand.env.kube.node import NODE_RESOURCE, Node
+from bertrand.env.kube.service import SERVICE_RESOURCE, Service, ServicePortView
+from bertrand.env.kube.volume import (
+    PERSISTENT_VOLUME_CLAIM_RESOURCE,
+    PersistentVolumeClaim,
+    StorageClass,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -639,7 +643,7 @@ async def image_repository_maintenance_status(
     ImageRepositoryMaintenanceStatus
         Current registry maintenance status. Missing status means inactive.
     """
-    status = await ConfigMap.get(
+    status = await CONFIG_MAP_RESOURCE.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
@@ -845,7 +849,7 @@ async def assert_image_repository_node_trust(
     OSError
         If any cluster node is missing the registry-ready label.
     """
-    nodes = await Node.list(kube=kube, deadline=deadline)
+    nodes = await NODE_RESOURCE.list(kube=kube, deadline=deadline)
     ready = {
         node.name
         for node in nodes
@@ -884,7 +888,7 @@ async def image_repository_status(
     """
     try:
         service_task = asyncio.create_task(
-            Service.get(
+            SERVICE_RESOURCE.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 deadline=deadline,
@@ -892,7 +896,7 @@ async def image_repository_status(
             )
         )
         deployment_task = asyncio.create_task(
-            Deployment.get(
+            DEPLOYMENT_RESOURCE.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 deadline=deadline,
@@ -900,7 +904,7 @@ async def image_repository_status(
             )
         )
         pvc_task = asyncio.create_task(
-            PersistentVolumeClaim.get(
+            PERSISTENT_VOLUME_CLAIM_RESOURCE.get(
                 kube=kube,
                 namespace=BERTRAND_NAMESPACE,
                 deadline=deadline,
@@ -908,7 +912,7 @@ async def image_repository_status(
             )
         )
         buildkit_config_task = asyncio.create_task(
-            ConfigMap.get(
+            CONFIG_MAP_RESOURCE.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 deadline=deadline,
@@ -916,7 +920,7 @@ async def image_repository_status(
             )
         )
         registry_config_task = asyncio.create_task(
-            ConfigMap.get(
+            CONFIG_MAP_RESOURCE.get(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 deadline=deadline,
@@ -930,7 +934,7 @@ async def image_repository_status(
             )
         )
         nodes_task = asyncio.create_task(
-            Node.list(kube=kube, deadline=deadline),
+            NODE_RESOURCE.list(kube=kube, deadline=deadline),
         )
         desired_buildkit_config_task = asyncio.create_task(
             current_buildkit_config_data(

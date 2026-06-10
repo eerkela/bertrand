@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Literal
 
 import kubernetes
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
 
@@ -48,8 +48,7 @@ class ServicePortView:
 
 @dataclass(frozen=True)
 class Service(
-    BuiltinResourceObject[kubernetes.client.V1Service],
-    NamespacedKubeMetadata[kubernetes.client.V1Service],
+    KubeObject[kubernetes.client.V1Service],
 ):
     """General-purpose wrapper around one Kubernetes Service object.
 
@@ -65,18 +64,6 @@ class Service(
     """
 
     _obj: kubernetes.client.V1Service
-
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1Service]] = BuiltinResource(
-        scope="namespaced",
-        api="core",
-        kind="Service",
-        slug="service",
-        expected=kubernetes.client.V1Service,
-        list_type=kubernetes.client.V1ServiceList,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-    )
 
     @staticmethod
     def _manifest(
@@ -118,7 +105,7 @@ class Service(
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
         service_type: ServiceType = "ClusterIP",
-    ) -> Self:
+    ) -> Service:
         """Create or patch one Kubernetes Service from intent-level fields.
 
         Parameters
@@ -168,14 +155,12 @@ class Service(
             annotations=annotations,
             service_type=service_type,
         )
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await SERVICE_RESOURCE.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
 
     @property
@@ -294,6 +279,22 @@ class Service(
             and self.selects(selector)
             and all(self.exposes(port) for port in ports)
         )
+
+
+SERVICE_RESOURCE: BuiltinResource[kubernetes.client.V1Service, Service] = (
+    BuiltinResource(
+        scope="namespaced",
+        api="core",
+        kind="Service",
+        slug="service",
+        expected=kubernetes.client.V1Service,
+        list_type=kubernetes.client.V1ServiceList,
+        wrapper=Service.from_payload,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
+    )
+)
 
 
 def _service_port_manifest(port: ServicePortView) -> dict[str, object]:

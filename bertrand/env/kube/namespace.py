@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import KubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
 
@@ -21,10 +21,7 @@ NAMESPACE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
-class Namespace(
-    BuiltinResourceObject[kube_client.V1Namespace],
-    KubeMetadata[kube_client.V1Namespace],
-):
+class Namespace(KubeObject[kube_client.V1Namespace]):
     """General-purpose wrapper around one Kubernetes Namespace object.
 
     Parameters
@@ -34,18 +31,6 @@ class Namespace(
     """
 
     _obj: kube_client.V1Namespace
-
-    resource: ClassVar[BuiltinResource[kube_client.V1Namespace]] = BuiltinResource(
-        scope="cluster",
-        api="core",
-        kind="Namespace",
-        slug="namespace",
-        expected=kube_client.V1Namespace,
-        list_type=kube_client.V1NamespaceList,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-    )
 
     @staticmethod
     def _manifest(
@@ -73,7 +58,7 @@ class Namespace(
         deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> Namespace:
         """Create or patch one Kubernetes Namespace.
 
         Parameters
@@ -105,13 +90,11 @@ class Namespace(
             msg = "Namespace upsert requires non-empty name"
             raise OSError(msg)
         manifest = cls._manifest(name=name, labels=labels, annotations=annotations)
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await NAMESPACE_RESOURCE.upsert(
+            kube,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
 
     @property
@@ -125,3 +108,19 @@ class Namespace(
         """
         status = self._obj.status
         return (status.phase or "").strip() if status is not None else ""
+
+
+NAMESPACE_RESOURCE: BuiltinResource[kube_client.V1Namespace, Namespace] = (
+    BuiltinResource(
+        scope="cluster",
+        api="core",
+        kind="Namespace",
+        slug="namespace",
+        expected=kube_client.V1Namespace,
+        list_type=kube_client.V1NamespaceList,
+        wrapper=Namespace.from_payload,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
+    )
+)

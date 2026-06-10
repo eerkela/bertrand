@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Literal
 
 import kubernetes
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 from .job import JobCompletionMode, _job_spec_manifest, _validate_job_execution
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
     from .api.spec import PodTemplateSpec
@@ -24,10 +24,7 @@ type CronJobConcurrencyPolicy = Literal["Allow", "Forbid", "Replace"]
 
 
 @dataclass(frozen=True)
-class CronJob(
-    BuiltinResourceObject[kubernetes.client.V1CronJob],
-    NamespacedKubeMetadata[kubernetes.client.V1CronJob],
-):
+class CronJob(KubeObject[kubernetes.client.V1CronJob]):
     """General-purpose wrapper around one Kubernetes CronJob object.
 
     Parameters
@@ -42,19 +39,6 @@ class CronJob(
     """
 
     _obj: kubernetes.client.V1CronJob
-
-    resource: ClassVar[BuiltinResource[kubernetes.client.V1CronJob]] = BuiltinResource(
-        scope="namespaced",
-        api="batch",
-        kind="CronJob",
-        slug="cron_job",
-        expected=kubernetes.client.V1CronJob,
-        list_type=kubernetes.client.V1CronJobList,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-        can_watch=True,
-    )
 
     @staticmethod
     def _manifest(
@@ -145,7 +129,7 @@ class CronJob(
         parallelism: int | None = None,
         completions: int | None = None,
         completion_mode: JobCompletionMode | None = None,
-    ) -> Self:
+    ) -> CronJob:
         """Create or patch one Kubernetes CronJob from intent-level fields.
 
         Parameters
@@ -251,14 +235,12 @@ class CronJob(
             failed_jobs_history_limit=failed_jobs_history_limit,
             time_zone=time_zone,
         )
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await CRON_JOB_RESOURCE.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
 
     @property
@@ -309,7 +291,9 @@ class CronJob(
         status = self._obj.status
         return status.last_successful_time if status is not None else None
 
-    async def suspend(self, kube: Kube, *, suspend: bool, deadline: Deadline) -> Self:
+    async def suspend(
+        self, kube: Kube, *, suspend: bool, deadline: Deadline
+    ) -> CronJob:
         """Patch this CronJob's suspend state.
 
         Parameters
@@ -347,3 +331,20 @@ class CronJob(
             msg = f"malformed Kubernetes CronJob payload while patching {name!r}"
             raise OSError(msg)
         return type(self)(_obj=payload)
+
+
+CRON_JOB_RESOURCE: BuiltinResource[kubernetes.client.V1CronJob, CronJob] = (
+    BuiltinResource(
+        scope="namespaced",
+        api="batch",
+        kind="CronJob",
+        slug="cron_job",
+        expected=kubernetes.client.V1CronJob,
+        list_type=kubernetes.client.V1CronJobList,
+        wrapper=CronJob.from_payload,
+        can_create=True,
+        can_patch=True,
+        can_delete=True,
+        can_watch=True,
+    )
+)

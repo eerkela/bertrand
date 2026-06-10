@@ -5,26 +5,23 @@ from __future__ import annotations
 import base64
 import binascii
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from bertrand.env.git import Deadline
-
-from .api.metadata import NamespacedKubeMetadata
-from .api.resource import BuiltinResource, BuiltinResourceObject
+from .api.metadata import KubeObject
+from .api.resource import BuiltinResource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
 
 
 @dataclass(frozen=True)
-class Secret(
-    BuiltinResourceObject[kube_client.V1Secret],
-    NamespacedKubeMetadata[kube_client.V1Secret],
-):
+class Secret(KubeObject[kube_client.V1Secret]):
     """General-purpose wrapper around one Kubernetes Secret object.
 
     Parameters
@@ -34,18 +31,6 @@ class Secret(
     """
 
     _obj: kube_client.V1Secret
-
-    resource: ClassVar[BuiltinResource[kube_client.V1Secret]] = BuiltinResource(
-        scope="namespaced",
-        api="core",
-        kind="Secret",
-        slug="secret",
-        expected=kube_client.V1Secret,
-        list_type=kube_client.V1SecretList,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-    )
 
     @classmethod
     async def upsert(
@@ -58,7 +43,7 @@ class Secret(
         annotations: Mapping[str, str] | None,
         payload: bytes,
         deadline: Deadline,
-    ) -> Self:
+    ) -> Secret:
         """Create or patch one Kubernetes Secret payload.
 
         Parameters
@@ -96,14 +81,12 @@ class Secret(
             "data": {"value": base64.b64encode(payload).decode("ascii")},
         }
 
-        return cls(
-            _obj=await cls.resource.upsert(
-                kube,
-                namespace=namespace,
-                name=name,
-                manifest=manifest,
-                deadline=deadline,
-            )
+        return await SECRET_RESOURCE.upsert(
+            kube,
+            namespace=namespace,
+            name=name,
+            manifest=manifest,
+            deadline=deadline,
         )
 
     @property
@@ -133,3 +116,17 @@ class Secret(
                 "'data.value'"
             )
             raise OSError(msg) from err
+
+
+SECRET_RESOURCE: BuiltinResource[kube_client.V1Secret, Secret] = BuiltinResource(
+    scope="namespaced",
+    api="core",
+    kind="Secret",
+    slug="secret",
+    expected=kube_client.V1Secret,
+    list_type=kube_client.V1SecretList,
+    wrapper=Secret.from_payload,
+    can_create=True,
+    can_patch=True,
+    can_delete=True,
+)

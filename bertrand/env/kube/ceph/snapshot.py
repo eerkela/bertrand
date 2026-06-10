@@ -29,7 +29,11 @@ from bertrand.env.kube.snapshot import (
     volume_snapshot_ready_to_use,
     wait_volume_snapshot_ready,
 )
-from bertrand.env.kube.volume import PersistentVolumeClaim, StorageClass
+from bertrand.env.kube.volume import (
+    PERSISTENT_VOLUME_CLAIM_RESOURCE,
+    PersistentVolumeClaim,
+    StorageClass,
+)
 
 from .volume import (
     CEPHFS_STORAGE_CLASS_PREFERENCES,
@@ -430,7 +434,7 @@ async def cleanup_orphaned_build_sources(
     max_age = timedelta(seconds=max_age_seconds)
     deleted = 0
 
-    pvcs = await PersistentVolumeClaim.list(
+    pvcs = await PERSISTENT_VOLUME_CLAIM_RESOURCE.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels={
@@ -450,7 +454,7 @@ async def cleanup_orphaned_build_sources(
             max_age=max_age,
         ):
             continue
-        await pvc.delete(kube, deadline=deadline)
+        await PERSISTENT_VOLUME_CLAIM_RESOURCE.delete(kube, pvc, deadline=deadline)
         deleted += 1
 
     snapshots = await VOLUME_SNAPSHOT_RESOURCE.list(
@@ -592,8 +596,10 @@ async def _cleanup_build_source(
     deadline = Deadline(REPOSITORY_BUILD_SOURCE_CLEANUP_TIMEOUT_SECONDS)
     if pvc is not None:
         with suppress(OSError, TimeoutError, ValueError):
-            await pvc.delete(kube, deadline=deadline)
-            await pvc.wait_deleted(kube, deadline=deadline)
+            await PERSISTENT_VOLUME_CLAIM_RESOURCE.delete(kube, pvc, deadline=deadline)
+            await PERSISTENT_VOLUME_CLAIM_RESOURCE.wait_deleted(
+                kube, pvc, deadline=deadline
+            )
     if snapshot is not None:
         with suppress(OSError, TimeoutError, ValueError):
             await delete_volume_snapshot(kube, snapshot, deadline=deadline)
