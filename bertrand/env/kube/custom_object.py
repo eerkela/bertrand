@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from bertrand.env.git import Deadline, until
 from bertrand.env.kube.crd import CustomResourceDefinition
 
-from .api.client import KubeApiError, is_missing_api_resource
+from .api.client import Kube
 from .api.resource import (
     RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
     ResourceScope,
@@ -27,8 +27,6 @@ from .api.watch import watch as kube_watch
 
 if TYPE_CHECKING:
     import builtins
-
-    from .api.client import Kube
 
 type CustomObjectScope = ResourceScope
 type _CustomObjectFragment = Mapping[str, object] | BaseModel
@@ -343,9 +341,9 @@ class CustomObjectResource[T_co]:
             )
         except OSError as err:
             if (
-                isinstance(err, KubeApiError)
+                isinstance(err, Kube.APIError)
                 and err.status == 404
-                and not is_missing_api_resource(err)
+                and not err.missing_api_resource
             ):
                 return None
             raise
@@ -563,7 +561,7 @@ class CustomObjectResource[T_co]:
                 missing_ok=False,
             )
         except OSError as err:
-            if not isinstance(err, KubeApiError) or err.status != 409:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
                 raise
             payload = await self._run_custom(
                 kube,

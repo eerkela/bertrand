@@ -16,7 +16,7 @@ from bertrand.env.git import (
     REPO_ID_LABEL,
     Deadline,
 )
-from bertrand.env.kube.api.client import KubeApiError
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.snapshot import (
     VOLUME_SNAPSHOT_CLASS_RESOURCE,
     VOLUME_SNAPSHOT_RESOURCE,
@@ -48,7 +48,6 @@ from .volume import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection, Mapping
 
-    from bertrand.env.kube.api.client import Kube
     from bertrand.env.kube.custom_object import CustomObject
 
 REPOSITORY_SNAPSHOT_CLASS_LABEL = "bertrand.dev/ceph-repository-snapshot-class"
@@ -516,7 +515,7 @@ async def _ensure_snapshot_class(
             deadline=deadline,
         )
     except OSError as err:
-        if not isinstance(err, KubeApiError) or err.status != 409:
+        if not isinstance(err, Kube.APIError) or err.status != 409:
             raise
     existing = await VOLUME_SNAPSHOT_CLASS_RESOURCE.get(
         kube,

@@ -140,6 +140,30 @@ async def bertrand_cluster_status(*, json_output: bool, deadline: Deadline) -> N
             print(f"    {detail}")
 
 
+async def bertrand_cluster_start(*, deadline: Deadline) -> None:
+    """Start Bertrand's owned k0s cluster.
+
+    Parameters
+    ----------
+    deadline : Deadline
+        Start convergence budget.
+    """
+    await Kube.start(deadline=deadline, yes=False)
+    print("Bertrand cluster started.")
+
+
+async def bertrand_cluster_stop(*, deadline: Deadline) -> None:
+    """Stop Bertrand's owned k0s cluster without deleting runtime state.
+
+    Parameters
+    ----------
+    deadline : Deadline
+        Stop convergence budget.
+    """
+    await Kube.stop(deadline=deadline)
+    print("Bertrand cluster stopped.")
+
+
 async def bertrand_cluster_invite(
     *,
     name: str | None,

@@ -13,14 +13,12 @@ import kubernetes
 
 from bertrand.env.git import Deadline, until
 
-from .api.client import KubeApiError
+from .api.client import Kube
 from .api.metadata import KubeMetadata, NamespacedKubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
-
-    from .api.client import Kube
 
 PVC_GROW_RETRIES = 4
 VOLUME_WAIT_POLL_INTERVAL_SECONDS = 0.5
@@ -353,7 +351,7 @@ class PersistentVolumeClaim(
                 )
             )
         except OSError as err:
-            if not isinstance(err, KubeApiError) or err.status != 409:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
                 raise
 
         live = await cls.get(
@@ -592,11 +590,11 @@ class PersistentVolumeClaim(
                     missing_ok=False,
                 )
             except OSError as err:
-                if isinstance(err, KubeApiError) and err.status == 404:
+                if isinstance(err, Kube.APIError) and err.status == 404:
                     msg = f"PVC {name!r} disappeared during resize lifecycle"
                     raise OSError(msg) from err
                 if (
-                    isinstance(err, KubeApiError)
+                    isinstance(err, Kube.APIError)
                     and err.status == 409
                     and attempt + 1 < PVC_GROW_RETRIES
                 ):

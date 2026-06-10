@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
 import math
@@ -12,7 +13,6 @@ import shlex
 import shutil
 import socket
 import tempfile
-from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
@@ -21,7 +21,11 @@ from urllib.parse import urlparse
 import kubernetes
 import yaml
 from kubernetes.client.rest import ApiException
-from kubernetes.config.config_exception import ConfigException
+from kubernetes.config import (
+    ConfigException,
+    load_incluster_config,
+    new_client_from_config,
+)
 
 from bertrand.env.git import (
     BERTRAND_LABEL,
@@ -35,6 +39,7 @@ from bertrand.env.git import (
     Deadline,
     HostLock,
     confirm,
+    inside_image,
     run,
     sudo,
     until,
@@ -43,16 +48,16 @@ from bertrand.env.git import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-CLUSTER_REGISTRY_READY_LABEL = "bertrand.dev/registry-ready"
-CLUSTER_REGISTRY_READY_VALUE = "true"
 _KUBE_CONFIG_ERRORS = (ConfigException, OSError, ValueError)
-
-type K0sRole = Literal["controller", "worker"]
-
 K0S_VERSION = "v1.35.4+k0s.0"
 K0S_SERVICE_NAME = "bertrand-k0s"
+K0S_SERVICE_FILE = (
+    ROOT_DIR / "etc" / "systemd" / "system" / f"{K0S_SERVICE_NAME}.service"
+)
 K0S_API_PORT = 16443
 K0S_CONTROLLER_API_PORT = 19443
+
+type K0sRole = Literal["controller", "worker"]
 K0S_ROLES: tuple[K0sRole, ...] = ("controller", "worker")
 
 
@@ -124,52 +129,6 @@ async def kubectl(
     )
 
 
-def is_missing_api_resource(err: OSError) -> bool:
-    """Return whether a Kubernetes 404 means the REST resource is unavailable.
-
-    Parameters
-    ----------
-    err : OSError
-        Error raised by :meth:`Kube.run`.
-
-    Returns
-    -------
-    bool
-        Whether the API server could not resolve the requested resource endpoint,
-        rather than simply reporting a missing object instance.
-    """
-    if not isinstance(err, KubeApiError) or err.status != 404:
-        return False
-    return "the server could not find the requested resource" in err.detail.lower()
-
-
-class KubeApiError(OSError):
-    """Structured Kubernetes API failure raised by :meth:`Kube.run`.
-
-    Parameters
-    ----------
-    context : str
-        Human-readable operation context.
-    status : int
-        Kubernetes API HTTP status code.
-    detail : str
-        Kubernetes API failure detail.
-    """
-
-    context: str
-    status: int
-    detail: str
-
-    def __init__(self, *, context: str, status: int, detail: str) -> None:
-        """Initialize a structured Kubernetes API error."""
-        self.context = context
-        self.status = status
-        self.detail = detail
-        super().__init__(
-            f"{context} failed with kubernetes API status {status}: {detail}"
-        )
-
-
 @dataclass
 class Kube:
     """Context-managed Kubernetes client wrapper for Bertrand runtime operations.
@@ -197,6 +156,48 @@ class Kube:
     coordination : kubernetes.client.CoordinationV1Api
         Coordination v1 API surface for Lease resources.
     """
+
+    class APIError(OSError):
+        """Structured Kubernetes API failure raised by :meth:`Kube.run`.
+
+        Parameters
+        ----------
+        context : str
+            Human-readable operation context.
+        status : int
+            Kubernetes API HTTP status code.
+        detail : str
+            Kubernetes API failure detail.
+        """
+
+        context: str
+        status: int
+        detail: str
+
+        def __init__(self, *, context: str, status: int, detail: str) -> None:
+            """Initialize a structured Kubernetes API error."""
+            self.context = context
+            self.status = status
+            self.detail = detail
+            super().__init__(
+                f"{context} failed with kubernetes API status {status}: {detail}"
+            )
+
+        @property
+        def missing_api_resource(self) -> bool:
+            """Return whether the API server could not resolve the resource type.
+
+            Returns
+            -------
+            bool
+                Whether this error means the requested Kubernetes API endpoint is
+                unavailable, rather than a single object instance being absent.
+            """
+            return (
+                self.status == 404
+                and "the server could not find the requested resource"
+                in self.detail.lower()
+            )
 
     client: kubernetes.client.ApiClient = field(repr=False)
     core: kubernetes.client.CoreV1Api = field(init=False, repr=False)
@@ -232,7 +233,7 @@ class Kube:
             self.storage = kubernetes.client.StorageV1Api(self.client)
             self.coordination = kubernetes.client.CoordinationV1Api(self.client)
         except (AttributeError, TypeError, ValueError):
-            with suppress(OSError, RuntimeError, ValueError):
+            with contextlib.suppress(OSError, RuntimeError, ValueError):
                 self.client.close()
             raise
 
@@ -447,9 +448,10 @@ class Kube:
                 f"--kubelet-extra-args=--hostname-override={node_name}",
             ]
 
-        await STATE.write(
-            STATE.kube.runtime,
-            "\n".join(
+        fd, name = tempfile.mkstemp(prefix="bertrand-k0s.", suffix=".service")
+        temp_unit = Path(name)
+        try:
+            unit = "\n".join(
                 (
                     "[Unit]",
                     "Description=Bertrand owned k0s Kubernetes runtime",
@@ -469,9 +471,34 @@ class Kube:
                     "WantedBy=multi-user.target",
                     "",
                 ),
-            ),
-            deadline=deadline,
-        )
+            )
+            os.write(fd, unit.encode("utf-8"))
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            await run(
+                sudo(
+                    [
+                        "install",
+                        "-D",
+                        "-m",
+                        "0644",
+                        "-o",
+                        "root",
+                        "-g",
+                        "root",
+                        str(temp_unit),
+                        str(K0S_SERVICE_FILE),
+                    ],
+                    non_interactive=True,
+                ),
+                deadline=deadline,
+            )
+        finally:
+            if fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            temp_unit.unlink(missing_ok=True)
 
     @classmethod
     async def _k0s_ready(cls, deadline: Deadline) -> None:
@@ -500,34 +527,195 @@ class Kube:
         )
 
     @classmethod
-    async def _start_k0s(
+    async def ready(cls, *, deadline: Deadline) -> bool:
+        """Return whether the managed k0s API reports ready.
+
+        Parameters
+        ----------
+        deadline : Deadline
+            Active operation deadline.
+
+        Returns
+        -------
+        bool
+            Whether the managed k0s API responds successfully to `/readyz`.
+        """
+        return inside_image() or (
+            STATE.kube.bin.is_file()
+            and STATE.kube.config.is_file()
+            and await cls._systemd_ready(deadline)
+            and await cls._cluster_ready(deadline)
+        )
+
+    @classmethod
+    async def init(
+        cls,
+        *,
+        role: K0sRole = "controller",
+        token: str | None = None,
+        join_url: str | None = None,
+        yes: bool,
+        force: bool = False,
+        deadline: Deadline,
+    ) -> None:
+        """Bootstrap Bertrand's private k0s cluster.
+
+        Parameters
+        ----------
+        role : K0sRole, optional
+            k0s role for the local runtime.
+        token : str | None, optional
+            Join token for joining an existing cluster.
+        join_url : str | None, optional
+            Optional stable HTTPS k0s API URL override for joining hosts.  If omitted
+            for the initial controller, Bertrand attempts to use the host's
+            default-route IPv4 address.
+        yes : bool
+            Whether interactive confirmations should be auto-accepted.
+        force : bool, optional
+            Whether to refresh the local service even if it appears active.
+        deadline : Deadline
+            Active operation deadline.
+
+        Raises
+        ------
+        OSError
+            If called from within the cluster, or installation fails.
+        PermissionError
+            If the user declines installation.
+        """
+        if inside_image():
+            msg = "Bertrand cluster initialization cannot run from inside the cluster."
+            raise OSError(msg)
+        join_address: tuple[str, int] | None = None
+        if join_url is not None:
+            join_address = cls._parse_join_url(join_url)
+        elif role == "controller" and token is None:
+            host = cls._default_route_ipv4()
+            if host is not None:
+                join_address = (host, K0S_API_PORT)
+
+        # short-circuit if the managed runtime artifacts are already in-place
+        if (
+            not force
+            and join_url is None
+            and STATE.kube.bin.is_file()
+            and STATE.kube.bootstrap.is_file()
+            and K0S_SERVICE_FILE.is_file()
+        ):
+            return
+
+        if not confirm(
+            "Bertrand uses an owned k0s service as its local Kubernetes runtime. "
+            f"Install or refresh {K0S_SERVICE_NAME!r} now (requires sudo)?\n[y/N] ",
+            yes=yes,
+        ):
+            msg = "k0s installation declined by user."
+            raise PermissionError(msg)
+
+        # get k0s binary if missing or if we're forcing a refresh
+        if force or not STATE.kube.bin.is_file():
+            await cls._download_k0s(deadline)
+
+        # write output artifacts
+        await cls._dump_k0s_config(join_address=join_address, deadline=deadline)
+        token_file = await cls._dump_join_token(token, deadline)
+        await cls._dump_unit(role, token_file, deadline)
+
+        # refresh systemd after writing the managed unit
+        await run(
+            sudo(["systemctl", "daemon-reload"], non_interactive=True),
+            deadline=deadline,
+        )
+
+    @classmethod
+    async def start(
         cls,
         *,
         deadline: Deadline,
         yes: bool,
         restart: bool = False,
     ) -> None:
+        """Start Bertrand's private k0s cluster if not already running.
+
+        Parameters
+        ----------
+        deadline : Deadline
+            Active operation deadline.
+        yes : bool
+            Whether interactive confirmations should be auto-accepted.
+        restart : bool, optional
+            Whether to restart the k0s service even if it appears active.  This is
+            useful when the cluster is already running but may not be healthy, such
+            as when the API is unresponsive or returning errors.
+
+        Raises
+        ------
+        OSError
+            If called from within the cluster, the service fails to start, or the API
+            fails to become ready.
+        TimeoutError
+            If the API fails to become ready before the deadline.
+        """
+        if inside_image():
+            msg = "Bertrand cluster startup cannot run from inside the cluster."
+            raise OSError(msg)
+
         ignore_errors = False
         await STATE.lock.lock(deadline=deadline)
         try:
             try:
+                if not (
+                    STATE.kube.bin.is_file()
+                    and STATE.kube.bootstrap.is_file()
+                    and K0S_SERVICE_FILE.is_file()
+                ):
+                    msg = (
+                        f"{K0S_SERVICE_NAME} does not appear to be installed. Run "
+                        "`bertrand init` to install the k0s service first."
+                    )
+                    raise OSError(msg)
+                await run(
+                    sudo(["systemctl", "daemon-reload"], non_interactive=True),
+                    deadline=deadline,
+                )
+
                 # short-circuit if the cluster is already running
                 if not restart and await cls._cluster_ready(deadline):
+                    await run(
+                        sudo(
+                            ["systemctl", "enable", K0S_SERVICE_NAME],
+                            non_interactive=True,
+                        ),
+                        deadline=deadline,
+                    )
                     await cls._register_bertrand_namespace(deadline=deadline)
                     return
 
                 # start systemd service and wait for k0s to report ready
-                await run(
-                    sudo(
-                        [
-                            "systemctl",
-                            "restart" if restart else "start",
-                            K0S_SERVICE_NAME,
-                        ],
-                        non_interactive=True,
-                    ),
-                    deadline=deadline,
-                )
+                if restart:
+                    await run(
+                        sudo(
+                            ["systemctl", "enable", K0S_SERVICE_NAME],
+                            non_interactive=True,
+                        ),
+                        deadline=deadline,
+                    )
+                    await run(
+                        sudo(
+                            ["systemctl", "restart", K0S_SERVICE_NAME],
+                            non_interactive=True,
+                        ),
+                        deadline=deadline,
+                    )
+                else:
+                    await run(
+                        sudo(
+                            ["systemctl", "enable", "--now", K0S_SERVICE_NAME],
+                            non_interactive=True,
+                        ),
+                        deadline=deadline,
+                    )
                 try:
                     await until(cls._k0s_ready, deadline=deadline, delay=0.25)
                 except TimeoutError as err:
@@ -579,122 +767,12 @@ class Kube:
             raise OSError(msg) from err
 
     @classmethod
-    async def ready(cls, *, deadline: Deadline) -> bool:
-        """Return whether the managed k0s API reports ready.
-
-        Parameters
-        ----------
-        deadline : Deadline
-            Active operation deadline.
-
-        Returns
-        -------
-        bool
-            Whether the managed k0s API responds successfully to `/readyz`.
-        """
-        return (
-            STATE.kube.bin.is_file()
-            and STATE.kube.config.is_file()
-            and await cls._systemd_ready(deadline)
-            and await cls._cluster_ready(deadline)
-        )
-
-    @classmethod
-    async def init(
-        cls,
-        *,
-        role: K0sRole = "controller",
-        token: str | None = None,
-        join_url: str | None = None,
-        yes: bool,
-        force: bool = False,
-        deadline: Deadline,
-    ) -> None:
-        """Bootstrap and start Bertrand's private k0s cluster.
-
-        Parameters
-        ----------
-        role : K0sRole, optional
-            k0s role for the local runtime.
-        token : str | None, optional
-            Join token for joining an existing cluster.
-        join_url : str | None, optional
-            Optional stable HTTPS k0s API URL override for joining hosts.  If omitted
-            for the initial controller, Bertrand attempts to use the host's
-            default-route IPv4 address.
-        yes : bool
-            Whether interactive confirmations should be auto-accepted.
-        force : bool, optional
-            Whether to refresh the local service even if it appears active.
-        deadline : Deadline
-            Active operation deadline.
-
-        Raises
-        ------
-        PermissionError
-            If the user declines installation.
-        """
-        explicit_join_url = join_url is not None
-        join_address: tuple[str, int] | None = None
-        if join_url is not None:
-            join_address = cls._parse_join_url(join_url)
-        elif role == "controller" and token is None:
-            host = cls._default_route_ipv4()
-            if host is not None:
-                join_address = (host, K0S_API_PORT)
-
-        # short-circuit if the service appears active and the k0s binary and config
-        # are in-place
-        if (
-            not force
-            and not explicit_join_url
-            and STATE.kube.bin.is_file()
-            and STATE.kube.config.is_file()
-            and await cls._systemd_ready(deadline)
-        ):
-            await cls._start_k0s(deadline=deadline, yes=yes)
-            return
-
-        if not confirm(
-            "Bertrand uses an owned k0s service as its local Kubernetes runtime. "
-            f"Install or refresh {K0S_SERVICE_NAME!r} now (requires sudo)?\n[y/N] ",
-            yes=yes,
-        ):
-            msg = "k0s installation declined by user."
-            raise PermissionError(msg)
-
-        # get k0s binary if missing or if we're forcing a refresh
-        if force or not STATE.kube.bin.is_file():
-            await cls._download_k0s(deadline)
-
-        # write output artifacts
-        await cls._dump_k0s_config(join_address=join_address, deadline=deadline)
-        token_file = await cls._dump_join_token(token, deadline)
-        await cls._dump_unit(role, token_file, deadline)
-
-        # refresh systemd + enable unit on future startup
-        await run(
-            sudo(["systemctl", "daemon-reload"], non_interactive=True),
-            deadline=deadline,
-        )
-        await run(
-            sudo(["systemctl", "enable", K0S_SERVICE_NAME], non_interactive=True),
-            deadline=deadline,
-        )
-
-        # start the service and wait for the API to become ready
-        await cls._start_k0s(deadline=deadline, yes=yes, restart=explicit_join_url)
-
-    # TODO: split start() out of init() and implement a separate stop() method for
-    # stopping the cluster, but not necessarily deleting it, unlike clean()
-
-    @classmethod
-    def external(cls, *, config_file: Path = STATE.kube.config) -> Self:
+    def external(cls, config: Path = STATE.kube.config) -> Self:
         """Build a host-side API client from Bertrand's managed kubeconfig.
 
         Parameters
         ----------
-        config_file : Path, optional
+        config : Path, optional
             Path to the kubeconfig file used for host-side API access.
 
         Returns
@@ -707,19 +785,17 @@ class Kube:
         OSError
             If the kubeconfig is missing or cannot be loaded.
         """
-        if not config_file.is_file():
+        if not config.is_file():
             msg = (
-                f"kubernetes config is missing at {config_file}.  Run `bertrand init` "
+                f"kubernetes config is missing at {config}.  Run `bertrand init` "
                 "to converge k0s API access first."
             )
             raise OSError(msg)
         try:
-            client = kubernetes.config.new_client_from_config(
-                config_file=str(config_file),
-            )
+            client = new_client_from_config(config_file=str(config))
             return cls(client=client)
         except _KUBE_CONFIG_ERRORS as err:
-            msg = f"failed to initialize kubernetes client from {config_file}: {err}"
+            msg = f"failed to initialize kubernetes client from {config}: {err}"
             raise OSError(msg) from err
 
     @classmethod
@@ -738,21 +814,14 @@ class Kube:
         """
         configuration = kubernetes.client.Configuration()
         try:
-            kubernetes.config.load_incluster_config(client_configuration=configuration)
+            load_incluster_config(client_configuration=configuration)
         except _KUBE_CONFIG_ERRORS as err:
             msg = f"failed to load in-cluster kubernetes configuration: {err}"
             raise OSError(msg) from err
         return cls(client=kubernetes.client.ApiClient(configuration=configuration))
 
-    # TODO: review join logic and how/if it should interact with other bootstrap steps
-
     @classmethod
-    async def join_bundle(
-        cls,
-        *,
-        role: K0sRole,
-        deadline: Deadline,
-    ) -> tuple[str, str]:
+    async def join_bundle(cls, *, role: K0sRole, deadline: Deadline) -> tuple[str, str]:
         """Return `(token, kubeconfig)` for a joining node.
 
         Parameters
@@ -765,27 +834,34 @@ class Kube:
         Returns
         -------
         tuple[str, str]
-            Raw k0s join token and managed kubeconfig.
+            Raw kubernetes join token and managed kubeconfig.
 
         Raises
         ------
         OSError
-            If k0s is not ready or a join token cannot be generated.
+            If called from within the cluster, kubernetes is not ready, or a join token
+            cannot be generated.
         """
-        if not await cls._cluster_ready(deadline):
-            msg = "k0s must be running before generating a join token"
+        if inside_image():
+            msg = "joining a cluster must be done from outside a kubernetes environment"
             raise OSError(msg)
-        try:
+        if not await cls._cluster_ready(deadline):
+            msg = "kubernetes must be running before generating a join token"
+            raise OSError(msg)
+
+        # extract join URL from k0s config
+        api = {}
+        with contextlib.suppress(OSError, KeyError, TypeError, yaml.YAMLError):
             raw = yaml.safe_load(STATE.kube.bootstrap.read_text(encoding="utf-8"))
-            api = raw["spec"]["api"] if isinstance(raw, dict) else {}
-        except (KeyError, OSError, TypeError, yaml.YAMLError):
-            api = {}
-        if (
-            not isinstance(api, dict)
-            or not str(api.get("externalAddress") or "").strip()
-        ):
+            if isinstance(raw, dict):
+                spec = raw.get("spec")
+                if isinstance(spec, dict):
+                    api = spec.get("api", {})
+                    if not isinstance(api, dict):
+                        api = {}
+        if not isinstance(api, dict) or not api.get("externalAddress", "").strip():
             msg = (
-                "cluster invite requires a configured k0s join URL. Re-run "
+                "cluster invite requires a configured kubernetes join URL. Re-run "
                 "`bertrand init --join-url https://HOST:PORT` on the controller "
                 "before inviting additional hosts."
             )
@@ -803,6 +879,7 @@ class Kube:
             raise OSError(msg)
         payload = text if text.endswith("\n") else f"{text}\n"
 
+        # generate join token
         result = await run(
             sudo(
                 [
@@ -822,7 +899,7 @@ class Kube:
         )
         token = result.stdout.strip()
         if not token:
-            msg = "k0s token create returned an empty join token"
+            msg = "`kubernetes token create` returned an empty join token"
             raise OSError(msg)
 
         return token, payload
@@ -837,14 +914,14 @@ class Kube:
         yes: bool,
         deadline: Deadline,
     ) -> None:
-        """Join the local host to an existing Bertrand k0s cluster.
+        """Join the local host to an existing Bertrand kubernetes cluster.
 
         Parameters
         ----------
         token : str
-            k0s join token.
+            kubernetes join token.
         role : K0sRole
-            k0s role for the local host.
+            kubernetes role for the local host.
         kubeconfig : str
             Kubeconfig payload from the invite bundle.
         yes : bool
@@ -855,9 +932,13 @@ class Kube:
         Raises
         ------
         OSError
-            If the local runtime is already ready or the join payload is invalid.
+            If called from within the cluster, the local runtime is already ready, or
+            the join payload is invalid.
         """
-        if await cls._cluster_ready(deadline):
+        if inside_image():
+            msg = "joining a cluster must be done from outside a kubernetes environment"
+            raise OSError(msg)
+        if await cls.ready(deadline=deadline):
             msg = (
                 "local k0s already reports a ready cluster; refusing to join it to "
                 "another cluster. Run `bertrand clean --force` first if this host "
@@ -865,6 +946,7 @@ class Kube:
             )
             raise OSError(msg)
 
+        # validate token and kubeconfig
         token = token.strip()
         if not token:
             msg = "k0s join token cannot be empty"
@@ -874,6 +956,7 @@ class Kube:
             raise OSError(msg)
         kubeconfig = kubeconfig if kubeconfig.endswith("\n") else f"{kubeconfig}\n"
 
+        # lock and re-initialize cluster with the provided join bundle
         lock = HostLock(STATE.kube.lock)
         await lock.lock(deadline)
         ignore_errors = False
@@ -890,11 +973,50 @@ class Kube:
                 force=True,
                 deadline=deadline,
             )
+            await Kube.start(deadline=deadline, yes=yes)
         except:
             ignore_errors = True
             raise
         finally:
             await lock.unlock(ignore_errors=ignore_errors)
+
+    @classmethod
+    async def stop(cls, *, deadline: Deadline) -> None:
+        """Stop Bertrand's private k0s cluster without deleting runtime state.
+
+        Parameters
+        ----------
+        deadline : Deadline
+            Active operation deadline.
+
+        Raises
+        ------
+        OSError
+            If called from within the cluster, systemd is unavailable, or the service
+            fails to stop.
+        """
+        if inside_image():
+            msg = "Bertrand cluster shutdown cannot run from inside the cluster."
+            raise OSError(msg)
+        systemctl = shutil.which("systemctl")
+        if systemctl is None:
+            msg = "systemctl is required to stop Bertrand's k0s service"
+            raise OSError(msg)
+        ignore_errors = False
+        await STATE.lock.lock(deadline=deadline)
+        try:
+            await run(
+                sudo(
+                    [systemctl, "disable", "--now", K0S_SERVICE_NAME],
+                    non_interactive=True,
+                ),
+                deadline=deadline,
+            )
+        except:
+            ignore_errors = True
+            raise
+        finally:
+            await STATE.lock.unlock(ignore_errors=ignore_errors)
 
     @classmethod
     async def clean(cls, *, deadline: Deadline) -> None:
@@ -904,7 +1026,16 @@ class Kube:
         ----------
         deadline : Deadline
             Active operation deadline.
+
+        Raises
+        ------
+        OSError
+            If systemd is unavailable or the service fails to stop, or if runtime
+            files cannot be removed.
         """
+        if inside_image():
+            msg = "Bertrand cluster cleanup cannot run from inside the cluster."
+            raise OSError(msg)
         systemctl = shutil.which("systemctl")
         if systemctl:
             await run(
@@ -935,13 +1066,7 @@ class Kube:
                 [
                     "rm",
                     "-rf",
-                    str(
-                        ROOT_DIR
-                        / "etc"
-                        / "systemd"
-                        / "system"
-                        / f"{K0S_SERVICE_NAME}.service"
-                    ),
+                    str(K0S_SERVICE_FILE),
                     str(STATE.kube.cache),
                     str(STATE.kube.runtime),
                     str(STATE.kube.bootstrap),
@@ -984,14 +1109,12 @@ class Kube:
         """
         self.client.close()
 
-    # TODO: try to eliminate `close()` in favor of strict context management, but this
-    # cannot be done until `bertrand init` is fully reviewed
-
     def close(self) -> None:
         """Close the Kubernetes API connection.
 
         This method is identical to the context manager exit handler, for cases when
-        explicit context management is not possible due to logical constraints.
+        explicit context management is not possible due to logical constraints.  In
+        almost all cases, using `Kube` as a context manager is preferred.
         """
         self.client.close()
 
@@ -1028,7 +1151,7 @@ class Kube:
         ------
         TimeoutError
             If the operation exceeds the deadline.
-        KubeApiError
+        Kube.APIError
             If the API call fails with any non-404 error.
         """
         remaining = deadline.check(f"{context} timed out before request could start")
@@ -1045,7 +1168,7 @@ class Kube:
             if err.status == 404 and missing_ok:
                 return None
             detail = (err.body or err.reason or str(err)).strip()
-            raise KubeApiError(
+            raise Kube.APIError(
                 context=context,
                 status=int(err.status or 0),
                 detail=detail,

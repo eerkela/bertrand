@@ -853,7 +853,6 @@ class ExternalInit:
 
         # idempotently bootstrap host cluster infrastructure
         ignore_errors = False
-        kube: Kube | None = None
         await STATE.init(deadline=deadline, yes=self.yes)
         try:
             await Kube.init(
@@ -861,15 +860,22 @@ class ExternalInit:
                 yes=self.yes,
                 join_url=self.join_url,
             )
+            await Kube.start(
+                deadline=deadline,
+                yes=self.yes,
+                restart=self.join_url is not None,
+            )
             kube = Kube.external()
-            await self._bootstrap_control_plane(kube=kube, deadline=deadline)
-            # TODO: acquire the repo lock within this context, then include a following
-            # try/catch block that transitions from the cluster lock to the repository
-            # lock
+            try:
+                await self._bootstrap_control_plane(kube=kube, deadline=deadline)
+                # TODO: acquire the repo lock within this context, then include a
+                # following try/catch block that transitions from the cluster lock to
+                # the repository lock
+            except:
+                kube.close()
+                raise
         except:
             ignore_errors = True
-            if kube is not None:
-                kube.close()
             raise
         finally:
             await STATE.lock.unlock(ignore_errors=ignore_errors)
@@ -910,8 +916,7 @@ class ExternalInit:
                 yes=self.yes,
             )
         finally:
-            if kube is not None:
-                kube.close()
+            kube.close()
 
 
 async def ensure_shared_runtime_installed(
@@ -932,6 +937,7 @@ async def _converge_host_cluster_runtime(
     """Converge the local cluster control plane after host runtime installation."""
     if start:
         await Kube.init(deadline=deadline, yes=False)
+        await Kube.start(deadline=deadline, yes=False)
     runtime = ExternalInit(
         path=None,
         enable=[],

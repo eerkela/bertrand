@@ -10,13 +10,11 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
 )
-from bertrand.env.kube.api.client import is_missing_api_resource
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-
-    from bertrand.env.kube.api.client import Kube
 
 GATEWAY_API_GROUP = "gateway.networking.k8s.io"
 GATEWAY_API_VERSION = "v1"
@@ -342,7 +340,7 @@ def gateway_api_crd_missing(err: OSError) -> bool:
         `True` when the error suggests the Gateway API resource type is not
         installed in the cluster.
     """
-    return is_missing_api_resource(err)
+    return isinstance(err, Kube.APIError) and err.missing_api_resource
 
 
 def bertrand_gateway_parent_refs() -> tuple[dict[str, object], ...]:

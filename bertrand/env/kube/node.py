@@ -9,9 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 import kubernetes
 
-from bertrand.env.git import Deadline
-
-from .api.client import KubeApiError
+from .api.client import Kube
 from .api.metadata import KubeMetadata
 from .api.resource import BuiltinResource, BuiltinResourceObject
 from .pod import Pod
@@ -20,7 +18,7 @@ if TYPE_CHECKING:
     import builtins
     from collections.abc import Collection, Mapping
 
-    from .api.client import Kube
+    from bertrand.env.git import Deadline
 
 NODE_SYSTEM_NAMESPACES = frozenset(
     {
@@ -823,7 +821,7 @@ async def _evict_node_drain_candidates(
                 await pod.evict(kube, deadline=deadline)
                 break
             except OSError as err:
-                if not isinstance(err, KubeApiError) or err.status != 429:
+                if not isinstance(err, Kube.APIError) or err.status != 429:
                     raise
                 remaining = deadline.remaining
                 if remaining <= 0:

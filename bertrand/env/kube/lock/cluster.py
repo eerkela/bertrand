@@ -12,7 +12,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
+from typing import Any, ClassVar, Self, cast
 
 from bertrand.env.git import (
     BERTRAND_LABEL,
@@ -20,11 +20,8 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
 )
-from bertrand.env.kube.api.client import KubeApiError
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.lease import Lease
-
-if TYPE_CHECKING:
-    from bertrand.env.kube.api.client import Kube
 
 CLUSTER_LOCK_DURATION_SECONDS = 30
 CLUSTER_LOCK_RENEW_SECONDS = 10
@@ -227,7 +224,7 @@ class ClusterLock:
                 annotations=self._annotations(),
             )
         except OSError as err:
-            if isinstance(err, KubeApiError) and err.status == 409:
+            if isinstance(err, Kube.APIError) and err.status == 409:
                 return False
             raise
         return True
@@ -254,7 +251,7 @@ class ClusterLock:
                 annotations=self._annotations(),
             )
         except OSError as err:
-            if isinstance(err, KubeApiError) and err.status in (404, 409):
+            if isinstance(err, Kube.APIError) and err.status in (404, 409):
                 return False
             raise
         return True

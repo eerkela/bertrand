@@ -27,7 +27,9 @@ from bertrand.env.cli.external.cluster import (
     bertrand_cluster_network_lb_pool_upsert,
     bertrand_cluster_network_lb_status,
     bertrand_cluster_network_status,
+    bertrand_cluster_start,
     bertrand_cluster_status,
+    bertrand_cluster_stop,
     bertrand_cluster_storage_doctor,
     bertrand_cluster_storage_status,
 )
@@ -447,6 +449,38 @@ class External:
                 func=bertrand_cluster_status,
                 cmd=("bertrand", "cluster", "status"),
                 timeout_scope="cluster",
+            )
+
+            start = subcommands.add_parser(
+                "start",
+                help="Start Bertrand's owned k0s cluster and enable it at boot.",
+            )
+            self._add_timeout(
+                start,
+                help="Maximum time in seconds for cluster startup.",
+            )
+            self.terminal(
+                start,
+                bertrand_cluster_start,
+                cmd=("bertrand", "cluster", "start"),
+                timeout_scope="cluster",
+                kwargs=(("timeout", "timeout"),),
+            )
+
+            stop = subcommands.add_parser(
+                "stop",
+                help="Stop Bertrand's owned k0s cluster and disable it at boot.",
+            )
+            self._add_timeout(
+                stop,
+                help="Maximum time in seconds for cluster shutdown.",
+            )
+            self.terminal(
+                stop,
+                bertrand_cluster_stop,
+                cmd=("bertrand", "cluster", "stop"),
+                timeout_scope="cluster",
+                kwargs=(("timeout", "timeout"),),
             )
 
             invite = subcommands.add_parser(

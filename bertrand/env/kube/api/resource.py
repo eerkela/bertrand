@@ -10,15 +10,13 @@ import kubernetes
 
 from bertrand.env.git import Deadline, until
 
-from .client import KubeApiError
+from .client import Kube
 from .watch import WatchEvent
 from .watch import watch as kube_watch
 
 if TYPE_CHECKING:
     import builtins
     from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
-
-    from .client import Kube
 
 type ResourceScope = Literal["cluster", "namespaced"]
 type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
@@ -357,7 +355,7 @@ class BuiltinResource[PayloadT]:
                 missing_ok=False,
             )
         except OSError as err:
-            if not isinstance(err, KubeApiError) or err.status != 409:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
                 raise
             payload = await self._run_request(
                 kube,

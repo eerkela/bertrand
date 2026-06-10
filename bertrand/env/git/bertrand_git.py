@@ -2424,6 +2424,9 @@ class State:
         `try: ... finally: STATE.lock.unlock()` block to ensure the lock is properly
         released.
         """
+        if inside_image():
+            msg = "Bertrand state bootstrap cannot run from inside the cluster."
+            raise OSError(msg)
         if os.name != "posix":
             msg = "Bertrand state bootstrap requires a POSIX host."
             raise OSError(msg)
@@ -2507,6 +2510,10 @@ class State:
         OSError
             If the state root cannot be removed.
         """
+        if inside_image():
+            msg = "Bertrand state cleanup cannot run from inside the cluster."
+            raise OSError(msg)
+
         # disable tmpfs unit for runtime directory
         systemctl = shutil.which("systemctl")
         if systemctl:

@@ -13,12 +13,12 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NoReturn, override
 
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
-from bertrand.env.kube.api.client import (
+from bertrand.env.kube.api.client import Kube
+from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
+from bertrand.env.kube.build.repository import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
-    Kube,
 )
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.ceph import _csi_pb2, _csi_pb2_grpc
 from bertrand.env.kube.ceph.api import (
     bind_block_device,

@@ -26,7 +26,7 @@ from bertrand.env.git import (
     REPO_ID_LABEL,
     Deadline,
 )
-from bertrand.env.kube.api.client import is_missing_api_resource
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.request import (
     BUILDKIT_BUILD_RESOURCE,
     BuildKitBuildRecord,
@@ -58,8 +58,6 @@ from bertrand.env.kube.workload.base import (
 
 if TYPE_CHECKING:
     from pathlib import PosixPath
-
-    from bertrand.env.kube.api.client import Kube
 
 REPO_VOLUME_CLAIM_LABEL: str = "BERTRAND_REPO_VOLUME"
 CEPHFS_STORAGE_CLASS_PREFERENCES: tuple[str, ...] = ("cephfs", "rook-cephfs")
@@ -1023,7 +1021,7 @@ async def _list_buildkit_records(
     try:
         return await BUILDKIT_BUILD_RESOURCE.list(kube, deadline=deadline)
     except OSError as err:
-        if is_missing_api_resource(err):
+        if isinstance(err, Kube.APIError) and err.missing_api_resource:
             return []
         raise
 
@@ -1126,7 +1124,7 @@ async def repository_volume_ready(
             deadline=deadline,
         )
     except OSError as err:
-        if is_missing_api_resource(err):
+        if isinstance(err, Kube.APIError) and err.missing_api_resource:
             return False
         raise
     return record is not None and record.spec.phase == "Ready"

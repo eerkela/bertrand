@@ -29,12 +29,7 @@ from bertrand.env.git import (
     run,
     sudo,
 )
-from bertrand.env.kube.api.client import (
-    CLUSTER_REGISTRY_READY_LABEL,
-    CLUSTER_REGISTRY_READY_VALUE,
-    K0S_SERVICE_NAME,
-    Kube,
-)
+from bertrand.env.kube.api.client import K0S_SERVICE_NAME, Kube
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.build.daemon import (
     BUILDKIT_CONFIG_KEY,
@@ -98,6 +93,8 @@ IMAGE_REPOSITORY_ROUTE_POLL_INTERVAL_SECONDS = 0.5
 IMAGE_REPOSITORY_ROUTE_REQUEST_TIMEOUT_SECONDS = 2.0
 IMAGE_REPOSITORY_ROUTE_READY_STATUS = frozenset({200, 401})
 IMAGE_REPOSITORY_DELETE_SUCCESS_STATUS = frozenset({202, 404})
+CLUSTER_REGISTRY_READY_LABEL = "bertrand.dev/registry-ready"
+CLUSTER_REGISTRY_READY_VALUE = "true"
 _K0S_CONTAINERD_DROPIN_DIR = Path("/etc/k0s/containerd.d")
 _K0S_CONTAINERD_CERTS_DIR = _K0S_CONTAINERD_DROPIN_DIR / "certs.d"
 _K0S_REGISTRY_DROPIN_FILE = _K0S_CONTAINERD_DROPIN_DIR / "bertrand-registry.toml"

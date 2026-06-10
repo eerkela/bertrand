@@ -11,12 +11,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, Deadline
-from bertrand.env.kube.api.client import (
+from bertrand.env.kube.api.client import Kube
+from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
+from bertrand.env.kube.build.repository import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
-    Kube,
 )
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.build.request import BUILDKIT_BUILD_GROUP, BUILDKIT_BUILD_PLURAL
 from bertrand.env.kube.ceph.api import (
     CephCapacitySnapshot,
