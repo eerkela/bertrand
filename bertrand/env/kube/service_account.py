@@ -8,12 +8,8 @@ from typing import TYPE_CHECKING
 from kubernetes import client as kube_client
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     builtin_resource,
 )
 
@@ -25,15 +21,11 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 
-@builtin_resource(api="core", scope="namespaced")
+@builtin_resource(api="core", scope="namespaced", endpoint="service_account")
 @dataclass(frozen=True)
 class ServiceAccount(
-    Readable[kube_client.V1ServiceAccount],
-    Listable[kube_client.V1ServiceAccount],
-    Creatable[kube_client.V1ServiceAccount],
-    Patchable[kube_client.V1ServiceAccount],
-    Upsertable[kube_client.V1ServiceAccount],
-    Deletable[kube_client.V1ServiceAccount],
+    KubeResource[kube_client.V1ServiceAccount],
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes ServiceAccount object.
 

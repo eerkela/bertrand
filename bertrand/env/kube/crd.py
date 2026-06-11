@@ -8,12 +8,8 @@ from typing import TYPE_CHECKING
 from kubernetes import client as kube_client
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     builtin_resource,
 )
 
@@ -25,15 +21,15 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 
-@builtin_resource(api="apiextensions", scope="cluster")
+@builtin_resource(
+    api="apiextensions",
+    scope="cluster",
+    endpoint="custom_resource_definition",
+)
 @dataclass(frozen=True)
 class CustomResourceDefinition(
-    Readable[kube_client.V1CustomResourceDefinition],
-    Listable[kube_client.V1CustomResourceDefinition],
-    Creatable[kube_client.V1CustomResourceDefinition],
-    Patchable[kube_client.V1CustomResourceDefinition],
-    Upsertable[kube_client.V1CustomResourceDefinition],
-    Deletable[kube_client.V1CustomResourceDefinition],
+    KubeResource[kube_client.V1CustomResourceDefinition],
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes CRD object."""
 

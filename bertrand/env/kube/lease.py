@@ -8,12 +8,8 @@ from typing import TYPE_CHECKING
 from kubernetes import client as kube_client
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     Watchable,
     builtin_resource,
 )
@@ -27,16 +23,12 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 
-@builtin_resource(api="coordination", scope="namespaced")
+@builtin_resource(api="coordination", scope="namespaced", endpoint="lease")
 @dataclass(frozen=True)
 class Lease(
-    Readable[kube_client.V1Lease],
-    Listable[kube_client.V1Lease],
-    Creatable[kube_client.V1Lease],
-    Patchable[kube_client.V1Lease],
-    Upsertable[kube_client.V1Lease],
-    Deletable[kube_client.V1Lease],
-    Watchable[kube_client.V1Lease],
+    KubeResource[kube_client.V1Lease],
+    Watchable,
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes Lease object.
 

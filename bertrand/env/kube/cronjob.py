@@ -8,14 +8,9 @@ from typing import TYPE_CHECKING, Literal
 import kubernetes
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     Watchable,
-    _resource_namespace_name,
     builtin_resource,
 )
 from .job import JobCompletionMode, _job_spec_manifest, _validate_job_execution
@@ -32,16 +27,12 @@ if TYPE_CHECKING:
 type CronJobConcurrencyPolicy = Literal["Allow", "Forbid", "Replace"]
 
 
-@builtin_resource(api="batch", scope="namespaced")
+@builtin_resource(api="batch", scope="namespaced", endpoint="cron_job")
 @dataclass(frozen=True)
 class CronJob(
-    Readable[kubernetes.client.V1CronJob],
-    Listable[kubernetes.client.V1CronJob],
-    Creatable[kubernetes.client.V1CronJob],
-    Patchable[kubernetes.client.V1CronJob],
-    Upsertable[kubernetes.client.V1CronJob],
-    Deletable[kubernetes.client.V1CronJob],
-    Watchable[kubernetes.client.V1CronJob],
+    KubeResource[kubernetes.client.V1CronJob],
+    Watchable,
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes CronJob object.
 
@@ -334,7 +325,11 @@ class CronJob(
             If Kubernetes returns malformed data or the CronJob disappears after
             patching.
         """
-        namespace, name = _resource_namespace_name(self, "suspend CronJob")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot suspend CronJob with missing metadata.name/namespace"
+            raise OSError(msg)
         payload = await kube.run(
             lambda request_timeout: kube.batch.patch_namespaced_cron_job(
                 name=name,

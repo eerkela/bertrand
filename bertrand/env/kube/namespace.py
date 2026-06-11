@@ -8,12 +8,8 @@ from typing import TYPE_CHECKING
 from kubernetes import client as kube_client
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     builtin_resource,
 )
 
@@ -27,15 +23,11 @@ if TYPE_CHECKING:
 NAMESPACE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
-@builtin_resource(api="core", scope="cluster")
+@builtin_resource(api="core", scope="cluster", endpoint="namespace")
 @dataclass(frozen=True)
 class Namespace(
-    Readable[kube_client.V1Namespace],
-    Listable[kube_client.V1Namespace],
-    Creatable[kube_client.V1Namespace],
-    Patchable[kube_client.V1Namespace],
-    Upsertable[kube_client.V1Namespace],
-    Deletable[kube_client.V1Namespace],
+    KubeResource[kube_client.V1Namespace],
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes Namespace object.
 

@@ -20,7 +20,7 @@ from .api.resource import (
     RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
     ResourceScope,
     WatchEvent,
-    WatchExpired,
+    WatchExpiredError,
     _label_selector,
     _normalized_namespaces,
     _watch,
@@ -359,7 +359,7 @@ class _CustomObjectAPI[T_co]:
         namespace: str | None = None,
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
+        field_selector: str = "",
     ) -> builtins.list[T_co]:
         """List custom objects with optional namespace and label filtering.
 
@@ -378,7 +378,7 @@ class _CustomObjectAPI[T_co]:
             deadline=deadline,
             namespaces=selected,
             label_selector=_label_selector(self._selector(labels)),
-            field_selector=field_selector,
+            field_selector=field_selector.strip(),
         )
         out: builtins.list[T_co] = []
         for payload in payloads:
@@ -394,9 +394,9 @@ class _CustomObjectAPI[T_co]:
         deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         namespace: str | None = None,
-        resource_version: str | None = None,
+        resource_version: str = "",
         emit_initial: bool = False,
-        field_selector: str | None = None,
+        field_selector: str = "",
     ) -> AsyncIterator[WatchEvent[T_co]]:
         """Watch custom objects and yield typed events.
 
@@ -410,7 +410,8 @@ class _CustomObjectAPI[T_co]:
         normalized = _normalized_namespaces(selected)
         namespace = None if normalized is None else next(iter(normalized), None)
         labels = self._selector(labels)
-        current_version = resource_version.strip() if resource_version else ""
+        field_selector = field_selector.strip()
+        current_version = resource_version.strip()
         can_emit_initial = emit_initial and not current_version
         while True:
             remaining = deadline.remaining
@@ -447,7 +448,7 @@ class _CustomObjectAPI[T_co]:
                     if event.resource_version:
                         current_version = event.resource_version
                     yield event
-            except WatchExpired:
+            except WatchExpiredError:
                 current_version = ""
             else:
                 return
@@ -698,16 +699,16 @@ class _CustomObjectAPI[T_co]:
         deadline: Deadline,
         namespace: str | None,
         labels: Mapping[str, str] | None,
-        resource_version: str | None,
-        field_selector: str | None,
+        resource_version: str,
+        field_selector: str,
     ) -> AsyncIterator[WatchEvent[T_co]]:
         endpoint = self._custom_endpoint(kube, "list", namespace=namespace)
         api_kwargs = self._custom_kwargs(
             namespace=namespace,
             name=None,
             body=None,
-            label_selector=None,
-            field_selector=None,
+            label_selector="",
+            field_selector="",
         )
         async for event in _watch(
             endpoint,
@@ -728,7 +729,7 @@ class _CustomObjectAPI[T_co]:
         deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         namespace: str | None = None,
-        field_selector: str | None = None,
+        field_selector: str = "",
     ) -> tuple[builtins.list[CustomObject], str]:
         payloads = await self._list_payloads(
             kube,
@@ -803,11 +804,10 @@ class _CustomObjectAPI[T_co]:
         *,
         deadline: Deadline,
         namespaces: Collection[str] | None,
-        label_selector: str | None,
-        field_selector: str | None,
+        label_selector: str,
+        field_selector: str,
     ) -> builtins.list[object | None]:
-        field_selector = field_selector.strip() if field_selector is not None else ""
-        field_selector = field_selector or None
+        field_selector = field_selector.strip()
         normalized = _normalized_namespaces(namespaces)
         if self.scope == "cluster" or normalized is None:
             return [
@@ -909,8 +909,8 @@ class _CustomObjectAPI[T_co]:
         namespace: str | None = None,
         name: str | None = None,
         body: Mapping[str, object] | None = None,
-        label_selector: str | None = None,
-        field_selector: str | None = None,
+        label_selector: str = "",
+        field_selector: str = "",
     ) -> object | None:
         endpoint = self._custom_endpoint(kube, operation, namespace=namespace)
         api_kwargs = self._custom_kwargs(
@@ -950,8 +950,8 @@ class _CustomObjectAPI[T_co]:
         namespace: str | None,
         name: str | None,
         body: Mapping[str, object] | None,
-        label_selector: str | None,
-        field_selector: str | None,
+        label_selector: str,
+        field_selector: str,
     ) -> dict[str, object]:
         kwargs: dict[str, object] = {
             "group": self.group,
@@ -964,9 +964,9 @@ class _CustomObjectAPI[T_co]:
             kwargs["name"] = name
         if body is not None:
             kwargs["body"] = body
-        if label_selector is not None:
+        if label_selector:
             kwargs["label_selector"] = label_selector
-        if field_selector is not None:
+        if field_selector:
             kwargs["field_selector"] = field_selector
         return kwargs
 
@@ -1248,7 +1248,7 @@ class CustomResource(CustomObject):
         namespace: str | None = None,
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] | None = None,
-        field_selector: str | None = None,
+        field_selector: str = "",
     ) -> builtins.list[Self]:
         """List custom objects with optional namespace and label filtering.
 
@@ -1274,9 +1274,9 @@ class CustomResource(CustomObject):
         deadline: Deadline,
         labels: Mapping[str, str] | None = None,
         namespace: str | None = None,
-        resource_version: str | None = None,
+        resource_version: str = "",
         emit_initial: bool = False,
-        field_selector: str | None = None,
+        field_selector: str = "",
     ) -> AsyncIterator[WatchEvent[Self]]:
         """Watch custom objects and yield typed events.
 

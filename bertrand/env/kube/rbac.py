@@ -8,12 +8,8 @@ from typing import TYPE_CHECKING, Literal, Self
 from kubernetes import client as kube_client
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     builtin_resource,
 )
 
@@ -30,15 +26,11 @@ type _RoleKind = Literal["ClusterRole", "Role"]
 type _BindingKind = Literal["ClusterRoleBinding", "RoleBinding"]
 
 
-@builtin_resource(api="rbac", scope="cluster")
+@builtin_resource(api="rbac", scope="cluster", endpoint="cluster_role")
 @dataclass(frozen=True)
 class ClusterRole(
-    Readable[kube_client.V1ClusterRole],
-    Listable[kube_client.V1ClusterRole],
-    Creatable[kube_client.V1ClusterRole],
-    Patchable[kube_client.V1ClusterRole],
-    Upsertable[kube_client.V1ClusterRole],
-    Deletable[kube_client.V1ClusterRole],
+    KubeResource[kube_client.V1ClusterRole],
+    DeclarativeResource,
 ):
     """Wrapper around one Kubernetes ClusterRole object."""
 
@@ -78,15 +70,11 @@ class ClusterRole(
         )
 
 
-@builtin_resource(api="rbac", scope="cluster")
+@builtin_resource(api="rbac", scope="cluster", endpoint="cluster_role_binding")
 @dataclass(frozen=True)
 class ClusterRoleBinding(
-    Readable[kube_client.V1ClusterRoleBinding],
-    Listable[kube_client.V1ClusterRoleBinding],
-    Creatable[kube_client.V1ClusterRoleBinding],
-    Patchable[kube_client.V1ClusterRoleBinding],
-    Upsertable[kube_client.V1ClusterRoleBinding],
-    Deletable[kube_client.V1ClusterRoleBinding],
+    KubeResource[kube_client.V1ClusterRoleBinding],
+    DeclarativeResource,
 ):
     """Wrapper around one Kubernetes ClusterRoleBinding object."""
 
@@ -132,15 +120,11 @@ class ClusterRoleBinding(
         )
 
 
-@builtin_resource(api="rbac", scope="namespaced")
+@builtin_resource(api="rbac", scope="namespaced", endpoint="role")
 @dataclass(frozen=True)
 class Role(
-    Readable[kube_client.V1Role],
-    Listable[kube_client.V1Role],
-    Creatable[kube_client.V1Role],
-    Patchable[kube_client.V1Role],
-    Upsertable[kube_client.V1Role],
-    Deletable[kube_client.V1Role],
+    KubeResource[kube_client.V1Role],
+    DeclarativeResource,
 ):
     """Wrapper around one Kubernetes Role object."""
 
@@ -182,15 +166,11 @@ class Role(
         )
 
 
-@builtin_resource(api="rbac", scope="namespaced")
+@builtin_resource(api="rbac", scope="namespaced", endpoint="role_binding")
 @dataclass(frozen=True)
 class RoleBinding(
-    Readable[kube_client.V1RoleBinding],
-    Listable[kube_client.V1RoleBinding],
-    Creatable[kube_client.V1RoleBinding],
-    Patchable[kube_client.V1RoleBinding],
-    Upsertable[kube_client.V1RoleBinding],
-    Deletable[kube_client.V1RoleBinding],
+    KubeResource[kube_client.V1RoleBinding],
+    DeclarativeResource,
 ):
     """Wrapper around one Kubernetes RoleBinding object."""
 

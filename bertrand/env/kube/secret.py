@@ -10,12 +10,8 @@ from typing import TYPE_CHECKING
 from kubernetes import client as kube_client
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     builtin_resource,
 )
 
@@ -27,15 +23,11 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 
-@builtin_resource(api="core", scope="namespaced")
+@builtin_resource(api="core", scope="namespaced", endpoint="secret")
 @dataclass(frozen=True)
 class Secret(
-    Readable[kube_client.V1Secret],
-    Listable[kube_client.V1Secret],
-    Creatable[kube_client.V1Secret],
-    Patchable[kube_client.V1Secret],
-    Upsertable[kube_client.V1Secret],
-    Deletable[kube_client.V1Secret],
+    KubeResource[kube_client.V1Secret],
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes Secret object.
 

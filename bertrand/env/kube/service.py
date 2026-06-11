@@ -9,12 +9,8 @@ from typing import TYPE_CHECKING, Literal
 import kubernetes
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     builtin_resource,
 )
 
@@ -53,15 +49,11 @@ class ServicePortView:
     node_port: int | None = None
 
 
-@builtin_resource(api="core", scope="namespaced")
+@builtin_resource(api="core", scope="namespaced", endpoint="service")
 @dataclass(frozen=True)
 class Service(
-    Readable[kubernetes.client.V1Service],
-    Listable[kubernetes.client.V1Service],
-    Creatable[kubernetes.client.V1Service],
-    Patchable[kubernetes.client.V1Service],
-    Upsertable[kubernetes.client.V1Service],
-    Deletable[kubernetes.client.V1Service],
+    KubeResource[kubernetes.client.V1Service],
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes Service object.
 

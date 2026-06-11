@@ -11,12 +11,9 @@ import kubernetes
 from bertrand.env.git import Deadline, until
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Readable,
+    CreatableResource,
+    KubeResource,
     Watchable,
-    _resource_namespace_name,
     builtin_resource,
 )
 from .pod import Pod
@@ -143,14 +140,12 @@ def _job_spec_manifest(
     return spec
 
 
-@builtin_resource(api="batch", scope="namespaced")
+@builtin_resource(api="batch", scope="namespaced", endpoint="job")
 @dataclass(frozen=True)
 class Job(
-    Readable[kubernetes.client.V1Job],
-    Listable[kubernetes.client.V1Job],
-    Creatable[kubernetes.client.V1Job],
-    Deletable[kubernetes.client.V1Job],
-    Watchable[kubernetes.client.V1Job],
+    KubeResource[kubernetes.client.V1Job],
+    Watchable,
+    CreatableResource,
 ):
     """General-purpose wrapper around one Kubernetes Job object.
 
@@ -433,8 +428,17 @@ class Job(
         -------
         list[Pod]
             Pods selected by Kubernetes' standard Job ownership labels.
+
+        Raises
+        ------
+        OSError
+            If this Job has incomplete Kubernetes metadata.
         """
-        namespace, name = _resource_namespace_name(self, "list Job pods")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot list Job pods with missing metadata.name/namespace"
+            raise OSError(msg)
         pods = await Pod.list(
             kube,
             namespaces=(namespace,),
@@ -469,8 +473,14 @@ class Job(
         ------
         TimeoutError
             If the Job does not complete before `timeout`.
+        OSError
+            If this Job has incomplete Kubernetes metadata or fails.
         """
-        namespace, name = _resource_namespace_name(self, "wait for Job completion")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot wait for Job completion with missing metadata.name/namespace"
+            raise OSError(msg)
         current: Job = self
 
         async def complete(attempt_deadline: Deadline) -> Job:

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal
 import kubernetes
 
 from .api.client import Kube
-from .api.resource import Listable, Readable, Watchable, builtin_resource
+from .api.resource import KubeResource, Watchable, builtin_resource
 from .pod import Pod
 
 if TYPE_CHECKING:
@@ -62,12 +62,11 @@ class TaintView:
     value: str = ""
 
 
-@builtin_resource(api="core", scope="cluster")
+@builtin_resource(api="core", scope="cluster", endpoint="node")
 @dataclass(frozen=True)
 class Node(
-    Readable[kubernetes.client.V1Node],
-    Listable[kubernetes.client.V1Node],
-    Watchable[kubernetes.client.V1Node],
+    KubeResource[kubernetes.client.V1Node],
+    Watchable,
 ):
     """General-purpose wrapper around one Kubernetes Node object.
 

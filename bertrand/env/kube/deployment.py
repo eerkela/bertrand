@@ -9,14 +9,9 @@ from typing import TYPE_CHECKING
 import kubernetes
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     Watchable,
-    _resource_namespace_name,
     builtin_resource,
 )
 
@@ -29,16 +24,12 @@ if TYPE_CHECKING:
     from .api.spec import DeploymentStrategyManifest, PodTemplateSpec
 
 
-@builtin_resource(api="apps", scope="namespaced")
+@builtin_resource(api="apps", scope="namespaced", endpoint="deployment")
 @dataclass(frozen=True)
 class Deployment(
-    Readable[kubernetes.client.V1Deployment],
-    Listable[kubernetes.client.V1Deployment],
-    Creatable[kubernetes.client.V1Deployment],
-    Patchable[kubernetes.client.V1Deployment],
-    Upsertable[kubernetes.client.V1Deployment],
-    Deletable[kubernetes.client.V1Deployment],
-    Watchable[kubernetes.client.V1Deployment],
+    KubeResource[kubernetes.client.V1Deployment],
+    Watchable,
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes Deployment object.
 
@@ -436,13 +427,20 @@ class Deployment(
         ------
         ValueError
             If `minimum` is less than one.
+        OSError
+            If this Deployment has incomplete Kubernetes metadata.
         """
         if minimum < 1:
             msg = "minimum available Deployment replicas must be positive"
             raise ValueError(msg)
-        namespace, name = _resource_namespace_name(
-            self, "wait for Deployment availability"
-        )
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = (
+                "cannot wait for Deployment availability with missing "
+                "metadata.name/namespace"
+            )
+            raise OSError(msg)
         return await self.wait_until(
             kube,
             deadline=deadline,
@@ -485,11 +483,20 @@ class Deployment(
         ------
         ValueError
             If `minimum` is less than one.
+        OSError
+            If this Deployment has incomplete Kubernetes metadata.
         """
         if minimum < 1:
             msg = "minimum rolled out Deployment replicas must be positive"
             raise ValueError(msg)
-        namespace, name = _resource_namespace_name(self, "wait for Deployment rollout")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = (
+                "cannot wait for Deployment rollout with missing "
+                "metadata.name/namespace"
+            )
+            raise OSError(msg)
         target_generation = self.generation
         return await self.wait_until(
             kube,
@@ -542,7 +549,11 @@ class Deployment(
         if replicas < 0:
             msg = "Deployment replicas cannot be negative"
             raise ValueError(msg)
-        namespace, name = _resource_namespace_name(self, "scale Deployment")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot scale Deployment with missing metadata.name/namespace"
+            raise OSError(msg)
         payload = await kube.run(
             lambda request_timeout: kube.apps.patch_namespaced_deployment_scale(
                 name=name,

@@ -9,12 +9,8 @@ from typing import TYPE_CHECKING
 from kubernetes import client as kube_client
 
 from bertrand.env.kube.api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     builtin_resource,
 )
 
@@ -25,15 +21,11 @@ if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
 
 
-@builtin_resource(api="core", scope="namespaced")
+@builtin_resource(api="core", scope="namespaced", endpoint="config_map")
 @dataclass(frozen=True)
 class ConfigMap(
-    Readable[kube_client.V1ConfigMap],
-    Listable[kube_client.V1ConfigMap],
-    Creatable[kube_client.V1ConfigMap],
-    Patchable[kube_client.V1ConfigMap],
-    Upsertable[kube_client.V1ConfigMap],
-    Deletable[kube_client.V1ConfigMap],
+    KubeResource[kube_client.V1ConfigMap],
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes ConfigMap object.
 

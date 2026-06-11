@@ -9,14 +9,9 @@ from typing import TYPE_CHECKING
 import kubernetes
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     Watchable,
-    _resource_namespace_name,
     builtin_resource,
 )
 
@@ -29,16 +24,12 @@ if TYPE_CHECKING:
     from .api.spec import PodTemplateSpec
 
 
-@builtin_resource(api="apps", scope="namespaced")
+@builtin_resource(api="apps", scope="namespaced", endpoint="daemon_set")
 @dataclass(frozen=True)
 class DaemonSet(
-    Readable[kubernetes.client.V1DaemonSet],
-    Listable[kubernetes.client.V1DaemonSet],
-    Creatable[kubernetes.client.V1DaemonSet],
-    Patchable[kubernetes.client.V1DaemonSet],
-    Upsertable[kubernetes.client.V1DaemonSet],
-    Deletable[kubernetes.client.V1DaemonSet],
-    Watchable[kubernetes.client.V1DaemonSet],
+    KubeResource[kubernetes.client.V1DaemonSet],
+    Watchable,
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes DaemonSet object."""
 
@@ -331,13 +322,20 @@ class DaemonSet(
         ------
         ValueError
             If `minimum` is negative.
+        OSError
+            If this DaemonSet has incomplete Kubernetes metadata.
         """
         if minimum < 0:
             msg = "DaemonSet availability minimum cannot be negative"
             raise ValueError(msg)
-        namespace, name = _resource_namespace_name(
-            self, "wait for DaemonSet availability"
-        )
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = (
+                "cannot wait for DaemonSet availability with missing "
+                "metadata.name/namespace"
+            )
+            raise OSError(msg)
         return await self.wait_until(
             kube,
             deadline=deadline,
@@ -379,11 +377,19 @@ class DaemonSet(
         ------
         ValueError
             If `minimum` is negative.
+        OSError
+            If this DaemonSet has incomplete Kubernetes metadata.
         """
         if minimum < 0:
             msg = "DaemonSet rollout minimum cannot be negative"
             raise ValueError(msg)
-        namespace, name = _resource_namespace_name(self, "wait for DaemonSet rollout")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = (
+                "cannot wait for DaemonSet rollout with missing metadata.name/namespace"
+            )
+            raise OSError(msg)
         target_generation = self.generation
         return await self.wait_until(
             kube,

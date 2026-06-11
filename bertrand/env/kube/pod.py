@@ -12,13 +12,9 @@ from kubernetes.stream import stream as kubernetes_stream
 from bertrand.env.git import Deadline, until
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Readable,
+    CreatableResource,
+    KubeResource,
     Watchable,
-    _resource_label,
-    _resource_namespace_name,
     builtin_resource,
 )
 
@@ -97,14 +93,12 @@ def _container_status_diagnostics(
     return tuple(out)
 
 
-@builtin_resource(api="core", scope="namespaced")
+@builtin_resource(api="core", scope="namespaced", endpoint="pod")
 @dataclass(frozen=True)
 class Pod(
-    Readable[kubernetes.client.V1Pod],
-    Listable[kubernetes.client.V1Pod],
-    Creatable[kubernetes.client.V1Pod],
-    Deletable[kubernetes.client.V1Pod],
-    Watchable[kubernetes.client.V1Pod],
+    KubeResource[kubernetes.client.V1Pod],
+    Watchable,
+    CreatableResource,
 ):
     """General-purpose wrapper around one Kubernetes Pod object.
 
@@ -473,7 +467,12 @@ class Pod(
         if status is None:
             return ()
 
-        label = _resource_label(self)
+        if self.namespace and self.name:
+            label = f"Pod {self.namespace}/{self.name}"
+        elif self.name:
+            label = f"Pod {self.name}"
+        else:
+            label = "Pod"
         out: builtins.list[str] = []
         phase = self.phase
         if phase:
@@ -532,7 +531,11 @@ class Pod(
         OSError
             If Kubernetes returns malformed log data.
         """
-        namespace, name = _resource_namespace_name(self, "read pod logs")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot read pod logs with missing metadata.name/namespace"
+            raise OSError(msg)
         if tail_lines is not None and tail_lines <= 0:
             msg = "pod log tail_lines must be positive"
             raise ValueError(msg)
@@ -602,7 +605,11 @@ class Pod(
             If the pod metadata is incomplete or the Kubernetes API refuses the
             attach request.
         """
-        namespace, name = _resource_namespace_name(self, "attach to pod")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot attach to pod with missing metadata.name/namespace"
+            raise OSError(msg)
         container = container.strip()
         if not container:
             msg = "pod attach requires a non-empty container name"
@@ -644,8 +651,17 @@ class Pod(
         ------
         TimeoutError
             If terminal phase convergence does not complete before `deadline`.
+        OSError
+            If this Pod has incomplete Kubernetes metadata.
         """
-        namespace, name = _resource_namespace_name(self, "wait for pod terminal phase")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = (
+                "cannot wait for pod terminal phase with missing "
+                "metadata.name/namespace"
+            )
+            raise OSError(msg)
 
         async def terminal(attempt_deadline: Deadline) -> Pod:
             live = await self.refresh(kube, deadline=attempt_deadline)
@@ -684,8 +700,17 @@ class Pod(
             Active Kubernetes API context.
         deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
+
+        Raises
+        ------
+        OSError
+            If this Pod has incomplete Kubernetes metadata.
         """
-        namespace, name = _resource_namespace_name(self, "evict pod")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot evict pod with missing metadata.name/namespace"
+            raise OSError(msg)
 
         # policy/v1 eviction is preferred over delete because it respects
         # PodDisruptionBudgets and communicates scheduling intent explicitly.

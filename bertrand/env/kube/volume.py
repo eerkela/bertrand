@@ -15,11 +15,8 @@ from bertrand.env.git import Deadline, until
 
 from .api.client import Kube
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Readable,
-    _resource_namespace_name,
+    CreatableResource,
+    KubeResource,
     builtin_resource,
 )
 
@@ -48,11 +45,10 @@ STORAGE_FACTORS: dict[str, Decimal] = {
 }
 
 
-@builtin_resource(api="storage", scope="cluster")
+@builtin_resource(api="storage", scope="cluster", endpoint="storage_class")
 @dataclass(frozen=True)
 class StorageClass(
-    Readable[kubernetes.client.V1StorageClass],
-    Listable[kubernetes.client.V1StorageClass],
+    KubeResource[kubernetes.client.V1StorageClass],
 ):
     """General-purpose wrapper around one Kubernetes StorageClass object.
 
@@ -196,13 +192,11 @@ def _normalize_pvc_fields(
     return namespace, name, modes, storage_class, storage_request
 
 
-@builtin_resource(api="core", scope="namespaced")
+@builtin_resource(api="core", scope="namespaced", endpoint="persistent_volume_claim")
 @dataclass(frozen=True)
 class PersistentVolumeClaim(
-    Readable[kubernetes.client.V1PersistentVolumeClaim],
-    Listable[kubernetes.client.V1PersistentVolumeClaim],
-    Creatable[kubernetes.client.V1PersistentVolumeClaim],
-    Deletable[kubernetes.client.V1PersistentVolumeClaim],
+    KubeResource[kubernetes.client.V1PersistentVolumeClaim],
+    CreatableResource,
 ):
     """General-purpose wrapper around one Kubernetes PersistentVolumeClaim object.
 
@@ -545,7 +539,11 @@ class PersistentVolumeClaim(
             If Kubernetes returns malformed data or the API call fails.
         """
         new_size = parse_pvc_size(requested)
-        namespace, name = _resource_namespace_name(self, "resize PVC")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot resize PVC with missing metadata.name/namespace"
+            raise OSError(msg)
         patch = {"spec": {"resources": {"requests": {"storage": requested}}}}
         for attempt in range(PVC_GROW_RETRIES):
             live = await type(self)._resize_target(
@@ -617,8 +615,17 @@ class PersistentVolumeClaim(
         -------
         PersistentVolumeClaim
             Fresh wrapper whose phase is `Bound`.
+
+        Raises
+        ------
+        OSError
+            If this PVC has incomplete Kubernetes metadata.
         """
-        namespace, name = _resource_namespace_name(self, "wait for PVC binding")
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot wait for PVC binding with missing metadata.name/namespace"
+            raise OSError(msg)
         return await self.wait_until(
             kube,
             deadline=deadline,
@@ -727,11 +734,10 @@ class PersistentVolumeClaim(
         return mode.strip() in self.access_modes
 
 
-@builtin_resource(api="core", scope="cluster")
+@builtin_resource(api="core", scope="cluster", endpoint="persistent_volume")
 @dataclass(frozen=True)
 class PersistentVolume(
-    Readable[kubernetes.client.V1PersistentVolume],
-    Listable[kubernetes.client.V1PersistentVolume],
+    KubeResource[kubernetes.client.V1PersistentVolume],
 ):
     """General-purpose wrapper around one Kubernetes PersistentVolume object.
 

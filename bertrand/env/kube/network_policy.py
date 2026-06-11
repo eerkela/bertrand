@@ -9,12 +9,8 @@ from typing import TYPE_CHECKING, Literal, cast
 import kubernetes
 
 from .api.resource import (
-    Creatable,
-    Deletable,
-    Listable,
-    Patchable,
-    Readable,
-    Upsertable,
+    DeclarativeResource,
+    KubeResource,
     builtin_resource,
 )
 
@@ -47,15 +43,11 @@ def _policy_types(
     return tuple(result)
 
 
-@builtin_resource(api="networking", scope="namespaced")
+@builtin_resource(api="networking", scope="namespaced", endpoint="network_policy")
 @dataclass(frozen=True)
 class NetworkPolicy(
-    Readable[kubernetes.client.V1NetworkPolicy],
-    Listable[kubernetes.client.V1NetworkPolicy],
-    Creatable[kubernetes.client.V1NetworkPolicy],
-    Patchable[kubernetes.client.V1NetworkPolicy],
-    Upsertable[kubernetes.client.V1NetworkPolicy],
-    Deletable[kubernetes.client.V1NetworkPolicy],
+    KubeResource[kubernetes.client.V1NetworkPolicy],
+    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes NetworkPolicy object.
 
