@@ -7,8 +7,15 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -20,8 +27,16 @@ if TYPE_CHECKING:
 NAMESPACE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
+@builtin_resource(api="core", scope="cluster")
 @dataclass(frozen=True)
-class Namespace(KubeObject[kube_client.V1Namespace]):
+class Namespace(
+    Readable[kube_client.V1Namespace],
+    Listable[kube_client.V1Namespace],
+    Creatable[kube_client.V1Namespace],
+    Patchable[kube_client.V1Namespace],
+    Upsertable[kube_client.V1Namespace],
+    Deletable[kube_client.V1Namespace],
+):
     """General-purpose wrapper around one Kubernetes Namespace object.
 
     Parameters
@@ -90,7 +105,7 @@ class Namespace(KubeObject[kube_client.V1Namespace]):
             msg = "Namespace upsert requires non-empty name"
             raise OSError(msg)
         manifest = cls._manifest(name=name, labels=labels, annotations=annotations)
-        return await NAMESPACE_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             name=name,
             manifest=manifest,
@@ -108,19 +123,3 @@ class Namespace(KubeObject[kube_client.V1Namespace]):
         """
         status = self._obj.status
         return (status.phase or "").strip() if status is not None else ""
-
-
-NAMESPACE_RESOURCE: BuiltinResource[kube_client.V1Namespace, Namespace] = (
-    BuiltinResource(
-        scope="cluster",
-        api="core",
-        kind="Namespace",
-        slug="namespace",
-        expected=kube_client.V1Namespace,
-        list_type=kube_client.V1NamespaceList,
-        wrapper=Namespace.from_payload,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-    )
-)

@@ -7,8 +7,15 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -18,8 +25,16 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 
+@builtin_resource(api="core", scope="namespaced")
 @dataclass(frozen=True)
-class ServiceAccount(KubeObject[kube_client.V1ServiceAccount]):
+class ServiceAccount(
+    Readable[kube_client.V1ServiceAccount],
+    Listable[kube_client.V1ServiceAccount],
+    Creatable[kube_client.V1ServiceAccount],
+    Patchable[kube_client.V1ServiceAccount],
+    Upsertable[kube_client.V1ServiceAccount],
+    Deletable[kube_client.V1ServiceAccount],
+):
     """General-purpose wrapper around one Kubernetes ServiceAccount object.
 
     Parameters
@@ -98,27 +113,10 @@ class ServiceAccount(KubeObject[kube_client.V1ServiceAccount]):
             labels=labels,
             annotations=annotations,
         )
-        return await SERVICE_ACCOUNT_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             namespace=namespace,
             name=name,
             manifest=manifest,
             deadline=deadline,
         )
-
-
-SERVICE_ACCOUNT_RESOURCE: BuiltinResource[
-    kube_client.V1ServiceAccount,
-    ServiceAccount,
-] = BuiltinResource(
-    scope="namespaced",
-    api="core",
-    kind="ServiceAccount",
-    slug="service_account",
-    expected=kube_client.V1ServiceAccount,
-    list_type=kube_client.V1ServiceAccountList,
-    wrapper=ServiceAccount.from_payload,
-    can_create=True,
-    can_patch=True,
-    can_delete=True,
-)

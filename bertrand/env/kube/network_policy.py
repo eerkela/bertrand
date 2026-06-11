@@ -8,8 +8,15 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import kubernetes
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -23,8 +30,33 @@ type NetworkPolicyType = Literal["Ingress", "Egress"]
 _POLICY_TYPES = frozenset({"Ingress", "Egress"})
 
 
+def _policy_types(
+    policy_types: Collection[NetworkPolicyType],
+) -> tuple[NetworkPolicyType, ...]:
+    result: list[NetworkPolicyType] = []
+    for policy_type in policy_types:
+        value = str(policy_type).strip()
+        if value not in _POLICY_TYPES:
+            msg = f"unsupported NetworkPolicy policy type: {value!r}"
+            raise ValueError(msg)
+        if value not in result:
+            result.append(cast("NetworkPolicyType", value))
+    if not result:
+        msg = "NetworkPolicy requires at least one policy type"
+        raise ValueError(msg)
+    return tuple(result)
+
+
+@builtin_resource(api="networking", scope="namespaced")
 @dataclass(frozen=True)
-class NetworkPolicy(KubeObject[kubernetes.client.V1NetworkPolicy]):
+class NetworkPolicy(
+    Readable[kubernetes.client.V1NetworkPolicy],
+    Listable[kubernetes.client.V1NetworkPolicy],
+    Creatable[kubernetes.client.V1NetworkPolicy],
+    Patchable[kubernetes.client.V1NetworkPolicy],
+    Upsertable[kubernetes.client.V1NetworkPolicy],
+    Deletable[kubernetes.client.V1NetworkPolicy],
+):
     """General-purpose wrapper around one Kubernetes NetworkPolicy object.
 
     Parameters
@@ -143,7 +175,7 @@ class NetworkPolicy(KubeObject[kubernetes.client.V1NetworkPolicy]):
             labels=labels,
             annotations=annotations,
         )
-        return await NETWORK_POLICY_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -202,37 +234,3 @@ class NetworkPolicy(KubeObject[kubernetes.client.V1NetworkPolicy]):
             Whether the NetworkPolicy pod selector exactly matches `selector`.
         """
         return dict(self.pod_selector) == dict(selector)
-
-
-NETWORK_POLICY_RESOURCE: BuiltinResource[
-    kubernetes.client.V1NetworkPolicy,
-    NetworkPolicy,
-] = BuiltinResource(
-    scope="namespaced",
-    api="networking",
-    kind="NetworkPolicy",
-    slug="network_policy",
-    expected=kubernetes.client.V1NetworkPolicy,
-    list_type=kubernetes.client.V1NetworkPolicyList,
-    wrapper=NetworkPolicy.from_payload,
-    can_create=True,
-    can_patch=True,
-    can_delete=True,
-)
-
-
-def _policy_types(
-    policy_types: Collection[NetworkPolicyType],
-) -> tuple[NetworkPolicyType, ...]:
-    result: list[NetworkPolicyType] = []
-    for policy_type in policy_types:
-        value = str(policy_type).strip()
-        if value not in _POLICY_TYPES:
-            msg = f"unsupported NetworkPolicy policy type: {value!r}"
-            raise ValueError(msg)
-        if value not in result:
-            result.append(cast("NetworkPolicyType", value))
-    if not result:
-        msg = "NetworkPolicy requires at least one policy type"
-        raise ValueError(msg)
-    return tuple(result)

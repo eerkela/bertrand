@@ -7,8 +7,16 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    Watchable,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -19,8 +27,17 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 
+@builtin_resource(api="coordination", scope="namespaced")
 @dataclass(frozen=True)
-class Lease(KubeObject[kube_client.V1Lease]):
+class Lease(
+    Readable[kube_client.V1Lease],
+    Listable[kube_client.V1Lease],
+    Creatable[kube_client.V1Lease],
+    Patchable[kube_client.V1Lease],
+    Upsertable[kube_client.V1Lease],
+    Deletable[kube_client.V1Lease],
+    Watchable[kube_client.V1Lease],
+):
     """General-purpose wrapper around one Kubernetes Lease object.
 
     Parameters
@@ -324,7 +341,7 @@ class Lease(KubeObject[kube_client.V1Lease]):
             labels=labels,
             annotations=annotations,
         )
-        return await LEASE_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -379,18 +396,3 @@ class Lease(KubeObject[kube_client.V1Lease]):
         """
         spec = self._obj.spec
         return spec.renew_time if spec is not None else None
-
-
-LEASE_RESOURCE: BuiltinResource[kube_client.V1Lease, Lease] = BuiltinResource(
-    scope="namespaced",
-    api="coordination",
-    kind="Lease",
-    slug="lease",
-    expected=kube_client.V1Lease,
-    list_type=kube_client.V1LeaseList,
-    wrapper=Lease.from_payload,
-    can_create=True,
-    can_patch=True,
-    can_delete=True,
-    can_watch=True,
-)

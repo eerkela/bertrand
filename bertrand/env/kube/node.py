@@ -10,9 +10,8 @@ from typing import TYPE_CHECKING, Literal
 import kubernetes
 
 from .api.client import Kube
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
-from .pod import POD_RESOURCE, Pod
+from .api.resource import Listable, Readable, Watchable, builtin_resource
+from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
@@ -63,8 +62,13 @@ class TaintView:
     value: str = ""
 
 
+@builtin_resource(api="core", scope="cluster")
 @dataclass(frozen=True)
-class Node(KubeObject[kubernetes.client.V1Node]):
+class Node(
+    Readable[kubernetes.client.V1Node],
+    Listable[kubernetes.client.V1Node],
+    Watchable[kubernetes.client.V1Node],
+):
     """General-purpose wrapper around one Kubernetes Node object.
 
     Parameters
@@ -103,7 +107,7 @@ class Node(KubeObject[kubernetes.client.V1Node]):
             If no node can be matched, the matched node has no name, or multiple
             nodes make host identity ambiguous.
         """
-        nodes = await NODE_RESOURCE.list(kube=kube, deadline=deadline)
+        nodes = await Node.list(kube=kube, deadline=deadline)
         if not nodes:
             msg = "Kubernetes node list is empty"
             raise OSError(msg)
@@ -697,7 +701,7 @@ class Node(KubeObject[kubernetes.client.V1Node]):
         if not node_name:
             msg = "cannot query pods for Kubernetes node with missing name"
             raise OSError(msg)
-        return await POD_RESOURCE.list(
+        return await Pod.list(
             kube,
             deadline=deadline,
             namespaces=namespaces,
@@ -745,18 +749,6 @@ class Node(KubeObject[kubernetes.client.V1Node]):
         pending = _node_drain_pending(candidates)
         await _evict_node_drain_candidates(self, kube, candidates, deadline=deadline)
         await _wait_node_drain_convergence(self, kube, pending, deadline=deadline)
-
-
-NODE_RESOURCE: BuiltinResource[kubernetes.client.V1Node, Node] = BuiltinResource(
-    scope="cluster",
-    api="core",
-    kind="Node",
-    slug="node",
-    expected=kubernetes.client.V1Node,
-    list_type=kubernetes.client.V1NodeList,
-    wrapper=Node.from_payload,
-    can_watch=True,
-)
 
 
 def _classify_node_drain_pods(

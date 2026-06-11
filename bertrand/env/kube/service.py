@@ -8,8 +8,15 @@ from typing import TYPE_CHECKING, Literal
 
 import kubernetes
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -46,9 +53,15 @@ class ServicePortView:
     node_port: int | None = None
 
 
+@builtin_resource(api="core", scope="namespaced")
 @dataclass(frozen=True)
 class Service(
-    KubeObject[kubernetes.client.V1Service],
+    Readable[kubernetes.client.V1Service],
+    Listable[kubernetes.client.V1Service],
+    Creatable[kubernetes.client.V1Service],
+    Patchable[kubernetes.client.V1Service],
+    Upsertable[kubernetes.client.V1Service],
+    Deletable[kubernetes.client.V1Service],
 ):
     """General-purpose wrapper around one Kubernetes Service object.
 
@@ -155,7 +168,7 @@ class Service(
             annotations=annotations,
             service_type=service_type,
         )
-        return await SERVICE_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -279,22 +292,6 @@ class Service(
             and self.selects(selector)
             and all(self.exposes(port) for port in ports)
         )
-
-
-SERVICE_RESOURCE: BuiltinResource[kubernetes.client.V1Service, Service] = (
-    BuiltinResource(
-        scope="namespaced",
-        api="core",
-        kind="Service",
-        slug="service",
-        expected=kubernetes.client.V1Service,
-        list_type=kubernetes.client.V1ServiceList,
-        wrapper=Service.from_payload,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-    )
-)
 
 
 def _service_port_manifest(port: ServicePortView) -> dict[str, object]:

@@ -7,8 +7,17 @@ from typing import TYPE_CHECKING, Literal
 
 import kubernetes
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    Watchable,
+    _resource_namespace_name,
+    builtin_resource,
+)
 from .job import JobCompletionMode, _job_spec_manifest, _validate_job_execution
 
 if TYPE_CHECKING:
@@ -23,8 +32,17 @@ if TYPE_CHECKING:
 type CronJobConcurrencyPolicy = Literal["Allow", "Forbid", "Replace"]
 
 
+@builtin_resource(api="batch", scope="namespaced")
 @dataclass(frozen=True)
-class CronJob(KubeObject[kubernetes.client.V1CronJob]):
+class CronJob(
+    Readable[kubernetes.client.V1CronJob],
+    Listable[kubernetes.client.V1CronJob],
+    Creatable[kubernetes.client.V1CronJob],
+    Patchable[kubernetes.client.V1CronJob],
+    Upsertable[kubernetes.client.V1CronJob],
+    Deletable[kubernetes.client.V1CronJob],
+    Watchable[kubernetes.client.V1CronJob],
+):
     """General-purpose wrapper around one Kubernetes CronJob object.
 
     Parameters
@@ -235,7 +253,7 @@ class CronJob(KubeObject[kubernetes.client.V1CronJob]):
             failed_jobs_history_limit=failed_jobs_history_limit,
             time_zone=time_zone,
         )
-        return await CRON_JOB_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -316,7 +334,7 @@ class CronJob(KubeObject[kubernetes.client.V1CronJob]):
             If Kubernetes returns malformed data or the CronJob disappears after
             patching.
         """
-        namespace, name = self._require_namespace_name("suspend CronJob")
+        namespace, name = _resource_namespace_name(self, "suspend CronJob")
         payload = await kube.run(
             lambda request_timeout: kube.batch.patch_namespaced_cron_job(
                 name=name,
@@ -331,20 +349,3 @@ class CronJob(KubeObject[kubernetes.client.V1CronJob]):
             msg = f"malformed Kubernetes CronJob payload while patching {name!r}"
             raise OSError(msg)
         return type(self)(_obj=payload)
-
-
-CRON_JOB_RESOURCE: BuiltinResource[kubernetes.client.V1CronJob, CronJob] = (
-    BuiltinResource(
-        scope="namespaced",
-        api="batch",
-        kind="CronJob",
-        slug="cron_job",
-        expected=kubernetes.client.V1CronJob,
-        list_type=kubernetes.client.V1CronJobList,
-        wrapper=CronJob.from_payload,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-        can_watch=True,
-    )
-)

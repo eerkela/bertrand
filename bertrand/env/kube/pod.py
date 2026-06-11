@@ -11,8 +11,16 @@ from kubernetes.stream import stream as kubernetes_stream
 
 from bertrand.env.git import Deadline, until
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Readable,
+    Watchable,
+    _resource_label,
+    _resource_namespace_name,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     import builtins
@@ -89,8 +97,15 @@ def _container_status_diagnostics(
     return tuple(out)
 
 
+@builtin_resource(api="core", scope="namespaced")
 @dataclass(frozen=True)
-class Pod(KubeObject[kubernetes.client.V1Pod]):
+class Pod(
+    Readable[kubernetes.client.V1Pod],
+    Listable[kubernetes.client.V1Pod],
+    Creatable[kubernetes.client.V1Pod],
+    Deletable[kubernetes.client.V1Pod],
+    Watchable[kubernetes.client.V1Pod],
+):
     """General-purpose wrapper around one Kubernetes Pod object.
 
     Parameters
@@ -195,7 +210,7 @@ class Pod(KubeObject[kubernetes.client.V1Pod]):
             pod_template=pod_template,
             annotations=annotations,
         )
-        return await POD_RESOURCE.create(
+        return await cls.create_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -458,7 +473,7 @@ class Pod(KubeObject[kubernetes.client.V1Pod]):
         if status is None:
             return ()
 
-        label = self._object_label()
+        label = _resource_label(self)
         out: builtins.list[str] = []
         phase = self.phase
         if phase:
@@ -517,7 +532,7 @@ class Pod(KubeObject[kubernetes.client.V1Pod]):
         OSError
             If Kubernetes returns malformed log data.
         """
-        namespace, name = self._require_namespace_name("read pod logs")
+        namespace, name = _resource_namespace_name(self, "read pod logs")
         if tail_lines is not None and tail_lines <= 0:
             msg = "pod log tail_lines must be positive"
             raise ValueError(msg)
@@ -587,7 +602,7 @@ class Pod(KubeObject[kubernetes.client.V1Pod]):
             If the pod metadata is incomplete or the Kubernetes API refuses the
             attach request.
         """
-        namespace, name = self._require_namespace_name("attach to pod")
+        namespace, name = _resource_namespace_name(self, "attach to pod")
         container = container.strip()
         if not container:
             msg = "pod attach requires a non-empty container name"
@@ -630,10 +645,10 @@ class Pod(KubeObject[kubernetes.client.V1Pod]):
         TimeoutError
             If terminal phase convergence does not complete before `deadline`.
         """
-        namespace, name = self._require_namespace_name("wait for pod terminal phase")
+        namespace, name = _resource_namespace_name(self, "wait for pod terminal phase")
 
         async def terminal(attempt_deadline: Deadline) -> Pod:
-            live = await POD_RESOURCE.refresh(kube, self, deadline=attempt_deadline)
+            live = await self.refresh(kube, deadline=attempt_deadline)
             if live is None:
                 msg = (
                     f"pod {namespace}/{name} was deleted before reaching a "
@@ -670,7 +685,7 @@ class Pod(KubeObject[kubernetes.client.V1Pod]):
         deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
         """
-        namespace, name = self._require_namespace_name("evict pod")
+        namespace, name = _resource_namespace_name(self, "evict pod")
 
         # policy/v1 eviction is preferred over delete because it respects
         # PodDisruptionBudgets and communicates scheduling intent explicitly.
@@ -690,17 +705,3 @@ class Pod(KubeObject[kubernetes.client.V1Pod]):
             deadline=deadline,
             context=f"failed to evict pod {namespace}/{name}",
         )
-
-
-POD_RESOURCE: BuiltinResource[kubernetes.client.V1Pod, Pod] = BuiltinResource(
-    scope="namespaced",
-    api="core",
-    kind="Pod",
-    slug="pod",
-    expected=kubernetes.client.V1Pod,
-    list_type=kubernetes.client.V1PodList,
-    wrapper=Pod.from_payload,
-    can_create=True,
-    can_delete=True,
-    can_watch=True,
-)

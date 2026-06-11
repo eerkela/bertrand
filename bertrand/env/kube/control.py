@@ -11,6 +11,12 @@ from bertrand.env.git import Deadline
 CONTROL_PLANE_IMAGE_ENV = "BERTRAND_CONTROL_PLANE_IMAGE"
 
 
+# TODO: move this into the newly-unified @api/resource.py, since it's just a shared
+# utility for the actual kubernetes API wrapper classes, and we want to keep the
+# top-level modules limited to the actual wrapper classes themselves, with all the
+# utilities moved to @api/
+
+
 def _initial_maintenance_time() -> datetime:
     return datetime.min.replace(tzinfo=UTC)
 

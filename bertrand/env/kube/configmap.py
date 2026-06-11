@@ -8,8 +8,15 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from bertrand.env.kube.api.metadata import KubeObject
-from bertrand.env.kube.api.resource import BuiltinResource
+from bertrand.env.kube.api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -18,8 +25,16 @@ if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
 
 
+@builtin_resource(api="core", scope="namespaced")
 @dataclass(frozen=True)
-class ConfigMap(KubeObject[kube_client.V1ConfigMap]):
+class ConfigMap(
+    Readable[kube_client.V1ConfigMap],
+    Listable[kube_client.V1ConfigMap],
+    Creatable[kube_client.V1ConfigMap],
+    Patchable[kube_client.V1ConfigMap],
+    Upsertable[kube_client.V1ConfigMap],
+    Deletable[kube_client.V1ConfigMap],
+):
     """General-purpose wrapper around one Kubernetes ConfigMap object.
 
     Parameters
@@ -119,7 +134,7 @@ class ConfigMap(KubeObject[kube_client.V1ConfigMap]):
             annotations=annotations,
         )
 
-        return await CONFIG_MAP_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -148,19 +163,3 @@ class ConfigMap(KubeObject[kube_client.V1ConfigMap]):
             Read-only view of ConfigMap binary data.
         """
         return MappingProxyType(self._obj.binary_data or {})
-
-
-CONFIG_MAP_RESOURCE: BuiltinResource[kube_client.V1ConfigMap, ConfigMap] = (
-    BuiltinResource(
-        scope="namespaced",
-        api="core",
-        kind="ConfigMap",
-        slug="config_map",
-        expected=kube_client.V1ConfigMap,
-        list_type=kube_client.V1ConfigMapList,
-        wrapper=ConfigMap.from_payload,
-        can_create=True,
-        can_patch=True,
-        can_delete=True,
-    )
-)

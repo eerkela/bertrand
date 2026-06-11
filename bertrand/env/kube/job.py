@@ -10,9 +10,16 @@ import kubernetes
 
 from bertrand.env.git import Deadline, until
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
-from .pod import POD_RESOURCE, Pod
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Readable,
+    Watchable,
+    _resource_namespace_name,
+    builtin_resource,
+)
+from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
@@ -136,8 +143,15 @@ def _job_spec_manifest(
     return spec
 
 
+@builtin_resource(api="batch", scope="namespaced")
 @dataclass(frozen=True)
-class Job(KubeObject[kubernetes.client.V1Job]):
+class Job(
+    Readable[kubernetes.client.V1Job],
+    Listable[kubernetes.client.V1Job],
+    Creatable[kubernetes.client.V1Job],
+    Deletable[kubernetes.client.V1Job],
+    Watchable[kubernetes.client.V1Job],
+):
     """General-purpose wrapper around one Kubernetes Job object.
 
     Parameters
@@ -278,7 +292,7 @@ class Job(KubeObject[kubernetes.client.V1Job]):
             completions=completions,
             completion_mode=completion_mode,
         )
-        return await JOB_RESOURCE.create(
+        return await cls.create_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -420,8 +434,8 @@ class Job(KubeObject[kubernetes.client.V1Job]):
         list[Pod]
             Pods selected by Kubernetes' standard Job ownership labels.
         """
-        namespace, name = self._require_namespace_name("list Job pods")
-        pods = await POD_RESOURCE.list(
+        namespace, name = _resource_namespace_name(self, "list Job pods")
+        pods = await Pod.list(
             kube,
             namespaces=(namespace,),
             labels={"batch.kubernetes.io/job-name": name},
@@ -429,7 +443,7 @@ class Job(KubeObject[kubernetes.client.V1Job]):
         )
         if pods:
             return pods
-        return await POD_RESOURCE.list(
+        return await Pod.list(
             kube,
             namespaces=(namespace,),
             labels={"job-name": name},
@@ -456,7 +470,7 @@ class Job(KubeObject[kubernetes.client.V1Job]):
         TimeoutError
             If the Job does not complete before `timeout`.
         """
-        namespace, name = self._require_namespace_name("wait for Job completion")
+        namespace, name = _resource_namespace_name(self, "wait for Job completion")
         current: Job = self
 
         async def complete(attempt_deadline: Deadline) -> Job:
@@ -467,11 +481,7 @@ class Job(KubeObject[kubernetes.client.V1Job]):
             if failed_condition is not None:
                 msg = f"Job {namespace}/{name} failed: {failed_condition}"
                 raise OSError(msg)
-            refreshed = await JOB_RESOURCE.refresh(
-                kube,
-                current,
-                deadline=attempt_deadline,
-            )
+            refreshed = await current.refresh(kube, deadline=attempt_deadline)
             if refreshed is None:
                 msg = f"Job {namespace}/{name} disappeared while waiting for completion"
                 raise OSError(msg)
@@ -570,6 +580,11 @@ class Job(KubeObject[kubernetes.client.V1Job]):
         except (OSError, TimeoutError, ValueError) as err:
             return f"<failed to read {failure_label}: {err}>"
 
+    # TODO: I don't like `delete_quietly`, `wait_complete_with_diagnostics`, and  # noqa: FIX002
+    # `run_observed` as names.  Can you think of better ones, or ideally ways to
+    # eliminate these methods entirely and/or replace them with a more intuitive and
+    # composable API?
+
     async def delete_quietly(
         self,
         kube: Kube,
@@ -591,14 +606,13 @@ class Job(KubeObject[kubernetes.client.V1Job]):
         if deadline.remaining <= 0:
             return
         try:
-            await JOB_RESOURCE.delete(
+            await self.delete(
                 kube,
-                self,
                 deadline=deadline,
                 propagation_policy="Foreground",
             )
             if wait:
-                await JOB_RESOURCE.wait_deleted(kube, self, deadline=deadline)
+                await self.wait_deleted(kube, deadline=deadline)
         except (OSError, TimeoutError):
             return
 
@@ -762,17 +776,3 @@ class Job(KubeObject[kubernetes.client.V1Job]):
             failure_label=log_failure_label,
             include_headers=include_log_headers,
         )
-
-
-JOB_RESOURCE: BuiltinResource[kubernetes.client.V1Job, Job] = BuiltinResource(
-    scope="namespaced",
-    api="batch",
-    kind="Job",
-    slug="job",
-    expected=kubernetes.client.V1Job,
-    list_type=kubernetes.client.V1JobList,
-    wrapper=Job.from_payload,
-    can_create=True,
-    can_delete=True,
-    can_watch=True,
-)

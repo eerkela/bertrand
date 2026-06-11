@@ -8,14 +8,11 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from bertrand.env.config.core import _check_uuid
 from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, STATE, Deadline
-from bertrand.env.kube.custom_object import (
-    CustomObjectMetadata,
-    CustomObjectResource,
-)
+from bertrand.env.kube.custom_object import CustomResource, custom_resource
 from bertrand.env.kube.node import Node
 
 if TYPE_CHECKING:
@@ -36,6 +33,9 @@ BERTRAND_NODE_PHASE_LABEL = "bertrand.dev/node-phase"
 _BERTRAND_NODE_LABELS = {
     BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     BERTRAND_NODE_LABEL: BERTRAND_NODE_LABEL_VALUE,
+}
+_BERTRAND_NODE_SPEC_SCHEMA = {
+    "required": ["host_id", "node_name", "phase", "created_at", "last_seen_at"],
 }
 type _NonEmptyString = Annotated[str, Field(min_length=1)]
 type _BertrandNodePhase = Literal["Active", "Retired"]
@@ -80,55 +80,7 @@ class _BertrandNodeSpec(BaseModel):
         return value.astimezone(UTC)
 
 
-class BertrandNodeRecord(BaseModel):
-    """Cluster-scoped Bertrand host identity record.
-
-    Parameters
-    ----------
-    metadata : CustomObjectMetadata
-        Kubernetes metadata for the custom object.
-    spec : _BertrandNodeSpec
-        Validated Bertrand node identity payload.
-    """
-
-    model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
-    api_version: str = Field(default="", alias="apiVersion")
-    kind: str = ""
-    metadata: CustomObjectMetadata
-    spec: _BertrandNodeSpec
-
-    @property
-    def name(self) -> str:
-        """Return the Kubernetes custom-object name."""
-        return self.metadata.name
-
-    @property
-    def host_id(self) -> str:
-        """Return the durable Bertrand host UUID."""
-        return self.spec.host_id
-
-    @property
-    def node_name(self) -> str:
-        """Return the current Kubernetes node name for this host."""
-        return self.spec.node_name
-
-    @property
-    def display_name(self) -> str:
-        """Return the optional human-readable node display name."""
-        return self.spec.display_name
-
-    @property
-    def phase(self) -> _BertrandNodePhase:
-        """Return the Bertrand node lifecycle phase."""
-        return self.spec.phase
-
-    @property
-    def retired_at(self) -> datetime | None:
-        """Return the node retirement timestamp, if retired."""
-        return self.spec.retired_at
-
-
-BERTRAND_NODE_RESOURCE = CustomObjectResource[BertrandNodeRecord](
+@custom_resource(
     group=BERTRAND_NODE_GROUP,
     version=BERTRAND_NODE_VERSION,
     kind=BERTRAND_NODE_KIND,
@@ -136,13 +88,67 @@ BERTRAND_NODE_RESOURCE = CustomObjectResource[BertrandNodeRecord](
     scope="cluster",
     labels=_BERTRAND_NODE_LABELS,
     singular="bertrandnode",
-    payload_parser=BertrandNodeRecord.model_validate,
-    payload_error_context=f"{BERTRAND_NODE_KIND} payload",
     spec_model=_BertrandNodeSpec,
-    spec_schema_overrides={
-        "required": ["host_id", "node_name", "phase", "created_at", "last_seen_at"],
-    },
+    spec_schema_overrides=_BERTRAND_NODE_SPEC_SCHEMA,
 )
+class BertrandNodeRecord(CustomResource):
+    """Cluster-scoped Bertrand host identity record.
+
+    Notes
+    -----
+    The raw Kubernetes object remains available through `payload`, `metadata`, and
+    `spec`; convenience properties expose the validated Bertrand node spec.
+    """
+
+    @property
+    def node_spec(self) -> _BertrandNodeSpec:
+        """Return the validated Bertrand node spec.
+
+        Returns
+        -------
+        _BertrandNodeSpec
+            Validated custom-object `spec`.
+
+        Raises
+        ------
+        OSError
+            If the custom-object `spec` is malformed.
+        """
+        try:
+            return _BertrandNodeSpec.model_validate(self.spec)
+        except ValidationError as err:
+            msg = f"malformed {BERTRAND_NODE_KIND} spec: {err}"
+            raise OSError(msg) from err
+
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes custom-object name."""
+        return super().name
+
+    @property
+    def host_id(self) -> str:
+        """Return the durable Bertrand host UUID."""
+        return self.node_spec.host_id
+
+    @property
+    def node_name(self) -> str:
+        """Return the current Kubernetes node name for this host."""
+        return self.node_spec.node_name
+
+    @property
+    def display_name(self) -> str:
+        """Return the optional human-readable node display name."""
+        return self.node_spec.display_name
+
+    @property
+    def phase(self) -> _BertrandNodePhase:
+        """Return the Bertrand node lifecycle phase."""
+        return self.node_spec.phase
+
+    @property
+    def retired_at(self) -> datetime | None:
+        """Return the node retirement timestamp, if retired."""
+        return self.node_spec.retired_at
 
 
 async def ensure_local_bertrand_node(
@@ -173,7 +179,7 @@ async def ensure_local_bertrand_node(
 
     """
     host_id = current_host_id() if host_id is None else _check_uuid(host_id)
-    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, deadline=deadline)
+    await BertrandNodeRecord.ensure_crd(kube, deadline=deadline)
     node = await Node.local(kube, deadline=deadline)
     existing = await get_bertrand_node(
         kube,
@@ -181,7 +187,7 @@ async def ensure_local_bertrand_node(
         deadline=deadline,
     )
     now = datetime.now(UTC)
-    created_at = existing.spec.created_at if existing is not None else now
+    created_at = existing.node_spec.created_at if existing is not None else now
     if display_name is None:
         chosen_display = (
             existing.display_name if existing is not None else platform.node().strip()
@@ -197,7 +203,7 @@ async def ensure_local_bertrand_node(
         last_seen_at=now,
         retired_at=None,
     )
-    return await BERTRAND_NODE_RESOURCE.upsert(
+    return await BertrandNodeRecord.upsert(
         kube,
         name=bertrand_node_name(host_id),
         spec=spec,
@@ -223,7 +229,7 @@ async def get_bertrand_node(
     BertrandNodeRecord | None
         Matching record, or `None` when it does not exist.
     """
-    return await BERTRAND_NODE_RESOURCE.get(
+    return await BertrandNodeRecord.get(
         kube,
         name=bertrand_node_name(host_id),
         deadline=deadline,
@@ -254,7 +260,7 @@ async def retire_bertrand_node(
 
     """
     host_id = current_host_id() if host_id is None else _check_uuid(host_id)
-    await BERTRAND_NODE_RESOURCE.ensure_crd(kube, deadline=deadline)
+    await BertrandNodeRecord.ensure_crd(kube, deadline=deadline)
     existing = await get_bertrand_node(
         kube,
         host_id=host_id,
@@ -268,11 +274,11 @@ async def retire_bertrand_node(
         node_name=existing.node_name,
         display_name=existing.display_name,
         phase="Retired",
-        created_at=existing.spec.created_at,
-        last_seen_at=existing.spec.last_seen_at,
+        created_at=existing.node_spec.created_at,
+        last_seen_at=existing.node_spec.last_seen_at,
         retired_at=existing.retired_at or now,
     )
-    return await BERTRAND_NODE_RESOURCE.upsert(
+    return await BertrandNodeRecord.upsert(
         kube,
         name=existing.name,
         spec=spec,
@@ -299,7 +305,7 @@ async def list_bertrand_nodes(
     list[BertrandNodeRecord]
         Matching Bertrand node records.
     """
-    records = await BERTRAND_NODE_RESOURCE.list(kube, deadline=deadline)
+    records = await BertrandNodeRecord.list(kube, deadline=deadline)
     allowed_hosts = {_check_uuid(item) for item in host_ids or ()}
     allowed_nodes = {item.strip() for item in node_names or () if item.strip()}
     if allowed_hosts:

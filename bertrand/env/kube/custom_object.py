@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapp
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Self, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -19,11 +19,12 @@ from .api.client import Kube
 from .api.resource import (
     RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
     ResourceScope,
+    WatchEvent,
+    WatchExpired,
     _label_selector,
     _normalized_namespaces,
+    _watch,
 )
-from .api.watch import WatchEvent, WatchExpired
-from .api.watch import watch as kube_watch
 
 if TYPE_CHECKING:
     import builtins
@@ -50,6 +51,7 @@ _CUSTOM_ENDPOINTS: dict[_CustomOperation, tuple[str, str]] = {
     ),
     "delete": ("delete_cluster_custom_object", "delete_namespaced_custom_object"),
 }
+_CustomResourceClass = TypeVar("_CustomResourceClass", bound=type[Any])
 
 
 class CustomObjectMetadata(BaseModel):
@@ -207,7 +209,7 @@ class CustomObject:
 
 
 @dataclass(frozen=True)
-class CustomObjectResource[T_co]:
+class _CustomObjectAPI[T_co]:
     """Raw adapter for an installed or Bertrand-owned custom-object API.
 
     Parameters
@@ -707,7 +709,7 @@ class CustomObjectResource[T_co]:
             label_selector=None,
             field_selector=None,
         )
-        async for event in kube_watch(
+        async for event in _watch(
             endpoint,
             wrapper=self._wrap_payload,
             deadline=deadline,
@@ -791,7 +793,6 @@ class CustomObjectResource[T_co]:
                 type="ADDED",
                 object=self._wrap_payload(item.payload),
                 resource_version=item.resource_version or resource_version,
-                raw_type="ADDED",
             )
             for item in items
         )
@@ -1063,6 +1064,484 @@ class CustomObjectResource[T_co]:
         if not name:
             msg = "custom object manifest must define metadata.name"
             raise OSError(msg)
+
+
+@dataclass(frozen=True)
+class _CustomResourceConfig:
+    group: str
+    version: str
+    kind: str
+    plural: str
+    scope: CustomObjectScope = "namespaced"
+    labels: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    singular: str | None = None
+    spec_model: type[BaseModel] | None = None
+    spec_schema_overrides: Mapping[str, object] | None = None
+    spec_schema_include_defaults: bool = False
+    short_names: tuple[str, ...] = ()
+    status_model: type[BaseModel] | None = None
+    status_schema_overrides: Mapping[str, object] | None = None
+    status_schema_include_defaults: bool = False
+    default_namespace: str | None = None
+
+
+_CUSTOM_RESOURCE_REGISTRY: dict[type[Any], _CustomResourceConfig] = {}
+
+
+def custom_resource(
+    *,
+    group: str,
+    version: str,
+    plural: str,
+    scope: CustomObjectScope = "namespaced",
+    kind: str | None = None,
+    labels: Mapping[str, str] | None = None,
+    singular: str | None = None,
+    spec_model: type[BaseModel] | None = None,
+    spec_schema_overrides: Mapping[str, object] | None = None,
+    spec_schema_include_defaults: bool = False,
+    short_names: Collection[str] = (),
+    status_model: type[BaseModel] | None = None,
+    status_schema_overrides: Mapping[str, object] | None = None,
+    status_schema_include_defaults: bool = False,
+    default_namespace: str | None = None,
+) -> Callable[[_CustomResourceClass], _CustomResourceClass]:
+    """Register Kubernetes custom-resource metadata for a wrapper class.
+
+    Parameters
+    ----------
+    group : str
+        Kubernetes API group that owns the custom resource.
+    version : str
+        Served API version.
+    plural : str
+        Plural REST resource name.
+    scope : {"cluster", "namespaced"}, optional
+        Kubernetes API scope.
+    kind : str | None, optional
+        Kubernetes kind name. Defaults to the decorated class name.
+    labels : Mapping[str, str] | None, optional
+        Default labels to apply to created objects and list selectors.
+    singular : str | None, optional
+        Singular resource name for CRD ownership. When omitted, the wrapper can use
+        an existing API but cannot converge its CRD.
+    spec_model : type[BaseModel] | None, optional
+        Pydantic model used to generate a CRD `spec` schema.
+    spec_schema_overrides : Mapping[str, object] | None, optional
+        Schema overrides merged into the generated `spec` schema.
+    spec_schema_include_defaults : bool, optional
+        Whether generated `spec` schema fragments keep Pydantic defaults.
+    short_names : Collection[str], optional
+        Optional CRD short names.
+    status_model : type[BaseModel] | None, optional
+        Pydantic model used to generate a CRD `status` schema.
+    status_schema_overrides : Mapping[str, object] | None, optional
+        Schema overrides merged into the generated `status` schema.
+    status_schema_include_defaults : bool, optional
+        Whether generated `status` schema fragments keep Pydantic defaults.
+    default_namespace : str | None, optional
+        Namespace used by namespaced resources when callers omit one.
+
+    Returns
+    -------
+    Callable[[type[Any]], type[Any]]
+        Class decorator that records the resource metadata privately.
+
+    Raises
+    ------
+    ValueError
+        If the declaration has an invalid scope or missing identity fields.
+    """
+    group = group.strip()
+    version = version.strip()
+    plural = plural.strip()
+    raw_scope = scope.strip()
+    if raw_scope not in ("cluster", "namespaced"):
+        msg = (
+            "custom resource scope must be 'cluster' or 'namespaced', "
+            f"got {raw_scope!r}"
+        )
+        raise ValueError(msg)
+    resource_scope = raw_scope
+    if not group or not version or not plural:
+        msg = (
+            "custom resource declarations require non-empty group, version, and plural"
+        )
+        raise ValueError(msg)
+
+    def register(cls: _CustomResourceClass) -> _CustomResourceClass:
+        resource_kind = (kind or cls.__name__).strip()
+        if not resource_kind:
+            msg = "custom resource declarations require non-empty kind"
+            raise ValueError(msg)
+        _CUSTOM_RESOURCE_REGISTRY[cls] = _CustomResourceConfig(
+            group=group,
+            version=version,
+            kind=resource_kind,
+            plural=plural,
+            scope=resource_scope,
+            labels=MappingProxyType(dict(labels or {})),
+            singular=None if singular is None else singular.strip() or None,
+            spec_model=spec_model,
+            spec_schema_overrides=(
+                None
+                if spec_schema_overrides is None
+                else MappingProxyType(dict(spec_schema_overrides))
+            ),
+            spec_schema_include_defaults=spec_schema_include_defaults,
+            short_names=tuple(name.strip() for name in short_names if name.strip()),
+            status_model=status_model,
+            status_schema_overrides=(
+                None
+                if status_schema_overrides is None
+                else MappingProxyType(dict(status_schema_overrides))
+            ),
+            status_schema_include_defaults=status_schema_include_defaults,
+            default_namespace=(
+                None if default_namespace is None else default_namespace.strip() or None
+            ),
+        )
+        return cls
+
+    return register
+
+
+class CustomResource(CustomObject):
+    """Base class for class-owned Kubernetes custom-object wrappers."""
+
+    @classmethod
+    async def ensure_crd(cls, kube: Kube, *, deadline: Deadline) -> None:
+        """Converge this custom resource's CRD and wait until it is established."""
+        await cls._api().ensure_crd(kube, deadline=deadline)
+
+    @classmethod
+    async def get(
+        cls,
+        kube: Kube,
+        *,
+        name: str,
+        deadline: Deadline,
+        namespace: str | None = None,
+        context: str | None = None,
+    ) -> Self | None:
+        """Read one custom object by name.
+
+        Returns
+        -------
+        CustomResource | None
+            Wrapped custom object, or `None` when absent.
+        """
+        return await cls._api().get(
+            kube,
+            name=name,
+            deadline=deadline,
+            namespace=namespace,
+            context=context,
+        )
+
+    @classmethod
+    async def list(
+        cls,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None = None,
+        namespaces: Collection[str] | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str | None = None,
+    ) -> builtins.list[Self]:
+        """List custom objects with optional namespace and label filtering.
+
+        Returns
+        -------
+        list[CustomResource]
+            Wrapped custom objects matching the filters.
+        """
+        return await cls._api().list(
+            kube,
+            deadline=deadline,
+            namespace=namespace,
+            namespaces=namespaces,
+            labels=labels,
+            field_selector=field_selector,
+        )
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        labels: Mapping[str, str] | None = None,
+        namespace: str | None = None,
+        resource_version: str | None = None,
+        emit_initial: bool = False,
+        field_selector: str | None = None,
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch custom objects and yield typed events.
+
+        Yields
+        ------
+        WatchEvent[CustomResource]
+            Typed custom-object watch events.
+        """
+        async for event in cls._api().watch(
+            kube,
+            deadline=deadline,
+            labels=labels,
+            namespace=namespace,
+            resource_version=resource_version,
+            emit_initial=emit_initial,
+            field_selector=field_selector,
+        ):
+            yield event
+
+    @classmethod
+    async def create_spec(
+        cls,
+        kube: Kube,
+        *,
+        name: str,
+        spec: _CustomObjectFragment,
+        deadline: Deadline,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        annotations: Mapping[str, str] | None = None,
+    ) -> Self:
+        """Create one custom object from intent fields.
+
+        Returns
+        -------
+        CustomResource
+            Wrapped created object.
+        """
+        return await cls._api().create(
+            kube,
+            name=name,
+            spec=spec,
+            deadline=deadline,
+            namespace=namespace,
+            labels=labels,
+            annotations=annotations,
+        )
+
+    @classmethod
+    async def create_manifest(
+        cls,
+        kube: Kube,
+        *,
+        manifest: Mapping[str, object],
+        deadline: Deadline,
+        namespace: str | None = None,
+        name: str | None = None,
+        context: str | None = None,
+    ) -> Self:
+        """Create one custom object from a complete Kubernetes manifest.
+
+        Returns
+        -------
+        CustomResource
+            Wrapped created object.
+        """
+        return await cls._api().create_manifest(
+            kube,
+            manifest=manifest,
+            deadline=deadline,
+            namespace=namespace,
+            name=name,
+            context=context,
+        )
+
+    @classmethod
+    async def upsert(
+        cls,
+        kube: Kube,
+        *,
+        name: str,
+        deadline: Deadline,
+        namespace: str | None = None,
+        spec: _CustomObjectFragment | None = None,
+        manifest: Mapping[str, object] | None = None,
+        labels: Mapping[str, str] | None = None,
+        annotations: Mapping[str, str] | None = None,
+    ) -> Self:
+        """Create or patch one custom object from intent fields.
+
+        Returns
+        -------
+        CustomResource
+            Wrapped created or patched object.
+        """
+        return await cls._api().upsert(
+            kube,
+            name=name,
+            deadline=deadline,
+            namespace=namespace,
+            spec=spec,
+            manifest=manifest,
+            labels=labels,
+            annotations=annotations,
+        )
+
+    @classmethod
+    async def patch(
+        cls,
+        kube: Kube,
+        *,
+        name: str,
+        body: Mapping[str, object],
+        deadline: Deadline,
+        namespace: str | None = None,
+        context: str | None = None,
+    ) -> Self:
+        """Patch one custom object with a raw Kubernetes patch body.
+
+        Returns
+        -------
+        CustomResource
+            Wrapped patched object.
+        """
+        return await cls._api().patch(
+            kube,
+            name=name,
+            body=body,
+            deadline=deadline,
+            namespace=namespace,
+            context=context,
+        )
+
+    @classmethod
+    async def patch_status(
+        cls,
+        kube: Kube,
+        *,
+        name: str,
+        status: _CustomObjectFragment,
+        deadline: Deadline,
+        namespace: str | None = None,
+    ) -> Self:
+        """Patch one custom-object status payload.
+
+        Returns
+        -------
+        CustomResource
+            Wrapped object returned by Kubernetes.
+        """
+        return await cls._api().patch_status(
+            kube,
+            name=name,
+            status=status,
+            deadline=deadline,
+            namespace=namespace,
+        )
+
+    @classmethod
+    async def delete_by_name(
+        cls,
+        kube: Kube,
+        *,
+        name: str,
+        deadline: Deadline,
+        namespace: str | None = None,
+    ) -> None:
+        """Delete one custom object by name."""
+        await cls._api().delete_by_name(
+            kube,
+            name=name,
+            deadline=deadline,
+            namespace=namespace,
+        )
+
+    async def refresh(self, kube: Kube, *, deadline: Deadline) -> Self | None:
+        """Re-read this custom object by metadata identity.
+
+        Returns
+        -------
+        CustomResource | None
+            Fresh wrapped object, or `None` when absent.
+        """
+        namespace, name = self._require_resource_identity("refresh custom object")
+        return await type(self).get(
+            kube,
+            namespace=namespace,
+            name=name,
+            deadline=deadline,
+        )
+
+    async def delete(self, kube: Kube, *, deadline: Deadline) -> None:
+        """Delete this custom object from the cluster."""
+        namespace, name = self._require_resource_identity("delete custom object")
+        await type(self).delete_by_name(
+            kube,
+            namespace=namespace,
+            name=name,
+            deadline=deadline,
+        )
+
+    async def wait_deleted(self, kube: Kube, *, deadline: Deadline) -> None:
+        """Wait until this custom object is deleted."""
+        namespace, name = self._require_resource_identity("wait for custom object")
+        label = f"{type(self).__name__} {namespace}/{name}" if namespace else name
+        await (
+            type(self)
+            ._api()
+            .wait_deleted(
+                label=label,
+                deadline=deadline,
+                refresh=lambda remaining: self.refresh(kube, deadline=remaining),
+            )
+        )
+
+    def _require_resource_identity(self, action: str) -> tuple[str | None, str]:
+        if type(self)._config().scope == "cluster":
+            return None, self._require_name(action)
+        return self._require_namespace_name(action)
+
+    def _require_name(self, action: str) -> str:
+        name = self.name
+        if not name:
+            msg = f"cannot {action} with missing metadata.name"
+            raise OSError(msg)
+        return name
+
+    def _require_namespace_name(self, action: str) -> tuple[str, str]:
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = f"cannot {action} with missing metadata.name/namespace"
+            raise OSError(msg)
+        return namespace, name
+
+    @classmethod
+    def _config(cls) -> _CustomResourceConfig:
+        try:
+            return _CUSTOM_RESOURCE_REGISTRY[cls]
+        except KeyError as err:
+            msg = f"{cls.__name__} must be decorated with @custom_resource"
+            raise TypeError(msg) from err
+
+    @classmethod
+    def _api(cls) -> _CustomObjectAPI[Self]:
+        config = cls._config()
+        return _CustomObjectAPI(
+            group=config.group,
+            version=config.version,
+            kind=config.kind,
+            plural=config.plural,
+            scope=config.scope,
+            labels=config.labels,
+            payload_parser=cls.from_payload,
+            payload_error_context=f"{config.kind} payload",
+            singular=config.singular,
+            spec_model=config.spec_model,
+            spec_schema_overrides=config.spec_schema_overrides,
+            spec_schema_include_defaults=config.spec_schema_include_defaults,
+            short_names=config.short_names,
+            status_model=config.status_model,
+            status_schema_overrides=config.status_schema_overrides,
+            status_schema_include_defaults=config.status_schema_include_defaults,
+            default_namespace=config.default_namespace,
+        )
 
 
 def _custom_object_fragment(fragment: _CustomObjectFragment) -> dict[str, object]:

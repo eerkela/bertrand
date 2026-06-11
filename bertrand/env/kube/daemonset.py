@@ -8,8 +8,17 @@ from typing import TYPE_CHECKING
 
 import kubernetes
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    Watchable,
+    _resource_namespace_name,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -20,8 +29,17 @@ if TYPE_CHECKING:
     from .api.spec import PodTemplateSpec
 
 
+@builtin_resource(api="apps", scope="namespaced")
 @dataclass(frozen=True)
-class DaemonSet(KubeObject[kubernetes.client.V1DaemonSet]):
+class DaemonSet(
+    Readable[kubernetes.client.V1DaemonSet],
+    Listable[kubernetes.client.V1DaemonSet],
+    Creatable[kubernetes.client.V1DaemonSet],
+    Patchable[kubernetes.client.V1DaemonSet],
+    Upsertable[kubernetes.client.V1DaemonSet],
+    Deletable[kubernetes.client.V1DaemonSet],
+    Watchable[kubernetes.client.V1DaemonSet],
+):
     """General-purpose wrapper around one Kubernetes DaemonSet object."""
 
     _obj: kubernetes.client.V1DaemonSet
@@ -111,7 +129,7 @@ class DaemonSet(KubeObject[kubernetes.client.V1DaemonSet]):
             pod_template=pod_template,
             annotations=annotations,
         )
-        return await DAEMON_SET_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -317,12 +335,11 @@ class DaemonSet(KubeObject[kubernetes.client.V1DaemonSet]):
         if minimum < 0:
             msg = "DaemonSet availability minimum cannot be negative"
             raise ValueError(msg)
-        namespace, name = self._require_namespace_name(
-            "wait for DaemonSet availability"
+        namespace, name = _resource_namespace_name(
+            self, "wait for DaemonSet availability"
         )
-        return await DAEMON_SET_RESOURCE.wait_until(
+        return await self.wait_until(
             kube,
-            self,
             deadline=deadline,
             predicate=lambda live: live.has_available_pods(minimum),
             pending_message=f"DaemonSet {namespace}/{name} is not available yet",
@@ -366,11 +383,10 @@ class DaemonSet(KubeObject[kubernetes.client.V1DaemonSet]):
         if minimum < 0:
             msg = "DaemonSet rollout minimum cannot be negative"
             raise ValueError(msg)
-        namespace, name = self._require_namespace_name("wait for DaemonSet rollout")
+        namespace, name = _resource_namespace_name(self, "wait for DaemonSet rollout")
         target_generation = self.generation
-        return await DAEMON_SET_RESOURCE.wait_until(
+        return await self.wait_until(
             kube,
-            self,
             deadline=deadline,
             predicate=lambda live: (
                 (
@@ -387,21 +403,3 @@ class DaemonSet(KubeObject[kubernetes.client.V1DaemonSet]):
                 f"timed out waiting for DaemonSet {namespace}/{name} rollout"
             ),
         )
-
-
-DAEMON_SET_RESOURCE: BuiltinResource[
-    kubernetes.client.V1DaemonSet,
-    DaemonSet,
-] = BuiltinResource(
-    scope="namespaced",
-    api="apps",
-    kind="DaemonSet",
-    slug="daemon_set",
-    expected=kubernetes.client.V1DaemonSet,
-    list_type=kubernetes.client.V1DaemonSetList,
-    wrapper=DaemonSet.from_payload,
-    can_create=True,
-    can_patch=True,
-    can_delete=True,
-    can_watch=True,
-)

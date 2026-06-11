@@ -7,8 +7,15 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -18,9 +25,15 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 
+@builtin_resource(api="apiextensions", scope="cluster")
 @dataclass(frozen=True)
 class CustomResourceDefinition(
-    KubeObject[kube_client.V1CustomResourceDefinition],
+    Readable[kube_client.V1CustomResourceDefinition],
+    Listable[kube_client.V1CustomResourceDefinition],
+    Creatable[kube_client.V1CustomResourceDefinition],
+    Patchable[kube_client.V1CustomResourceDefinition],
+    Upsertable[kube_client.V1CustomResourceDefinition],
+    Deletable[kube_client.V1CustomResourceDefinition],
 ):
     """General-purpose wrapper around one Kubernetes CRD object."""
 
@@ -160,7 +173,7 @@ class CustomResourceDefinition(
             scope=scope,
             short_names=short_names,
         )
-        return await CUSTOM_RESOURCE_DEFINITION_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             name=name,
             manifest=body,
@@ -200,9 +213,8 @@ class CustomResourceDefinition(
             Refreshed CRD wrapper that reports `Established=True`.
         """
         name = self.name
-        return await CUSTOM_RESOURCE_DEFINITION_RESOURCE.wait_until(
+        return await self.wait_until(
             kube,
-            self,
             deadline=deadline,
             predicate=lambda live: live.is_established,
             pending_message=f"CRD {name!r} is not established yet",
@@ -210,20 +222,3 @@ class CustomResourceDefinition(
             timeout_message=f"timed out waiting for CRD {name!r} establishment",
             check_current=True,
         )
-
-
-CUSTOM_RESOURCE_DEFINITION_RESOURCE: BuiltinResource[
-    kube_client.V1CustomResourceDefinition,
-    CustomResourceDefinition,
-] = BuiltinResource(
-    scope="cluster",
-    api="apiextensions",
-    kind="CustomResourceDefinition",
-    slug="custom_resource_definition",
-    expected=kube_client.V1CustomResourceDefinition,
-    list_type=kube_client.V1CustomResourceDefinitionList,
-    wrapper=CustomResourceDefinition.from_payload,
-    can_create=True,
-    can_patch=True,
-    can_delete=True,
-)

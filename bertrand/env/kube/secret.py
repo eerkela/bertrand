@@ -9,8 +9,15 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -20,8 +27,16 @@ if TYPE_CHECKING:
     from .api.client import Kube
 
 
+@builtin_resource(api="core", scope="namespaced")
 @dataclass(frozen=True)
-class Secret(KubeObject[kube_client.V1Secret]):
+class Secret(
+    Readable[kube_client.V1Secret],
+    Listable[kube_client.V1Secret],
+    Creatable[kube_client.V1Secret],
+    Patchable[kube_client.V1Secret],
+    Upsertable[kube_client.V1Secret],
+    Deletable[kube_client.V1Secret],
+):
     """General-purpose wrapper around one Kubernetes Secret object.
 
     Parameters
@@ -81,7 +96,7 @@ class Secret(KubeObject[kube_client.V1Secret]):
             "data": {"value": base64.b64encode(payload).decode("ascii")},
         }
 
-        return await SECRET_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -116,17 +131,3 @@ class Secret(KubeObject[kube_client.V1Secret]):
                 "'data.value'"
             )
             raise OSError(msg) from err
-
-
-SECRET_RESOURCE: BuiltinResource[kube_client.V1Secret, Secret] = BuiltinResource(
-    scope="namespaced",
-    api="core",
-    kind="Secret",
-    slug="secret",
-    expected=kube_client.V1Secret,
-    list_type=kube_client.V1SecretList,
-    wrapper=Secret.from_payload,
-    can_create=True,
-    can_patch=True,
-    can_delete=True,
-)

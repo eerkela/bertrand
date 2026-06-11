@@ -8,8 +8,17 @@ from typing import TYPE_CHECKING
 
 import kubernetes
 
-from .api.metadata import KubeObject
-from .api.resource import BuiltinResource
+from .api.resource import (
+    Creatable,
+    Deletable,
+    Listable,
+    Patchable,
+    Readable,
+    Upsertable,
+    Watchable,
+    _resource_namespace_name,
+    builtin_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -20,9 +29,16 @@ if TYPE_CHECKING:
     from .api.spec import DeploymentStrategyManifest, PodTemplateSpec
 
 
+@builtin_resource(api="apps", scope="namespaced")
 @dataclass(frozen=True)
 class Deployment(
-    KubeObject[kubernetes.client.V1Deployment],
+    Readable[kubernetes.client.V1Deployment],
+    Listable[kubernetes.client.V1Deployment],
+    Creatable[kubernetes.client.V1Deployment],
+    Patchable[kubernetes.client.V1Deployment],
+    Upsertable[kubernetes.client.V1Deployment],
+    Deletable[kubernetes.client.V1Deployment],
+    Watchable[kubernetes.client.V1Deployment],
 ):
     """General-purpose wrapper around one Kubernetes Deployment object.
 
@@ -182,7 +198,7 @@ class Deployment(
             paused=paused,
         )
 
-        return await DEPLOYMENT_RESOURCE.upsert(
+        return await cls.upsert_manifest(
             kube,
             namespace=namespace,
             name=name,
@@ -424,12 +440,11 @@ class Deployment(
         if minimum < 1:
             msg = "minimum available Deployment replicas must be positive"
             raise ValueError(msg)
-        namespace, name = self._require_namespace_name(
-            "wait for Deployment availability"
+        namespace, name = _resource_namespace_name(
+            self, "wait for Deployment availability"
         )
-        return await DEPLOYMENT_RESOURCE.wait_until(
+        return await self.wait_until(
             kube,
-            self,
             deadline=deadline,
             predicate=lambda live: live.available_replicas >= minimum,
             pending_message=f"Deployment {namespace}/{name} is not available yet",
@@ -474,11 +489,10 @@ class Deployment(
         if minimum < 1:
             msg = "minimum rolled out Deployment replicas must be positive"
             raise ValueError(msg)
-        namespace, name = self._require_namespace_name("wait for Deployment rollout")
+        namespace, name = _resource_namespace_name(self, "wait for Deployment rollout")
         target_generation = self.generation
-        return await DEPLOYMENT_RESOURCE.wait_until(
+        return await self.wait_until(
             kube,
-            self,
             deadline=deadline,
             predicate=lambda live: (
                 (
@@ -528,7 +542,7 @@ class Deployment(
         if replicas < 0:
             msg = "Deployment replicas cannot be negative"
             raise ValueError(msg)
-        namespace, name = self._require_namespace_name("scale Deployment")
+        namespace, name = _resource_namespace_name(self, "scale Deployment")
         payload = await kube.run(
             lambda request_timeout: kube.apps.patch_namespaced_deployment_scale(
                 name=name,
@@ -542,7 +556,7 @@ class Deployment(
         if payload is None:
             msg = f"Deployment {namespace}/{name} disappeared while scaling"
             raise OSError(msg)
-        live = await DEPLOYMENT_RESOURCE.get(
+        live = await Deployment.get(
             kube,
             namespace=namespace,
             deadline=deadline,
@@ -552,21 +566,3 @@ class Deployment(
             msg = f"Deployment {namespace}/{name} disappeared after scaling"
             raise OSError(msg)
         return live
-
-
-DEPLOYMENT_RESOURCE: BuiltinResource[
-    kubernetes.client.V1Deployment,
-    Deployment,
-] = BuiltinResource(
-    scope="namespaced",
-    api="apps",
-    kind="Deployment",
-    slug="deployment",
-    expected=kubernetes.client.V1Deployment,
-    list_type=kubernetes.client.V1DeploymentList,
-    wrapper=Deployment.from_payload,
-    can_create=True,
-    can_patch=True,
-    can_delete=True,
-    can_watch=True,
-)

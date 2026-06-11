@@ -13,6 +13,12 @@ if TYPE_CHECKING:
 type PortProtocol = Literal["TCP", "UDP", "SCTP"]
 
 
+# TODO: this file can stay separate for now, since it's only meant to provide
+# convenient, typed representations of relevant Kubernetes manifest fragments, so that
+# we get better static analysis and runtime validation when constructing Kubernetes
+# objects via the API.
+
+
 class PolicyRuleManifest(TypedDict):
     """Kubernetes RBAC policy rule manifest fragment."""
 
