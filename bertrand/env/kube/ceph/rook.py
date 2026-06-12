@@ -211,7 +211,12 @@ async def delete_osd_claims(
         labels={STORAGE_OSD_NAME_LABEL: record.name},
     )
     for claim in claims:
-        await claim.delete(kube, deadline=deadline)
+        await claim.delete(
+            kube,
+            namespace=claim.namespace,
+            name=claim.name,
+            deadline=deadline,
+        )
 
 
 async def wait_osd_claims_gone(

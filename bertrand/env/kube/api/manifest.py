@@ -1,4 +1,4 @@
-"""Private Kubernetes pod-template intents and manifest boundary types."""
+"""Kubernetes manifest fragment types."""
 
 from __future__ import annotations
 
@@ -13,10 +13,7 @@ if TYPE_CHECKING:
 type PortProtocol = Literal["TCP", "UDP", "SCTP"]
 
 
-# TODO: this file can stay separate for now, since it's only meant to provide
-# convenient, typed representations of relevant Kubernetes manifest fragments, so that
-# we get better static analysis and runtime validation when constructing Kubernetes
-# objects via the API.
+# TODO: review this file in light of the new resource manifest/upsert design.
 
 
 class PolicyRuleManifest(TypedDict):
@@ -141,7 +138,7 @@ class ContainerSpec:
     stdin_once: bool | None = None
     tty: bool | None = None
 
-    def _manifest(self) -> dict[str, object]:
+    def manifest(self) -> dict[str, object]:
         """Render this container as a Kubernetes manifest fragment.
 
         Returns
@@ -246,7 +243,7 @@ class PodTemplateSpec:
     host_network: bool | None = None
     termination_grace_period_seconds: int | None = None
 
-    def _manifest(self) -> dict[str, object]:
+    def manifest(self) -> dict[str, object]:
         """Render this Pod template as a Kubernetes manifest fragment.
 
         Returns
@@ -261,8 +258,8 @@ class PodTemplateSpec:
         """
         spec: dict[str, object] = {
             "automountServiceAccountToken": self.automount_service_account_token,
-            "containers": [container._manifest() for container in self.containers],
-            "volumes": [volume._manifest() for volume in self.volumes],
+            "containers": [container.manifest() for container in self.containers],
+            "volumes": [volume.manifest() for volume in self.volumes],
         }
         if self.resource_claims:
             spec["resourceClaims"] = [
@@ -489,7 +486,7 @@ class VolumeSpec:
         )
         return cls(name=name, source={"hostPath": host_path})
 
-    def _manifest(self) -> dict[str, object]:
+    def manifest(self) -> dict[str, object]:
         """Render this volume as a Kubernetes manifest fragment.
 
         Returns

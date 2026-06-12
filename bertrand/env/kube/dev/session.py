@@ -20,10 +20,14 @@ from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.rbac import (
     ClusterRole,
     ClusterRoleBinding,
+    ClusterRoleBindingManifest,
+    ClusterRoleManifest,
     Role,
     RoleBinding,
+    RoleBindingManifest,
+    RoleManifest,
 )
-from bertrand.env.kube.service_account import ServiceAccount
+from bertrand.env.kube.service_account import ServiceAccount, ServiceAccountManifest
 from bertrand.env.kube.workload.controller import ensure_workload_claim_templates
 from bertrand.env.kube.workload.project import (
     _project_workload_config,
@@ -35,7 +39,7 @@ if TYPE_CHECKING:
 
     from bertrand.env.config.core import Config
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.api.spec import (
+    from bertrand.env.kube.api.manifest import (
         ContainerSpec,
         PodTemplateSpec,
         PolicyRuleManifest,
@@ -76,47 +80,57 @@ async def ensure_dev_backend(kube: Kube, *, deadline: Deadline) -> None:
         CODE_OPEN_RESOURCE.ensure_crd(kube, deadline=deadline),
         ServiceAccount.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DEV_SERVICE_ACCOUNT,
-            labels=_DEV_LABELS,
+            intent=ServiceAccountManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=DEV_SERVICE_ACCOUNT,
+                labels=_DEV_LABELS,
+            ),
             deadline=deadline,
         ),
         Role.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DEV_SERVICE_ACCOUNT,
-            rules=_dev_namespace_rules(),
-            labels=_DEV_LABELS,
+            intent=RoleManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=DEV_SERVICE_ACCOUNT,
+                rules=_dev_namespace_rules(),
+                labels=_DEV_LABELS,
+            ),
             deadline=deadline,
         ),
         ClusterRole.upsert(
             kube,
-            name=DEV_SERVICE_ACCOUNT,
-            rules=_dev_cluster_rules(),
-            labels=_DEV_LABELS,
+            intent=ClusterRoleManifest(
+                name=DEV_SERVICE_ACCOUNT,
+                rules=_dev_cluster_rules(),
+                labels=_DEV_LABELS,
+            ),
             deadline=deadline,
         ),
     )
     await asyncio.gather(
-        RoleBinding.bind_service_account(
+        RoleBinding.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DEV_SERVICE_ACCOUNT,
-            role_kind="Role",
-            role_name=DEV_SERVICE_ACCOUNT,
-            service_account_name=DEV_SERVICE_ACCOUNT,
-            service_account_namespace=BERTRAND_NAMESPACE,
-            labels=_DEV_LABELS,
+            intent=RoleBindingManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=DEV_SERVICE_ACCOUNT,
+                role_kind="Role",
+                role_name=DEV_SERVICE_ACCOUNT,
+                service_account_name=DEV_SERVICE_ACCOUNT,
+                service_account_namespace=BERTRAND_NAMESPACE,
+                labels=_DEV_LABELS,
+            ),
             deadline=deadline,
         ),
-        ClusterRoleBinding.bind_service_account(
+        ClusterRoleBinding.upsert(
             kube,
-            name=DEV_SERVICE_ACCOUNT,
-            role_kind="ClusterRole",
-            role_name=DEV_SERVICE_ACCOUNT,
-            service_account_name=DEV_SERVICE_ACCOUNT,
-            service_account_namespace=BERTRAND_NAMESPACE,
-            labels=_DEV_LABELS,
+            intent=ClusterRoleBindingManifest(
+                name=DEV_SERVICE_ACCOUNT,
+                role_kind="ClusterRole",
+                role_name=DEV_SERVICE_ACCOUNT,
+                service_account_name=DEV_SERVICE_ACCOUNT,
+                service_account_namespace=BERTRAND_NAMESPACE,
+                labels=_DEV_LABELS,
+            ),
             deadline=deadline,
         ),
     )
@@ -308,6 +322,8 @@ async def delete_dev_backend_state(
     for pod in pods:
         await pod.delete(
             kube,
+            namespace=pod.namespace,
+            name=pod.name,
             deadline=deadline,
             grace_period_seconds=1,
         )
@@ -322,7 +338,7 @@ async def delete_dev_backend_state(
         return
 
     for request in requests:
-        await CODE_OPEN_RESOURCE.delete_by_name(
+        await CODE_OPEN_RESOURCE.delete(
             kube,
             name=request.name,
             deadline=deadline,

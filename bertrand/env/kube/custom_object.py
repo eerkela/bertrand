@@ -14,7 +14,10 @@ from kubernetes import client as kube_client
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bertrand.env.git import Deadline, until
-from bertrand.env.kube.crd import CustomResourceDefinition
+from bertrand.env.kube.crd import (
+    CustomResourceDefinition,
+    CustomResourceDefinitionManifest,
+)
 
 from .api.client import Kube
 from .api.resource import (
@@ -292,16 +295,18 @@ class CustomObjectResource[T_co]:
             raise ValueError(msg)
         crd = await CustomResourceDefinition.upsert(
             kube,
-            group=self.group,
-            version=self.version,
-            plural=self.plural,
-            singular=self.singular,
-            kind=self.kind,
-            short_names=self.short_names,
-            spec_schema=spec_schema,
-            status_schema=self._status_schema(),
-            labels=self.labels,
-            scope="Cluster" if self.scope == "cluster" else "Namespaced",
+            intent=CustomResourceDefinitionManifest(
+                group=self.group,
+                version=self.version,
+                plural=self.plural,
+                singular=self.singular,
+                kind=self.kind,
+                short_names=self.short_names,
+                spec_schema=spec_schema,
+                status_schema=self._status_schema(),
+                labels=self.labels,
+                scope="Cluster" if self.scope == "cluster" else "Namespaced",
+            ),
             deadline=deadline,
         )
         await crd.wait_established(kube, deadline=deadline)
@@ -644,7 +649,7 @@ class CustomObjectResource[T_co]:
         )
         return self._wrap_payload(payload)
 
-    async def delete_by_name(
+    async def delete(
         self,
         kube: Kube,
         *,
@@ -665,35 +670,44 @@ class CustomObjectResource[T_co]:
             missing_ok=True,
         )
 
-    async def wait_deleted(
+    async def wait(
         self,
         *,
         label: str,
         deadline: Deadline,
         refresh: Callable[[Deadline], Awaitable[object | None]],
-    ) -> None:
-        """Wait until a custom object disappears.
+        predicate: Callable[[object | None], bool],
+    ) -> object | None:
+        """Wait until a custom object reaches the expected lifecycle state.
+
+        Returns
+        -------
+        object | None
+            Refreshed custom object, or `None` when deletion satisfies the
+            predicate.
 
         Raises
         ------
         TimeoutError
-            If the object still exists when `deadline` expires.
+            If the object does not reach the expected state before `deadline`
+            expires.
         """
 
-        async def deleted(attempt_deadline: Deadline) -> None:
-            if await refresh(attempt_deadline) is None:
-                return
-            msg = f"{label} still exists"
+        async def reached(attempt_deadline: Deadline) -> object | None:
+            current = await refresh(attempt_deadline)
+            if predicate(current):
+                return current
+            msg = f"{label} has not reached the expected state"
             raise TimeoutError(msg)
 
         try:
-            await until(
-                deleted,
+            return await until(
+                reached,
                 deadline=deadline,
                 delay=RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
             )
         except TimeoutError as err:
-            msg = f"timed out waiting for {label} deletion"
+            msg = f"timed out waiting for {label}"
             raise TimeoutError(msg) from err
 
     async def _watch_once(
@@ -1566,7 +1580,7 @@ class CustomResource(CustomObject):
         )
 
     @classmethod
-    async def delete_by_name(
+    async def delete(
         cls,
         kube: Kube,
         *,
@@ -1575,7 +1589,7 @@ class CustomResource(CustomObject):
         namespace: str | None = None,
     ) -> None:
         """Delete one custom object by name."""
-        await cls._api().delete_by_name(
+        await cls._api().delete(
             kube,
             name=name,
             deadline=deadline,
@@ -1598,29 +1612,54 @@ class CustomResource(CustomObject):
             deadline=deadline,
         )
 
-    async def delete(self, kube: Kube, *, deadline: Deadline) -> None:
-        """Delete this custom object from the cluster."""
-        namespace, name = self._require_resource_identity("delete custom object")
-        await type(self).delete_by_name(
-            kube,
-            namespace=namespace,
-            name=name,
-            deadline=deadline,
-        )
+    async def wait(
+        self,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        predicate: Callable[[Self | None], bool],
+    ) -> Self | None:
+        """Wait until this custom-object identity satisfies `predicate`.
 
-    async def wait_deleted(self, kube: Kube, *, deadline: Deadline) -> None:
-        """Wait until this custom object is deleted."""
+        Returns
+        -------
+        CustomResource | None
+            Refreshed custom object, or `None` when deletion satisfies the
+            predicate.
+
+        Raises
+        ------
+        OSError
+            If this custom object has incomplete metadata or the wait helper returns
+            malformed data.
+        """
         namespace, name = self._require_resource_identity("wait for custom object")
         label = f"{type(self).__name__} {namespace}/{name}" if namespace else name
-        await (
+
+        def matches(current: object | None) -> bool:
+            if current is None:
+                return predicate(None)
+            if not isinstance(current, type(self)):
+                msg = f"malformed {type(self).__name__} wait result"
+                raise OSError(msg)
+            return predicate(current)
+
+        current = await (
             type(self)
             ._api()
-            .wait_deleted(
+            .wait(
                 label=label,
                 deadline=deadline,
                 refresh=lambda remaining: self.refresh(kube, deadline=remaining),
+                predicate=matches,
             )
         )
+        if current is None:
+            return None
+        if not isinstance(current, type(self)):
+            msg = f"malformed {type(self).__name__} wait result"
+            raise OSError(msg)
+        return current
 
     def _require_resource_identity(self, action: str) -> tuple[str | None, str]:
         if type(self)._config().scope == "cluster":

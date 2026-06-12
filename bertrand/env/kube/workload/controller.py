@@ -11,8 +11,9 @@ from bertrand.env.kube.capability.device import upsert_resource_claim_templates
 from bertrand.env.kube.cronjob import (
     CronJob,
     CronJobConcurrencyPolicy,
+    CronJobManifest,
 )
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.deployment import Deployment, DeploymentManifest
 from bertrand.env.kube.job import Job, JobCompletionMode
 from bertrand.env.kube.network.workload import (
     delete_workload_http_routes,
@@ -32,11 +33,11 @@ if TYPE_CHECKING:
 
     from bertrand.env.config.bertrand import BertrandModel
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.api.resource import DeletionPropagationPolicy
-    from bertrand.env.kube.api.spec import (
+    from bertrand.env.kube.api.manifest import (
         DeploymentRollingUpdateManifest,
         DeploymentStrategyManifest,
     )
+    from bertrand.env.kube.api.resource import DeletionPropagationPolicy
 
 type StableWorkloadController = Deployment | CronJob
 type WorkloadControllerKind = Literal["none", "job", "cronjob", "deployment"]
@@ -249,21 +250,23 @@ async def _ensure_deployment_controller(
     )
     return await Deployment.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=pod.name,
-        labels=pod.labels,
-        selector=pod.selector,
-        pod_template=pod.pod_template(
-            primary_args=primary_args,
-            interactive=interactive,
-            stdin_once=False,
+        intent=DeploymentManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=pod.name,
+            labels=pod.labels,
+            selector=pod.selector,
+            pod_template=pod.pod_template(
+                primary_args=primary_args,
+                interactive=interactive,
+                stdin_once=False,
+            ),
+            replicas=_replicas(config),
+            strategy=_rollout_strategy(config),
+            min_ready_seconds=rollout.min_ready if rollout is not None else None,
+            progress_deadline_seconds=rollout.timeout if rollout is not None else None,
+            revision_history_limit=rollout.history if rollout is not None else None,
+            paused=rollout.paused if rollout is not None else None,
         ),
-        replicas=_replicas(config),
-        strategy=_rollout_strategy(config),
-        min_ready_seconds=rollout.min_ready if rollout is not None else None,
-        progress_deadline_seconds=rollout.timeout if rollout is not None else None,
-        revision_history_limit=rollout.history if rollout is not None else None,
-        paused=rollout.paused if rollout is not None else None,
         deadline=deadline,
     )
 
@@ -296,25 +299,31 @@ async def _ensure_cronjob_controller(
     )
     return await CronJob.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=pod.name,
-        labels=pod.labels,
-        pod_template=pod.pod_template(primary_args=primary_args),
-        schedule=schedule.cron,
-        backoff_limit=execution.retries if execution is not None else 0,
-        ttl_seconds_after_finished=execution.ttl if execution is not None else None,
-        active_deadline_seconds=execution.timeout if execution is not None else None,
-        parallelism=execution.parallelism if execution is not None else 1,
-        completions=execution.completions if execution is not None else None,
-        completion_mode=_COMPLETION_MODE[
-            execution.completion if execution is not None else "all"
-        ],
-        concurrency_policy=_concurrency_policy(schedule),
-        suspend=False if schedule.suspend is None else schedule.suspend,
-        starting_deadline_seconds=schedule.start_deadline,
-        successful_jobs_history_limit=schedule.history.success,
-        failed_jobs_history_limit=schedule.history.failure,
-        time_zone=schedule.timezone,
+        intent=CronJobManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=pod.name,
+            labels=pod.labels,
+            pod_template=pod.pod_template(primary_args=primary_args),
+            schedule=schedule.cron,
+            backoff_limit=execution.retries if execution is not None else 0,
+            ttl_seconds_after_finished=(
+                execution.ttl if execution is not None else None
+            ),
+            active_deadline_seconds=(
+                execution.timeout if execution is not None else None
+            ),
+            parallelism=execution.parallelism if execution is not None else 1,
+            completions=execution.completions if execution is not None else None,
+            completion_mode=_COMPLETION_MODE[
+                execution.completion if execution is not None else "all"
+            ],
+            concurrency_policy=_concurrency_policy(schedule),
+            suspend=False if schedule.suspend is None else schedule.suspend,
+            starting_deadline_seconds=schedule.start_deadline,
+            successful_jobs_history_limit=schedule.history.success,
+            failed_jobs_history_limit=schedule.history.failure,
+            time_zone=schedule.timezone,
+        ),
         deadline=deadline,
     )
 
@@ -786,6 +795,8 @@ async def _delete_active_execution(
     for job in jobs:
         await job.delete(
             kube,
+            namespace=job.namespace,
+            name=job.name,
             deadline=deadline,
             propagation_policy="Foreground",
             grace_period_seconds=grace_period_seconds,
@@ -798,6 +809,8 @@ async def _delete_active_execution(
     for pod in pods:
         await pod.delete(
             kube,
+            namespace=pod.namespace,
+            name=pod.name,
             deadline=deadline,
             grace_period_seconds=grace_period_seconds,
         )
@@ -899,6 +912,8 @@ async def _delete_deployment(
         return False
     await deployment.delete(
         kube,
+        namespace=deployment.namespace,
+        name=deployment.name,
         deadline=deadline,
         propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,
@@ -925,6 +940,8 @@ async def _delete_cronjob(
         return False
     await cronjob.delete(
         kube,
+        namespace=cronjob.namespace,
+        name=cronjob.name,
         deadline=deadline,
         propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,

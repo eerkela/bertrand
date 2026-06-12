@@ -14,7 +14,7 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
 )
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.build.daemon import (
     BUILDKIT_IMAGE,
     BUILDKIT_SOCKET_ADDR,
@@ -40,7 +40,7 @@ from bertrand.env.kube.capability.device import (
     select_device_claims,
 )
 from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
-from bertrand.env.kube.configmap import ConfigMap
+from bertrand.env.kube.configmap import ConfigMap, ConfigMapManifest
 from bertrand.env.kube.dra import ResourceClaimTemplate
 from bertrand.env.kube.job import Job
 
@@ -392,7 +392,7 @@ async def _publish_target(
             if remaining <= 0:
                 continue
             try:
-                await ResourceClaimTemplate.delete_by_name(
+                await ResourceClaimTemplate.delete(
                     kube,
                     namespace=template.namespace,
                     name=template.name,
@@ -422,10 +422,12 @@ async def _prepared_source(
         config_name = _dockerfile_config_name()
         await ConfigMap.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=config_name,
-            labels=_build_labels(),
-            data={BUILD_JOB_DOCKERFILE_KEY: spec.dockerfile},
+            intent=ConfigMapManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=config_name,
+                labels=_build_labels(),
+                data={BUILD_JOB_DOCKERFILE_KEY: spec.dockerfile},
+            ),
             deadline=deadline,
         )
         try:
@@ -626,6 +628,11 @@ async def _delete_config_map(
             deadline=deadline,
         )
         if config is not None:
-            await config.delete(kube, deadline=deadline)
+            await config.delete(
+                kube,
+                namespace=config.namespace,
+                name=config.name,
+                deadline=deadline,
+            )
     except (OSError, TimeoutError):
         return

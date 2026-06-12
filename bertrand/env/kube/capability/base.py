@@ -422,7 +422,12 @@ async def delete_capabilities_for_scope(
     )
     for ref, secret in capabilities:
         capability_ref_from_secret(secret, expected=ref)
-        await secret.delete(kube, deadline=deadline)
+        await secret.delete(
+            kube,
+            namespace=secret.namespace,
+            name=secret.name,
+            deadline=deadline,
+        )
 
 
 def _check_kind(kind: str) -> CapabilityKind:

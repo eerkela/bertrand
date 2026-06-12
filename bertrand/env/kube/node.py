@@ -13,6 +13,7 @@ from bertrand.env.git import EMPTY_MAPPING
 
 from .api.client import Kube
 from .api.resource import (
+    KubeManifest,
     KubeResource,
     WatchEvent,
     _watch,
@@ -74,11 +75,13 @@ class TaintView:
     payload=kubernetes.client.V1Node,
     read=kubernetes.client.CoreV1Api.read_node,
     list=kubernetes.client.CoreV1Api.list_node,
+    create=None,
+    patch=None,
     delete=kubernetes.client.CoreV1Api.delete_node,
 )
 @dataclass(frozen=True)
 class Node(
-    KubeResource[kubernetes.client.V1Node],
+    KubeResource[kubernetes.client.V1Node, KubeManifest],
 ):
     """General-purpose wrapper around one Kubernetes Node object.
 

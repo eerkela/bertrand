@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from .api.client import Kube
 from .api.resource import (
     KubeResource,
     WatchEvent,
@@ -21,7 +20,84 @@ if TYPE_CHECKING:
 
     from bertrand.env.git import Deadline
 
-    from .api.spec import DeploymentStrategyManifest, PodTemplateSpec
+    from .api.client import Kube
+    from .api.manifest import DeploymentStrategyManifest, PodTemplateSpec
+
+
+@dataclass(frozen=True)
+class DeploymentManifest:
+    """Desired state for one Kubernetes Deployment."""
+
+    namespace: str
+    name: str
+    labels: Mapping[str, str]
+    selector: Mapping[str, str]
+    pod_template: PodTemplateSpec
+    replicas: int = 1
+    annotations: Mapping[str, str] | None = None
+    strategy: DeploymentStrategyManifest | None = None
+    min_ready_seconds: int | None = None
+    progress_deadline_seconds: int | None = None
+    revision_history_limit: int | None = None
+    paused: bool | None = None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render this desired state as a Kubernetes manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Kubernetes Deployment manifest payload.
+
+        Raises
+        ------
+        ValueError
+            If replica or rollout timing fields are negative.
+        """
+        if self.replicas < 0:
+            msg = "Deployment replicas cannot be negative"
+            raise ValueError(msg)
+        for label, value in (
+            ("min ready seconds", self.min_ready_seconds),
+            ("progress deadline seconds", self.progress_deadline_seconds),
+            ("revision history limit", self.revision_history_limit),
+        ):
+            if value is not None and value < 0:
+                msg = f"Deployment {label} cannot be negative"
+                raise ValueError(msg)
+        template_labels = dict(self.labels)
+        template_labels.update(self.pod_template.labels)
+        template_labels.update(self.selector)
+        spec: dict[str, object] = {
+            "replicas": self.replicas,
+            "selector": {"matchLabels": dict(self.selector)},
+            "template": replace(
+                self.pod_template,
+                labels=template_labels,
+            ).manifest(),
+        }
+        if self.strategy is not None:
+            spec["strategy"] = dict(self.strategy)
+        optional: dict[str, object | None] = {
+            "minReadySeconds": self.min_ready_seconds,
+            "progressDeadlineSeconds": self.progress_deadline_seconds,
+            "revisionHistoryLimit": self.revision_history_limit,
+            "paused": self.paused,
+        }
+        spec.update(
+            {key: value for key, value in optional.items() if value is not None}
+        )
+        return {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": self.name,
+                "namespace": self.namespace,
+                "labels": dict(self.labels),
+                "annotations": dict(self.annotations or {}),
+            },
+            "spec": spec,
+        }
 
 
 @namespaced_resource(
@@ -30,11 +106,13 @@ if TYPE_CHECKING:
     read=kubernetes.client.AppsV1Api.read_namespaced_deployment,
     list=kubernetes.client.AppsV1Api.list_namespaced_deployment,
     list_all=kubernetes.client.AppsV1Api.list_deployment_for_all_namespaces,
+    create=kubernetes.client.AppsV1Api.create_namespaced_deployment,
+    patch=kubernetes.client.AppsV1Api.patch_namespaced_deployment,
     delete=kubernetes.client.AppsV1Api.delete_namespaced_deployment,
 )
 @dataclass(frozen=True)
 class Deployment(
-    KubeResource[kubernetes.client.V1Deployment],
+    KubeResource[kubernetes.client.V1Deployment, DeploymentManifest],
 ):
     """General-purpose wrapper around one Kubernetes Deployment object.
 
@@ -105,180 +183,6 @@ class Deployment(
                 object=cls(_obj=event.object),
                 resource_version=event.resource_version,
             )
-
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str],
-        selector: Mapping[str, str],
-        pod_template: PodTemplateSpec,
-        replicas: int,
-        annotations: Mapping[str, str] | None,
-        strategy: DeploymentStrategyManifest | None,
-        min_ready_seconds: int | None,
-        progress_deadline_seconds: int | None,
-        revision_history_limit: int | None,
-        paused: bool | None,
-    ) -> dict[str, object]:
-        template_labels = dict(labels)
-        template_labels.update(pod_template.labels)
-        template_labels.update(selector)
-        spec: dict[str, object] = {
-            "replicas": replicas,
-            "selector": {"matchLabels": dict(selector)},
-            "template": replace(pod_template, labels=template_labels)._manifest(),
-        }
-        if strategy is not None:
-            spec["strategy"] = dict(strategy)
-        optional: dict[str, object | None] = {
-            "minReadySeconds": min_ready_seconds,
-            "progressDeadlineSeconds": progress_deadline_seconds,
-            "revisionHistoryLimit": revision_history_limit,
-            "paused": paused,
-        }
-        spec.update(
-            {key: value for key, value in optional.items() if value is not None}
-        )
-        return {
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels),
-                "annotations": dict(annotations or {}),
-            },
-            "spec": spec,
-        }
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str],
-        selector: Mapping[str, str],
-        pod_template: PodTemplateSpec,
-        deadline: Deadline,
-        replicas: int = 1,
-        annotations: Mapping[str, str] | None = None,
-        strategy: DeploymentStrategyManifest | None = None,
-        min_ready_seconds: int | None = None,
-        progress_deadline_seconds: int | None = None,
-        revision_history_limit: int | None = None,
-        paused: bool | None = None,
-    ) -> Deployment:
-        """Create or patch one Kubernetes Deployment from intent-level fields.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Deployment.
-        name : str
-            Deployment name to create or patch.
-        labels : Mapping[str, str]
-            Labels to apply to the Deployment and pod template.
-        selector : Mapping[str, str]
-            Immutable pod selector labels for the Deployment.
-        pod_template : PodTemplateSpec
-            Pod template to render into the Deployment.
-        deadline : Deadline
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        replicas : int, optional
-            Desired replica count.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to `metadata.annotations`.
-        strategy : DeploymentStrategyManifest | None, optional
-            Optional Deployment rollout strategy.
-        min_ready_seconds : int | None, optional
-            Optional number of seconds a Pod must stay ready before availability.
-        progress_deadline_seconds : int | None, optional
-            Optional number of seconds before a rollout is considered stalled.
-        revision_history_limit : int | None, optional
-            Optional number of old ReplicaSets to retain.
-        paused : bool | None, optional
-            Optional flag controlling whether rollout progress is paused.
-
-        Returns
-        -------
-        Deployment
-            Wrapped created or patched Deployment.
-
-        Raises
-        ------
-        ValueError
-            If replica or rollout timing settings are invalid.
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
-        """
-        namespace = namespace.strip()
-        name = name.strip()
-        if not namespace or not name:
-            msg = "Deployment upsert requires non-empty namespace and name"
-            raise OSError(msg)
-        if replicas < 0:
-            msg = "Deployment replicas cannot be negative"
-            raise ValueError(msg)
-        for label, value in (
-            ("min ready seconds", min_ready_seconds),
-            ("progress deadline seconds", progress_deadline_seconds),
-            ("revision history limit", revision_history_limit),
-        ):
-            if value is not None and value < 0:
-                msg = f"Deployment {label} cannot be negative"
-                raise ValueError(msg)
-
-        manifest = cls._manifest(
-            namespace=namespace,
-            name=name,
-            labels=labels,
-            selector=selector,
-            pod_template=pod_template,
-            replicas=replicas,
-            annotations=annotations,
-            strategy=strategy,
-            min_ready_seconds=min_ready_seconds,
-            progress_deadline_seconds=progress_deadline_seconds,
-            revision_history_limit=revision_history_limit,
-            paused=paused,
-        )
-
-        api = kubernetes.client.AppsV1Api(kube.client)
-        try:
-            payload = await kube.run(
-                lambda request_timeout: api.create_namespaced_deployment(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to create Deployment {namespace}/{name}",
-                missing_ok=False,
-            )
-        except OSError as err:
-            if not isinstance(err, Kube.APIError) or err.status != 409:
-                raise
-            payload = await kube.run(
-                lambda request_timeout: api.patch_namespaced_deployment(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to patch Deployment {namespace}/{name}",
-                missing_ok=False,
-            )
-        if not isinstance(payload, kubernetes.client.V1Deployment):
-            msg = "malformed Kubernetes Deployment payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @property
     def pod_annotations(self) -> Mapping[str, str]:
@@ -510,15 +414,22 @@ class Deployment(
         ------
         ValueError
             If `minimum` is less than one.
+        OSError
+            If the Deployment disappears before satisfying the condition.
         """
         if minimum < 1:
             msg = "minimum available Deployment replicas must be positive"
             raise ValueError(msg)
-        return await self.wait_until(
+        live = await self.wait(
             kube,
             deadline=deadline,
-            predicate=lambda live: live.has_available_replicas(minimum),
+            predicate=lambda live: live is None
+            or live.has_available_replicas(minimum),
         )
+        if live is None:
+            msg = "Deployment disappeared while waiting for available replicas"
+            raise OSError(msg)
+        return live
 
     async def wait_rollout(
         self,
@@ -548,23 +459,32 @@ class Deployment(
         ------
         ValueError
             If `minimum` is less than one.
+        OSError
+            If the Deployment disappears before satisfying the condition.
         """
         if minimum < 1:
             msg = "minimum rolled out Deployment replicas must be positive"
             raise ValueError(msg)
         target_generation = self.generation
-        return await self.wait_until(
+        live = await self.wait(
             kube,
             deadline=deadline,
             predicate=lambda live: (
-                (
-                    target_generation <= 0
-                    or live.observed_generation >= target_generation
+                live is None
+                or (
+                    (
+                        target_generation <= 0
+                        or live.observed_generation >= target_generation
+                    )
+                    and live.updated_replicas >= minimum
+                    and live.available_replicas >= minimum
                 )
-                and live.updated_replicas >= minimum
-                and live.available_replicas >= minimum
             ),
         )
+        if live is None:
+            msg = "Deployment disappeared while waiting for rollout"
+            raise OSError(msg)
+        return live
 
     async def scale(
         self, kube: Kube, *, replicas: int, deadline: Deadline

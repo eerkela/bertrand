@@ -20,13 +20,13 @@ from bertrand.env.git import (
     Deadline,
 )
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.custom_object import (
     CustomObject,
     CustomObjectMetadata,
     CustomObjectResource,
 )
-from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.daemonset import DaemonSet, DaemonSetManifest
 from bertrand.env.kube.dra import (
     DEVICE_CLASS_PLURAL,
     DRA_GROUP,
@@ -41,13 +41,18 @@ from bertrand.env.kube.dra import (
 from bertrand.env.kube.rbac import (
     ClusterRole,
     ClusterRoleBinding,
+    ClusterRoleBindingManifest,
+    ClusterRoleManifest,
 )
-from bertrand.env.kube.service_account import ServiceAccount
+from bertrand.env.kube.service_account import ServiceAccount, ServiceAccountManifest
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.kube.api.spec import PodResourceClaimManifest, PolicyRuleManifest
+    from bertrand.env.kube.api.manifest import (
+        PodResourceClaimManifest,
+        PolicyRuleManifest,
+    )
 
 DRA_DRIVER_NAME = "bertrand.dev"
 DRA_DEVICE_CLASS = "bertrand-devices"
@@ -257,58 +262,68 @@ async def ensure_dra_backend(
         ),
         ServiceAccount.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DRA_PROVIDER_SERVICE_ACCOUNT,
-            labels=_DRA_LABELS,
+            intent=ServiceAccountManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=DRA_PROVIDER_SERVICE_ACCOUNT,
+                labels=_DRA_LABELS,
+            ),
             deadline=deadline,
         ),
         ClusterRole.upsert(
             kube,
-            name=DRA_PROVIDER_NAME,
-            rules=_provider_rules(),
-            labels=_DRA_LABELS,
+            intent=ClusterRoleManifest(
+                name=DRA_PROVIDER_NAME,
+                rules=_provider_rules(),
+                labels=_DRA_LABELS,
+            ),
             deadline=deadline,
         ),
     )
-    await ClusterRoleBinding.bind_service_account(
+    await ClusterRoleBinding.upsert(
         kube,
-        name=DRA_PROVIDER_NAME,
-        role_kind="ClusterRole",
-        role_name=DRA_PROVIDER_NAME,
-        service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
-        service_account_namespace=BERTRAND_NAMESPACE,
-        labels=_DRA_LABELS,
+        intent=ClusterRoleBindingManifest(
+            name=DRA_PROVIDER_NAME,
+            role_kind="ClusterRole",
+            role_name=DRA_PROVIDER_NAME,
+            service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
+            service_account_namespace=BERTRAND_NAMESPACE,
+            labels=_DRA_LABELS,
+        ),
         deadline=deadline,
     )
     daemonset = await DaemonSet.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=DRA_PROVIDER_NAME,
-        labels=_DRA_LABELS,
-        selector={DRA_PROVIDER_LABEL: DRA_PROVIDER_LABEL_VALUE},
-        pod_template=PodTemplateSpec(
-            containers=[
-                ContainerSpec(
-                    name="publisher",
-                    image=image,
-                    image_pull_policy="IfNotPresent",
-                    command=[
-                        "python",
-                        "-m",
-                        "bertrand.env.kube.capability.device",
-                        "agent",
-                    ],
-                    env=[
-                        {
-                            "name": DRA_NODE_ENV,
-                            "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
-                        }
-                    ],
-                )
-            ],
-            service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
-            automount_service_account_token=True,
-            node_selector={"kubernetes.io/os": "linux"},
+        intent=DaemonSetManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=DRA_PROVIDER_NAME,
+            labels=_DRA_LABELS,
+            selector={DRA_PROVIDER_LABEL: DRA_PROVIDER_LABEL_VALUE},
+            pod_template=PodTemplateSpec(
+                containers=[
+                    ContainerSpec(
+                        name="publisher",
+                        image=image,
+                        image_pull_policy="IfNotPresent",
+                        command=[
+                            "python",
+                            "-m",
+                            "bertrand.env.kube.capability.device",
+                            "agent",
+                        ],
+                        env=[
+                            {
+                                "name": DRA_NODE_ENV,
+                                "valueFrom": {
+                                    "fieldRef": {"fieldPath": "spec.nodeName"}
+                                },
+                            }
+                        ],
+                    )
+                ],
+                service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
+                automount_service_account_token=True,
+                node_selector={"kubernetes.io/os": "linux"},
+            ),
         ),
         deadline=deadline,
     )
@@ -491,7 +506,7 @@ async def delete_device_inventory(
         or record.spec.device_name != device_name
     ):
         return False
-    await BERTRAND_DEVICE_RESOURCE.delete_by_name(
+    await BERTRAND_DEVICE_RESOURCE.delete(
         kube,
         name=name,
         deadline=deadline,
@@ -527,7 +542,7 @@ async def delete_device_inventory_for_host(
         deadline=deadline,
     )
     for record in records:
-        await BERTRAND_DEVICE_RESOURCE.delete_by_name(
+        await BERTRAND_DEVICE_RESOURCE.delete(
             kube,
             name=record.name,
             deadline=deadline,

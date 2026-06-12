@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
-from .api.client import Kube
 from .api.resource import (
     KubeResource,
     WatchEvent,
@@ -21,7 +20,49 @@ if TYPE_CHECKING:
 
     from bertrand.env.git import Deadline
 
-    from .api.spec import PodTemplateSpec
+    from .api.client import Kube
+    from .api.manifest import PodTemplateSpec
+
+
+@dataclass(frozen=True)
+class DaemonSetManifest:
+    """Desired state for one Kubernetes DaemonSet."""
+
+    namespace: str
+    name: str
+    labels: Mapping[str, str]
+    selector: Mapping[str, str]
+    pod_template: PodTemplateSpec
+    annotations: Mapping[str, str] | None = None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render this desired state as a Kubernetes manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Kubernetes DaemonSet manifest payload.
+        """
+        template_labels = dict(self.labels)
+        template_labels.update(self.pod_template.labels)
+        template_labels.update(self.selector)
+        return {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "metadata": {
+                "name": self.name,
+                "namespace": self.namespace,
+                "labels": dict(self.labels),
+                "annotations": dict(self.annotations or {}),
+            },
+            "spec": {
+                "selector": {"matchLabels": dict(self.selector)},
+                "template": replace(
+                    self.pod_template,
+                    labels=template_labels,
+                ).manifest(),
+            },
+        }
 
 
 @namespaced_resource(
@@ -30,11 +71,13 @@ if TYPE_CHECKING:
     read=kubernetes.client.AppsV1Api.read_namespaced_daemon_set,
     list=kubernetes.client.AppsV1Api.list_namespaced_daemon_set,
     list_all=kubernetes.client.AppsV1Api.list_daemon_set_for_all_namespaces,
+    create=kubernetes.client.AppsV1Api.create_namespaced_daemon_set,
+    patch=kubernetes.client.AppsV1Api.patch_namespaced_daemon_set,
     delete=kubernetes.client.AppsV1Api.delete_namespaced_daemon_set,
 )
 @dataclass(frozen=True)
 class DaemonSet(
-    KubeResource[kubernetes.client.V1DaemonSet],
+    KubeResource[kubernetes.client.V1DaemonSet, DaemonSetManifest],
 ):
     """General-purpose wrapper around one Kubernetes DaemonSet object."""
 
@@ -94,122 +137,6 @@ class DaemonSet(
                 object=cls(_obj=event.object),
                 resource_version=event.resource_version,
             )
-
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str],
-        selector: Mapping[str, str],
-        pod_template: PodTemplateSpec,
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
-        template_labels = dict(labels)
-        template_labels.update(pod_template.labels)
-        template_labels.update(selector)
-        return {
-            "apiVersion": "apps/v1",
-            "kind": "DaemonSet",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels),
-                "annotations": dict(annotations or {}),
-            },
-            "spec": {
-                "selector": {"matchLabels": dict(selector)},
-                "template": replace(pod_template, labels=template_labels)._manifest(),
-            },
-        }
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str],
-        selector: Mapping[str, str],
-        pod_template: PodTemplateSpec,
-        deadline: Deadline,
-        annotations: Mapping[str, str] | None = None,
-    ) -> DaemonSet:
-        """Create or patch one Kubernetes DaemonSet from intent-level fields.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the DaemonSet.
-        name : str
-            DaemonSet name to create or patch.
-        labels : Mapping[str, str]
-            Labels to apply to the DaemonSet and pod template.
-        selector : Mapping[str, str]
-            Immutable pod selector labels for the DaemonSet.
-        pod_template : PodTemplateSpec
-            Pod template to render into the DaemonSet.
-        deadline : Deadline
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to `metadata.annotations`.
-
-        Returns
-        -------
-        DaemonSet
-            Wrapped created or patched DaemonSet.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
-        """
-        namespace = namespace.strip()
-        name = name.strip()
-        if not namespace or not name:
-            msg = "DaemonSet upsert requires non-empty namespace and name"
-            raise OSError(msg)
-        manifest = cls._manifest(
-            namespace=namespace,
-            name=name,
-            labels=labels,
-            selector=selector,
-            pod_template=pod_template,
-            annotations=annotations,
-        )
-        api = kubernetes.client.AppsV1Api(kube.client)
-        try:
-            payload = await kube.run(
-                lambda request_timeout: api.create_namespaced_daemon_set(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to create DaemonSet {namespace}/{name}",
-                missing_ok=False,
-            )
-        except OSError as err:
-            if not isinstance(err, Kube.APIError) or err.status != 409:
-                raise
-            payload = await kube.run(
-                lambda request_timeout: api.patch_namespaced_daemon_set(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to patch DaemonSet {namespace}/{name}",
-                missing_ok=False,
-            )
-        if not isinstance(payload, kubernetes.client.V1DaemonSet):
-            msg = "malformed Kubernetes DaemonSet payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @property
     def generation(self) -> int:
@@ -405,15 +332,21 @@ class DaemonSet(
         ------
         ValueError
             If `minimum` is negative.
+        OSError
+            If the DaemonSet disappears before satisfying the condition.
         """
         if minimum < 0:
             msg = "DaemonSet availability minimum cannot be negative"
             raise ValueError(msg)
-        return await self.wait_until(
+        live = await self.wait(
             kube,
             deadline=deadline,
-            predicate=lambda live: live.has_available_pods(minimum),
+            predicate=lambda live: live is None or live.has_available_pods(minimum),
         )
+        if live is None:
+            msg = "DaemonSet disappeared while waiting for available pods"
+            raise OSError(msg)
+        return live
 
     async def wait_rollout(
         self,
@@ -442,19 +375,28 @@ class DaemonSet(
         ------
         ValueError
             If `minimum` is negative.
+        OSError
+            If the DaemonSet disappears before satisfying the condition.
         """
         if minimum < 0:
             msg = "DaemonSet rollout minimum cannot be negative"
             raise ValueError(msg)
         target_generation = self.generation
-        return await self.wait_until(
+        live = await self.wait(
             kube,
             deadline=deadline,
             predicate=lambda live: (
-                (
-                    target_generation <= 0
-                    or live.observed_generation >= target_generation
+                live is None
+                or (
+                    (
+                        target_generation <= 0
+                        or live.observed_generation >= target_generation
+                    )
+                    and live.rollout_ready(minimum)
                 )
-                and live.rollout_ready(minimum)
             ),
         )
+        if live is None:
+            msg = "DaemonSet disappeared while waiting for rollout"
+            raise OSError(msg)
+        return live

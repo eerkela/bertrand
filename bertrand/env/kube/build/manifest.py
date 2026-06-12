@@ -13,7 +13,7 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
 )
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.build.refs import (
     DIGEST_REF_RE,
     tagged_repository,

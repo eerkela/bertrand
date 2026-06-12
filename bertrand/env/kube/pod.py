@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from bertrand.env.git import Deadline
 
     from .api.client import Kube
-    from .api.spec import PodTemplateSpec
+    from .api.manifest import PodTemplateSpec
 
 POD_MIRROR_ANNOTATION = "kubernetes.io/config.mirror"
 POD_SUPPORTED_CONTROLLER_KINDS = frozenset(
@@ -92,17 +92,70 @@ def _container_status_diagnostics(
     return tuple(out)
 
 
+@dataclass(frozen=True)
+class PodManifest:
+    """Desired state for one Kubernetes Pod."""
+
+    namespace: str
+    name: str
+    labels: Mapping[str, str]
+    pod_template: PodTemplateSpec
+    annotations: Mapping[str, str] | None = None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render this desired state as a Kubernetes manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Kubernetes Pod manifest payload.
+        """
+        template = self.pod_template.manifest()
+        pod_labels = dict(self.labels)
+        pod_annotations = dict(self.annotations or {})
+        metadata: dict[str, object] = {
+            "name": self.name,
+            "namespace": self.namespace,
+            "labels": pod_labels,
+            "annotations": pod_annotations,
+        }
+        template_metadata = template.get("metadata")
+        if isinstance(template_metadata, MappingABC):
+            template_metadata = dict(template_metadata)
+            template_labels = template_metadata.get("labels")
+            if isinstance(template_labels, MappingABC):
+                pod_labels.update(
+                    {str(key): str(value) for key, value in template_labels.items()}
+                )
+            template_annotations = template_metadata.get("annotations")
+            if isinstance(template_annotations, MappingABC):
+                pod_annotations.update(
+                    {
+                        str(key): str(value)
+                        for key, value in template_annotations.items()
+                    }
+                )
+        return {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": metadata,
+            "spec": template["spec"],
+        }
+
+
 @namespaced_resource(
     api=kubernetes.client.CoreV1Api,
     payload=kubernetes.client.V1Pod,
     read=kubernetes.client.CoreV1Api.read_namespaced_pod,
     list=kubernetes.client.CoreV1Api.list_namespaced_pod,
     list_all=kubernetes.client.CoreV1Api.list_pod_for_all_namespaces,
+    create=None,
+    patch=None,
     delete=kubernetes.client.CoreV1Api.delete_namespaced_pod,
 )
 @dataclass(frozen=True)
 class Pod(
-    KubeResource[kubernetes.client.V1Pod],
+    KubeResource[kubernetes.client.V1Pod, PodManifest],
 ):
     """General-purpose wrapper around one Kubernetes Pod object.
 
@@ -169,47 +222,6 @@ class Pod(
                 resource_version=event.resource_version,
             )
 
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str],
-        pod_template: PodTemplateSpec,
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
-        template = pod_template._manifest()
-        pod_labels = dict(labels)
-        pod_annotations = dict(annotations or {})
-        metadata: dict[str, object] = {
-            "name": name,
-            "namespace": namespace,
-            "labels": pod_labels,
-            "annotations": pod_annotations,
-        }
-        template_metadata = template.get("metadata")
-        if isinstance(template_metadata, MappingABC):
-            template_metadata = dict(template_metadata)
-            template_labels = template_metadata.get("labels")
-            if isinstance(template_labels, MappingABC):
-                pod_labels.update(
-                    {str(key): str(value) for key, value in template_labels.items()}
-                )
-            template_annotations = template_metadata.get("annotations")
-            if isinstance(template_annotations, MappingABC):
-                pod_annotations.update(
-                    {
-                        str(key): str(value)
-                        for key, value in template_annotations.items()
-                    }
-                )
-        return {
-            "apiVersion": "v1",
-            "kind": "Pod",
-            "metadata": metadata,
-            "spec": template["spec"],
-        }
-
     @classmethod
     async def create(
         cls,
@@ -256,13 +268,13 @@ class Pod(
         if not namespace or not name:
             msg = "Pod create requires non-empty namespace and name"
             raise OSError(msg)
-        manifest = cls._manifest(
+        manifest = PodManifest(
             namespace=namespace,
             name=name,
             labels=labels,
             pod_template=pod_template,
             annotations=annotations,
-        )
+        ).manifest()
         api = kubernetes.client.CoreV1Api(kube.client)
         payload = await kube.run(
             lambda request_timeout: api.create_namespaced_pod(
@@ -712,12 +724,20 @@ class Pod(
         Pod
             Latest pod wrapper once phase converges to `Succeeded` or `Failed`.
 
+        Raises
+        ------
+        OSError
+            If the Pod disappears before reaching a terminal phase.
         """
-        return await self.wait_until(
+        live = await self.wait(
             kube,
             deadline=deadline,
-            predicate=lambda live: live.is_terminal,
+            predicate=lambda live: live is None or live.is_terminal,
         )
+        if live is None:
+            msg = "Pod disappeared while waiting for a terminal phase"
+            raise OSError(msg)
+        return live
 
     async def evict(
         self,

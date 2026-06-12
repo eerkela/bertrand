@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Literal
 
 import kubernetes
 
-from .api.client import Kube
 from .api.resource import (
     KubeResource,
     namespaced_resource,
@@ -17,7 +16,6 @@ from .api.resource import (
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.git import Deadline
 
 type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
 
@@ -47,17 +45,56 @@ class ServicePortView:
     node_port: int | None = None
 
 
+@dataclass(frozen=True)
+class ServiceManifest:
+    """Desired state for one Kubernetes Service."""
+
+    namespace: str
+    name: str
+    selector: Mapping[str, str]
+    ports: Collection[ServicePortView]
+    labels: Mapping[str, str] | None = None
+    annotations: Mapping[str, str] | None = None
+    service_type: ServiceType = "ClusterIP"
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render this desired state as a Kubernetes manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Kubernetes Service manifest payload.
+        """
+        return {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": self.name,
+                "namespace": self.namespace,
+                "labels": dict(self.labels or {}),
+                "annotations": dict(self.annotations or {}),
+            },
+            "spec": {
+                "type": self.service_type,
+                "selector": dict(self.selector),
+                "ports": [_service_port_manifest(port) for port in self.ports],
+            },
+        }
+
+
 @namespaced_resource(
     api=kubernetes.client.CoreV1Api,
     payload=kubernetes.client.V1Service,
     read=kubernetes.client.CoreV1Api.read_namespaced_service,
     list=kubernetes.client.CoreV1Api.list_namespaced_service,
     list_all=kubernetes.client.CoreV1Api.list_service_for_all_namespaces,
+    create=kubernetes.client.CoreV1Api.create_namespaced_service,
+    patch=kubernetes.client.CoreV1Api.patch_namespaced_service,
     delete=kubernetes.client.CoreV1Api.delete_namespaced_service,
 )
 @dataclass(frozen=True)
 class Service(
-    KubeResource[kubernetes.client.V1Service],
+    KubeResource[kubernetes.client.V1Service, ServiceManifest],
 ):
     """General-purpose wrapper around one Kubernetes Service object.
 
@@ -73,127 +110,6 @@ class Service(
     """
 
     _obj: kubernetes.client.V1Service
-
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        selector: Mapping[str, str],
-        ports: Collection[ServicePortView],
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-        service_type: ServiceType,
-    ) -> dict[str, object]:
-        return {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels or {}),
-                "annotations": dict(annotations or {}),
-            },
-            "spec": {
-                "type": service_type,
-                "selector": dict(selector),
-                "ports": [_service_port_manifest(port) for port in ports],
-            },
-        }
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        selector: Mapping[str, str],
-        ports: Collection[ServicePortView],
-        deadline: Deadline,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
-        service_type: ServiceType = "ClusterIP",
-    ) -> Service:
-        """Create or patch one Kubernetes Service from intent-level fields.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Service.
-        name : str
-            Service name to create or patch.
-        selector : Mapping[str, str]
-            Pod label selector for the Service.
-        ports : Collection[ServicePortView]
-            Ports exposed by the Service.
-        deadline : Deadline
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Labels to apply to `metadata.labels`.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to `metadata.annotations`.
-        service_type : {"ClusterIP", "NodePort", "LoadBalancer", ...
-                "ExternalName"}, optional
-            Kubernetes Service type.
-
-        Returns
-        -------
-        Service
-            Wrapped created or patched Service.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes create/patch fails or returns malformed data.
-        """
-        namespace = namespace.strip()
-        name = name.strip()
-        if not namespace or not name:
-            msg = "Service upsert requires non-empty namespace and name"
-            raise OSError(msg)
-
-        manifest = cls._manifest(
-            namespace=namespace,
-            name=name,
-            selector=selector,
-            ports=ports,
-            labels=labels,
-            annotations=annotations,
-            service_type=service_type,
-        )
-        api = kubernetes.client.CoreV1Api(kube.client)
-        try:
-            payload = await kube.run(
-                lambda request_timeout: api.create_namespaced_service(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to create Service {namespace}/{name}",
-                missing_ok=False,
-            )
-        except OSError as err:
-            if not isinstance(err, Kube.APIError) or err.status != 409:
-                raise
-            payload = await kube.run(
-                lambda request_timeout: api.patch_namespaced_service(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to patch Service {namespace}/{name}",
-                missing_ok=False,
-            )
-        if not isinstance(payload, kubernetes.client.V1Service):
-            msg = "malformed Kubernetes Service payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @property
     def selector(self) -> Mapping[str, str]:

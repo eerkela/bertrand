@@ -8,8 +8,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, STATE, Deadline
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
-from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec, VolumeSpec
+from bertrand.env.kube.daemonset import DaemonSet, DaemonSetManifest
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.pod import Pod
 
@@ -226,11 +226,13 @@ async def ensure_buildkit_pool(
         raise OSError(msg)
     daemonset = await DaemonSet.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=BUILDKIT_NAME,
-        labels=_BUILDKIT_POOL_LABELS,
-        selector=_BUILDKIT_POOL_SELECTOR,
-        pod_template=_pod_template(config_hash=config_hash),
+        intent=DaemonSetManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=BUILDKIT_NAME,
+            labels=_BUILDKIT_POOL_LABELS,
+            selector=_BUILDKIT_POOL_SELECTOR,
+            pod_template=_pod_template(config_hash=config_hash),
+        ),
         deadline=deadline,
     )
     try:

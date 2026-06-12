@@ -16,7 +16,7 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
 )
-from bertrand.env.kube.configmap import ConfigMap
+from bertrand.env.kube.configmap import ConfigMap, ConfigMapManifest
 
 if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
@@ -228,9 +228,11 @@ class NetworkProfile(BaseModel):
         """
         await ConfigMap.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=NETWORK_PROFILE_NAME,
-            data=self.configmap_data(),
-            labels=NETWORK_PROFILE_LABELS,
+            intent=ConfigMapManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=NETWORK_PROFILE_NAME,
+                data=self.configmap_data(),
+                labels=NETWORK_PROFILE_LABELS,
+            ),
             deadline=deadline,
         )

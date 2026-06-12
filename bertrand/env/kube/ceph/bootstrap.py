@@ -15,7 +15,7 @@ from bertrand.env.kube.crd import (
 )
 from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
 from bertrand.env.kube.deployment import Deployment
-from bertrand.env.kube.namespace import Namespace
+from bertrand.env.kube.namespace import Namespace, NamespaceManifest
 from bertrand.env.kube.volume import StorageClass
 
 if TYPE_CHECKING:
@@ -150,7 +150,11 @@ async def _ensure_namespace_owned(kube: Kube, name: str, *, deadline: Deadline) 
                 "Bertrand-managed; refusing to mutate a shared Rook install"
             )
             raise OSError(msg)
-    await Namespace.upsert(kube, name=name, labels=ROOK_LABELS, deadline=deadline)
+    await Namespace.upsert(
+        kube,
+        intent=NamespaceManifest(name=name, labels=ROOK_LABELS),
+        deadline=deadline,
+    )
 
 
 async def _apply_urls(*urls: str, deadline: Deadline) -> None:

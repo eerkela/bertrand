@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.workload.base import (
     WorkloadIdentity,
     WorkloadPod,
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from bertrand.env.config.bertrand import BertrandModel
     from bertrand.env.git import Deadline
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.api.spec import ContainerPortManifest, PortProtocol
+    from bertrand.env.kube.api.manifest import ContainerPortManifest, PortProtocol
 
 
 async def workload_pod_from_config(

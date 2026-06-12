@@ -16,8 +16,8 @@ from bertrand.env.kube.network.gateway import (
     gateway_api_crd_missing,
     upsert_http_route,
 )
-from bertrand.env.kube.network_policy import NetworkPolicy
-from bertrand.env.kube.service import Service, ServicePortView
+from bertrand.env.kube.network_policy import NetworkPolicy, NetworkPolicyManifest
+from bertrand.env.kube.service import Service, ServiceManifest, ServicePortView
 
 if TYPE_CHECKING:
     from bertrand.env.config.bertrand import BertrandModel
@@ -75,12 +75,14 @@ async def ensure_workload_service(
     _assert_managed(service, identity=identity, kind="Service")
     return await Service.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=identity.name,
-        selector=identity.selector,
-        ports=ports,
-        labels=identity.labels,
-        service_type="ClusterIP",
+        intent=ServiceManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=identity.name,
+            selector=identity.selector,
+            ports=ports,
+            labels=identity.labels,
+            service_type="ClusterIP",
+        ),
         deadline=deadline,
     )
 
@@ -111,7 +113,12 @@ async def delete_workload_service(
     )
     _assert_managed(service, identity=identity, kind="Service")
     if service is not None:
-        await service.delete(kube, deadline=deadline)
+        await service.delete(
+            kube,
+            namespace=service.namespace,
+            name=service.name,
+            deadline=deadline,
+        )
 
 
 async def ensure_workload_network_policy(
@@ -173,12 +180,14 @@ async def ensure_workload_network_policy(
     _assert_managed(network_policy, identity=identity, kind="NetworkPolicy")
     return await NetworkPolicy.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=identity.name,
-        pod_selector=identity.selector,
-        labels=identity.labels,
-        policy_types=("Ingress",),
-        ingress=_isolated_ingress_rules(network, workload, route_plan=route_plan),
+        intent=NetworkPolicyManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=identity.name,
+            pod_selector=identity.selector,
+            labels=identity.labels,
+            policy_types=("Ingress",),
+            ingress=_isolated_ingress_rules(network, workload, route_plan=route_plan),
+        ),
         deadline=deadline,
     )
 
@@ -209,7 +218,12 @@ async def delete_workload_network_policy(
     )
     _assert_managed(network_policy, identity=identity, kind="NetworkPolicy")
     if network_policy is not None:
-        await network_policy.delete(kube, deadline=deadline)
+        await network_policy.delete(
+            kube,
+            namespace=network_policy.namespace,
+            name=network_policy.name,
+            deadline=deadline,
+        )
 
 
 async def ensure_workload_http_routes(
@@ -388,7 +402,7 @@ async def prune_workload_http_routes(
         if stale.name in route_plan:
             continue
         _assert_managed(stale, identity=identity, kind="HTTPRoute")
-        await HTTP_ROUTE_RESOURCE.delete_by_name(
+        await HTTP_ROUTE_RESOURCE.delete(
             kube,
             namespace=stale.namespace,
             name=stale.name,
@@ -425,7 +439,7 @@ async def delete_workload_http_routes(
         require_gateway_api=require_gateway_api,
     ):
         _assert_managed(route, identity=identity, kind="HTTPRoute")
-        await HTTP_ROUTE_RESOURCE.delete_by_name(
+        await HTTP_ROUTE_RESOURCE.delete(
             kube,
             namespace=route.namespace,
             name=route.name,

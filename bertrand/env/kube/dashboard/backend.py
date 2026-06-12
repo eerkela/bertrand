@@ -13,22 +13,27 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     Deadline,
 )
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec
+from bertrand.env.kube.deployment import Deployment, DeploymentManifest
 from bertrand.env.kube.rbac import (
     ClusterRole,
     ClusterRoleBinding,
+    ClusterRoleBindingManifest,
+    ClusterRoleManifest,
     Role,
     RoleBinding,
+    RoleBindingManifest,
+    RoleManifest,
 )
-from bertrand.env.kube.service import Service, ServicePortView
+from bertrand.env.kube.service import Service, ServiceManifest, ServicePortView
 from bertrand.env.kube.service_account import (
     ServiceAccount,
+    ServiceAccountManifest,
 )
 
 if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.api.spec import PolicyRuleManifest
+    from bertrand.env.kube.api.manifest import PolicyRuleManifest
 
 DASHBOARD_NAME = "bertrand-headlamp"
 HEADLAMP_IMAGE = "ghcr.io/headlamp-k8s/headlamp:v0.42.0"
@@ -75,47 +80,57 @@ async def ensure_dashboard_backend(kube: Kube, *, deadline: Deadline) -> Deploym
     await asyncio.gather(
         ServiceAccount.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DASHBOARD_NAME,
-            labels=DASHBOARD_LABELS,
+            intent=ServiceAccountManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=DASHBOARD_NAME,
+                labels=DASHBOARD_LABELS,
+            ),
             deadline=deadline,
         ),
         Role.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DASHBOARD_NAME,
-            rules=_namespace_rules(),
-            labels=DASHBOARD_LABELS,
+            intent=RoleManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=DASHBOARD_NAME,
+                rules=_namespace_rules(),
+                labels=DASHBOARD_LABELS,
+            ),
             deadline=deadline,
         ),
         ClusterRole.upsert(
             kube,
-            name=DASHBOARD_NAME,
-            rules=_cluster_read_rules(),
-            labels=DASHBOARD_LABELS,
+            intent=ClusterRoleManifest(
+                name=DASHBOARD_NAME,
+                rules=_cluster_read_rules(),
+                labels=DASHBOARD_LABELS,
+            ),
             deadline=deadline,
         ),
     )
     await asyncio.gather(
-        RoleBinding.bind_service_account(
+        RoleBinding.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DASHBOARD_NAME,
-            role_kind="Role",
-            role_name=DASHBOARD_NAME,
-            service_account_name=DASHBOARD_NAME,
-            service_account_namespace=BERTRAND_NAMESPACE,
-            labels=DASHBOARD_LABELS,
+            intent=RoleBindingManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=DASHBOARD_NAME,
+                role_kind="Role",
+                role_name=DASHBOARD_NAME,
+                service_account_name=DASHBOARD_NAME,
+                service_account_namespace=BERTRAND_NAMESPACE,
+                labels=DASHBOARD_LABELS,
+            ),
             deadline=deadline,
         ),
-        ClusterRoleBinding.bind_service_account(
+        ClusterRoleBinding.upsert(
             kube,
-            name=DASHBOARD_NAME,
-            role_kind="ClusterRole",
-            role_name=DASHBOARD_NAME,
-            service_account_name=DASHBOARD_NAME,
-            service_account_namespace=BERTRAND_NAMESPACE,
-            labels=DASHBOARD_LABELS,
+            intent=ClusterRoleBindingManifest(
+                name=DASHBOARD_NAME,
+                role_kind="ClusterRole",
+                role_name=DASHBOARD_NAME,
+                service_account_name=DASHBOARD_NAME,
+                service_account_namespace=BERTRAND_NAMESPACE,
+                labels=DASHBOARD_LABELS,
+            ),
             deadline=deadline,
         ),
     )
@@ -123,28 +138,32 @@ async def ensure_dashboard_backend(kube: Kube, *, deadline: Deadline) -> Deploym
     deployment, _service = await asyncio.gather(
         Deployment.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DASHBOARD_NAME,
-            labels=DASHBOARD_LABELS,
-            selector=DASHBOARD_SELECTOR,
-            pod_template=_pod_template(),
-            replicas=1,
+            intent=DeploymentManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=DASHBOARD_NAME,
+                labels=DASHBOARD_LABELS,
+                selector=DASHBOARD_SELECTOR,
+                pod_template=_pod_template(),
+                replicas=1,
+            ),
             deadline=deadline,
         ),
         Service.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DASHBOARD_NAME,
-            selector=DASHBOARD_SELECTOR,
-            ports=(
-                ServicePortView(
-                    name=_DASHBOARD_PORT_NAME,
-                    port=HEADLAMP_SERVICE_PORT,
-                    target_port=_DASHBOARD_PORT_NAME,
-                    protocol="TCP",
+            intent=ServiceManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=DASHBOARD_NAME,
+                selector=DASHBOARD_SELECTOR,
+                ports=(
+                    ServicePortView(
+                        name=_DASHBOARD_PORT_NAME,
+                        port=HEADLAMP_SERVICE_PORT,
+                        target_port=_DASHBOARD_PORT_NAME,
+                        protocol="TCP",
+                    ),
                 ),
+                labels=DASHBOARD_LABELS,
             ),
-            labels=DASHBOARD_LABELS,
             deadline=deadline,
         ),
     )
@@ -227,33 +246,48 @@ async def delete_dashboard_backend(kube: Kube, *, deadline: Deadline) -> None:
             _assert_managed(resource, kind=kind)
 
     if deployment is not None:
-        await deployment.delete(kube, deadline=deadline)
+        await deployment.delete(
+            kube,
+            namespace=deployment.namespace,
+            name=deployment.name,
+            deadline=deadline,
+        )
     if service is not None:
-        await service.delete(kube, deadline=deadline)
+        await service.delete(
+            kube,
+            namespace=service.namespace,
+            name=service.name,
+            deadline=deadline,
+        )
     if role_binding is not None:
-        await RoleBinding.delete_by_name(
+        await RoleBinding.delete(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
             deadline=deadline,
         )
     if role is not None:
-        await Role.delete_by_name(
+        await Role.delete(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DASHBOARD_NAME,
             deadline=deadline,
         )
     if service_account is not None:
-        await service_account.delete(kube, deadline=deadline)
+        await service_account.delete(
+            kube,
+            namespace=service_account.namespace,
+            name=service_account.name,
+            deadline=deadline,
+        )
     if cluster_role_binding is not None:
-        await ClusterRoleBinding.delete_by_name(
+        await ClusterRoleBinding.delete(
             kube,
             name=DASHBOARD_NAME,
             deadline=deadline,
         )
     if cluster_role is not None:
-        await ClusterRole.delete_by_name(
+        await ClusterRole.delete(
             kube,
             name=DASHBOARD_NAME,
             deadline=deadline,

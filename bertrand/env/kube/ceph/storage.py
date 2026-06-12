@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, Deadline
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.build.repository import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
@@ -72,19 +72,21 @@ from bertrand.env.kube.ceph.volume import (
     next_repository_volume_gc_time,
 )
 from bertrand.env.kube.control import MaintenanceClock
-from bertrand.env.kube.daemonset import DaemonSet
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.daemonset import DaemonSet, DaemonSetManifest
+from bertrand.env.kube.deployment import Deployment, DeploymentManifest
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.rbac import (
     ClusterRole,
     ClusterRoleBinding,
+    ClusterRoleBindingManifest,
+    ClusterRoleManifest,
 )
-from bertrand.env.kube.service_account import ServiceAccount
+from bertrand.env.kube.service_account import ServiceAccount, ServiceAccountManifest
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
 
-    from bertrand.env.kube.api.spec import PolicyRuleManifest
+    from bertrand.env.kube.api.manifest import PolicyRuleManifest
     from bertrand.env.kube.custom_object import CustomObjectResource
 
 STORAGE_CONTROLLER_SERVICE_ACCOUNT = "bertrand-ceph-storage-controller"
@@ -126,27 +128,33 @@ async def _ensure_rbac(kube: Kube, *, deadline: Deadline) -> None:
     await asyncio.gather(
         ServiceAccount.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-            labels=STORAGE_CONTROLLER_LABELS,
+            intent=ServiceAccountManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
+                labels=STORAGE_CONTROLLER_LABELS,
+            ),
             deadline=deadline,
         ),
         ClusterRole.upsert(
             kube,
-            name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-            rules=_storage_controller_rbac_rules(),
-            labels=STORAGE_CONTROLLER_LABELS,
+            intent=ClusterRoleManifest(
+                name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
+                rules=_storage_controller_rbac_rules(),
+                labels=STORAGE_CONTROLLER_LABELS,
+            ),
             deadline=deadline,
         ),
     )
-    await ClusterRoleBinding.bind_service_account(
+    await ClusterRoleBinding.upsert(
         kube,
-        name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-        role_kind="ClusterRole",
-        role_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-        service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-        service_account_namespace=BERTRAND_NAMESPACE,
-        labels=STORAGE_CONTROLLER_LABELS,
+        intent=ClusterRoleBindingManifest(
+            name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
+            role_kind="ClusterRole",
+            role_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
+            service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
+            service_account_namespace=BERTRAND_NAMESPACE,
+            labels=STORAGE_CONTROLLER_LABELS,
+        ),
         deadline=deadline,
     )
 
@@ -279,21 +287,27 @@ async def _ensure_workloads(kube: Kube, *, image: str, deadline: Deadline) -> No
 
     controller = await Deployment.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_CONTROLLER_NAME,
-        labels={
-            "app.kubernetes.io/name": STORAGE_CONTROLLER_NAME,
-            "app.kubernetes.io/part-of": "bertrand",
-            **STORAGE_CONTROLLER_LABELS,
-        },
-        selector={"app.kubernetes.io/name": STORAGE_CONTROLLER_NAME},
-        pod_template=PodTemplateSpec(
-            containers=[_storage_controller_container(image=image, role="controller")],
-            volumes=volumes,
-            service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-            automount_service_account_token=True,
-            node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
-            host_pid=True,
+        intent=DeploymentManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=STORAGE_CONTROLLER_NAME,
+            labels={
+                "app.kubernetes.io/name": STORAGE_CONTROLLER_NAME,
+                "app.kubernetes.io/part-of": "bertrand",
+                **STORAGE_CONTROLLER_LABELS,
+            },
+            selector={"app.kubernetes.io/name": STORAGE_CONTROLLER_NAME},
+            pod_template=PodTemplateSpec(
+                containers=[
+                    _storage_controller_container(image=image, role="controller")
+                ],
+                volumes=volumes,
+                service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
+                automount_service_account_token=True,
+                node_selector={
+                    CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE
+                },
+                host_pid=True,
+            ),
         ),
         deadline=deadline,
     )
@@ -301,21 +315,25 @@ async def _ensure_workloads(kube: Kube, *, image: str, deadline: Deadline) -> No
 
     agent = await DaemonSet.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_AGENT_NAME,
-        labels={
-            "app.kubernetes.io/name": STORAGE_AGENT_NAME,
-            "app.kubernetes.io/part-of": "bertrand",
-            **STORAGE_CONTROLLER_LABELS,
-        },
-        selector={"app.kubernetes.io/name": STORAGE_AGENT_NAME},
-        pod_template=PodTemplateSpec(
-            containers=[_storage_controller_container(image=image, role="agent")],
-            volumes=volumes,
-            service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-            automount_service_account_token=True,
-            node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
-            host_pid=True,
+        intent=DaemonSetManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=STORAGE_AGENT_NAME,
+            labels={
+                "app.kubernetes.io/name": STORAGE_AGENT_NAME,
+                "app.kubernetes.io/part-of": "bertrand",
+                **STORAGE_CONTROLLER_LABELS,
+            },
+            selector={"app.kubernetes.io/name": STORAGE_AGENT_NAME},
+            pod_template=PodTemplateSpec(
+                containers=[_storage_controller_container(image=image, role="agent")],
+                volumes=volumes,
+                service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
+                automount_service_account_token=True,
+                node_selector={
+                    CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE
+                },
+                host_pid=True,
+            ),
         ),
         deadline=deadline,
     )

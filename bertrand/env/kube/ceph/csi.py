@@ -16,7 +16,7 @@ from kubernetes import client as kube_client
 
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.build.repository import (
     CLUSTER_REGISTRY_READY_LABEL,
     CLUSTER_REGISTRY_READY_VALUE,
@@ -37,8 +37,8 @@ from bertrand.env.kube.ceph.capacity import (
     read_storage_state,
     upsert_storage_osd,
 )
-from bertrand.env.kube.daemonset import DaemonSet
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.daemonset import DaemonSet, DaemonSetManifest
+from bertrand.env.kube.deployment import Deployment, DeploymentManifest
 from bertrand.env.kube.volume import PersistentVolumeClaim
 
 if TYPE_CHECKING:
@@ -140,52 +140,56 @@ async def ensure_ceph_osd_csi_driver(
     }
     deployment = await Deployment.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=CSI_CONTROLLER_NAME,
-        labels=CSI_CONTROLLER_LABELS,
-        selector=CSI_CONTROLLER_SELECTOR,
-        replicas=1,
-        pod_template=PodTemplateSpec(
-            containers=[
-                ContainerSpec(
-                    name="driver",
-                    image=image,
-                    image_pull_policy="Always",
-                    command=["bertrand-ceph-csi"],
-                    args=[
-                        "controller",
-                        "--endpoint",
-                        f"unix://{CSI_CONTROLLER_SOCKET}",
-                    ],
-                    volume_mounts=[socket_mount],
-                ),
-                ContainerSpec(
-                    name="external-provisioner",
-                    image=CSI_PROVISIONER_IMAGE,
-                    args=[
-                        f"--csi-address={CSI_CONTROLLER_SOCKET}",
-                        "--extra-create-metadata=true",
-                        "--feature-gates=Topology=true",
-                        "--leader-election=false",
-                        "--timeout=300s",
-                    ],
-                    volume_mounts=[socket_mount],
-                ),
-                ContainerSpec(
-                    name="external-resizer",
-                    image=CSI_RESIZER_IMAGE,
-                    args=[
-                        f"--csi-address={CSI_CONTROLLER_SOCKET}",
-                        "--leader-election=false",
-                        "--timeout=300s",
-                    ],
-                    volume_mounts=[socket_mount],
-                ),
-            ],
-            volumes=[VolumeSpec.empty_dir("csi-socket")],
-            service_account_name=service_account,
-            automount_service_account_token=True,
-            node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
+        intent=DeploymentManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=CSI_CONTROLLER_NAME,
+            labels=CSI_CONTROLLER_LABELS,
+            selector=CSI_CONTROLLER_SELECTOR,
+            replicas=1,
+            pod_template=PodTemplateSpec(
+                containers=[
+                    ContainerSpec(
+                        name="driver",
+                        image=image,
+                        image_pull_policy="Always",
+                        command=["bertrand-ceph-csi"],
+                        args=[
+                            "controller",
+                            "--endpoint",
+                            f"unix://{CSI_CONTROLLER_SOCKET}",
+                        ],
+                        volume_mounts=[socket_mount],
+                    ),
+                    ContainerSpec(
+                        name="external-provisioner",
+                        image=CSI_PROVISIONER_IMAGE,
+                        args=[
+                            f"--csi-address={CSI_CONTROLLER_SOCKET}",
+                            "--extra-create-metadata=true",
+                            "--feature-gates=Topology=true",
+                            "--leader-election=false",
+                            "--timeout=300s",
+                        ],
+                        volume_mounts=[socket_mount],
+                    ),
+                    ContainerSpec(
+                        name="external-resizer",
+                        image=CSI_RESIZER_IMAGE,
+                        args=[
+                            f"--csi-address={CSI_CONTROLLER_SOCKET}",
+                            "--leader-election=false",
+                            "--timeout=300s",
+                        ],
+                        volume_mounts=[socket_mount],
+                    ),
+                ],
+                volumes=[VolumeSpec.empty_dir("csi-socket")],
+                service_account_name=service_account,
+                automount_service_account_token=True,
+                node_selector={
+                    CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE
+                },
+            ),
         ),
         deadline=deadline,
     )
@@ -193,101 +197,110 @@ async def ensure_ceph_osd_csi_driver(
     plugin_dir = f"{CSI_KUBELET_DIR}/plugins/{CSI_DRIVER_NAME}"
     daemonset = await DaemonSet.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=CSI_NODE_NAME,
-        labels=CSI_NODE_LABELS,
-        selector=CSI_NODE_SELECTOR,
-        pod_template=PodTemplateSpec(
-            containers=[
-                ContainerSpec(
-                    name="driver",
-                    image=image,
-                    image_pull_policy="Always",
-                    command=["bertrand-ceph-csi"],
-                    args=["node", "--endpoint", f"unix://{CSI_NODE_SOCKET}"],
-                    env=[
-                        {
-                            "name": "NODE_NAME",
-                            "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}},
-                        }
-                    ],
-                    security_context={"privileged": True, "runAsUser": 0},
-                    volume_mounts=[
-                        {"name": "csi-node-plugin", "mountPath": CSI_SOCKET_DIR},
-                        {
-                            "name": "csi-kubelet",
-                            "mountPath": CSI_KUBELET_DIR,
-                            "mountPropagation": "Bidirectional",
-                        },
-                        {
-                            "name": "host-root",
-                            "mountPath": "/host",
-                            "mountPropagation": "Bidirectional",
-                        },
-                        {
-                            "name": "host-dev",
-                            "mountPath": "/dev",
-                            "mountPropagation": "HostToContainer",
-                        },
-                        {
-                            "name": "host-run",
-                            "mountPath": "/host-run",
-                            "mountPropagation": "HostToContainer",
-                        },
-                    ],
-                ),
-                ContainerSpec(
-                    name="node-driver-registrar",
-                    image=CSI_NODE_REGISTRAR_IMAGE,
-                    args=[
-                        f"--csi-address={CSI_NODE_SOCKET}",
-                        f"--kubelet-registration-path={plugin_dir}/csi.sock",
-                    ],
-                    volume_mounts=[
-                        {"name": "csi-node-plugin", "mountPath": CSI_SOCKET_DIR},
-                        {
-                            "name": "csi-registration",
-                            "mountPath": CSI_REGISTRATION_DIR,
-                        },
-                    ],
-                ),
-            ],
-            volumes=[
-                VolumeSpec.host_path(
-                    "csi-node-plugin",
-                    path=plugin_dir,
-                    host_path_type="DirectoryOrCreate",
-                ),
-                VolumeSpec.host_path(
-                    "csi-registration",
-                    path=f"{CSI_KUBELET_DIR}/plugins_registry",
-                    host_path_type="DirectoryOrCreate",
-                ),
-                VolumeSpec.host_path(
-                    "csi-kubelet",
-                    path=CSI_KUBELET_DIR,
-                    host_path_type="Directory",
-                ),
-                VolumeSpec.host_path(
-                    "host-root",
-                    path="/",
-                    host_path_type="Directory",
-                ),
-                VolumeSpec.host_path(
-                    "host-dev",
-                    path="/dev",
-                    host_path_type="Directory",
-                ),
-                VolumeSpec.host_path(
-                    "host-run",
-                    path="/run",
-                    host_path_type="Directory",
-                ),
-            ],
-            service_account_name=service_account,
-            automount_service_account_token=True,
-            node_selector={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
-            host_pid=True,
+        intent=DaemonSetManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=CSI_NODE_NAME,
+            labels=CSI_NODE_LABELS,
+            selector=CSI_NODE_SELECTOR,
+            pod_template=PodTemplateSpec(
+                containers=[
+                    ContainerSpec(
+                        name="driver",
+                        image=image,
+                        image_pull_policy="Always",
+                        command=["bertrand-ceph-csi"],
+                        args=["node", "--endpoint", f"unix://{CSI_NODE_SOCKET}"],
+                        env=[
+                            {
+                                "name": "NODE_NAME",
+                                "valueFrom": {
+                                    "fieldRef": {"fieldPath": "spec.nodeName"}
+                                },
+                            }
+                        ],
+                        security_context={"privileged": True, "runAsUser": 0},
+                        volume_mounts=[
+                            {"name": "csi-node-plugin", "mountPath": CSI_SOCKET_DIR},
+                            {
+                                "name": "csi-kubelet",
+                                "mountPath": CSI_KUBELET_DIR,
+                                "mountPropagation": "Bidirectional",
+                            },
+                            {
+                                "name": "host-root",
+                                "mountPath": "/host",
+                                "mountPropagation": "Bidirectional",
+                            },
+                            {
+                                "name": "host-dev",
+                                "mountPath": "/dev",
+                                "mountPropagation": "HostToContainer",
+                            },
+                            {
+                                "name": "host-run",
+                                "mountPath": "/host-run",
+                                "mountPropagation": "HostToContainer",
+                            },
+                        ],
+                    ),
+                    ContainerSpec(
+                        name="node-driver-registrar",
+                        image=CSI_NODE_REGISTRAR_IMAGE,
+                        args=[
+                            f"--csi-address={CSI_NODE_SOCKET}",
+                            f"--kubelet-registration-path={plugin_dir}/csi.sock",
+                        ],
+                        volume_mounts=[
+                            {
+                                "name": "csi-node-plugin",
+                                "mountPath": CSI_SOCKET_DIR,
+                            },
+                            {
+                                "name": "csi-registration",
+                                "mountPath": CSI_REGISTRATION_DIR,
+                            },
+                        ],
+                    ),
+                ],
+                volumes=[
+                    VolumeSpec.host_path(
+                        "csi-node-plugin",
+                        path=plugin_dir,
+                        host_path_type="DirectoryOrCreate",
+                    ),
+                    VolumeSpec.host_path(
+                        "csi-registration",
+                        path=f"{CSI_KUBELET_DIR}/plugins_registry",
+                        host_path_type="DirectoryOrCreate",
+                    ),
+                    VolumeSpec.host_path(
+                        "csi-kubelet",
+                        path=CSI_KUBELET_DIR,
+                        host_path_type="Directory",
+                    ),
+                    VolumeSpec.host_path(
+                        "host-root",
+                        path="/",
+                        host_path_type="Directory",
+                    ),
+                    VolumeSpec.host_path(
+                        "host-dev",
+                        path="/dev",
+                        host_path_type="Directory",
+                    ),
+                    VolumeSpec.host_path(
+                        "host-run",
+                        path="/run",
+                        host_path_type="Directory",
+                    ),
+                ],
+                service_account_name=service_account,
+                automount_service_account_token=True,
+                node_selector={
+                    CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE
+                },
+                host_pid=True,
+            ),
         ),
         deadline=deadline,
     )

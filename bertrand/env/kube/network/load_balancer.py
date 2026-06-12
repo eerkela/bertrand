@@ -16,7 +16,7 @@ from bertrand.env.kube.custom_object import (
 )
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
-from bertrand.env.kube.namespace import Namespace
+from bertrand.env.kube.namespace import Namespace, NamespaceManifest
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -469,8 +469,10 @@ async def _ensure_managed_metallb_namespace(
         raise OSError(msg)
     await Namespace.upsert(
         kube,
-        name=METALLB_NAMESPACE,
-        labels=METALLB_NAMESPACE_LABELS,
+        intent=NamespaceManifest(
+            name=METALLB_NAMESPACE,
+            labels=METALLB_NAMESPACE_LABELS,
+        ),
         deadline=deadline,
     )
 

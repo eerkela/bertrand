@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
 
 from bertrand.env.config.core import _check_kube_name
-from bertrand.env.kube.api.spec import VolumeSpec
+from bertrand.env.kube.api.manifest import VolumeSpec
 from bertrand.env.kube.capability.base import resolve_capability_secret
 from bertrand.env.kube.capability.device import (
     pod_resource_claim,
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from bertrand.env.config.core import KubeName
     from bertrand.env.git import Deadline
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.api.spec import PodResourceClaimManifest
+    from bertrand.env.kube.api.manifest import PodResourceClaimManifest
     from bertrand.env.kube.capability.base import CapabilityKind
 
 WORKLOAD_SECRET_MOUNT = "/run/secrets"

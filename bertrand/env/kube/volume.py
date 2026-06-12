@@ -15,6 +15,7 @@ from bertrand.env.git import Deadline, until
 
 from .api.client import Kube
 from .api.resource import (
+    KubeManifest,
     KubeResource,
     cluster_resource,
     namespaced_resource,
@@ -50,11 +51,13 @@ STORAGE_FACTORS: dict[str, Decimal] = {
     payload=kubernetes.client.V1StorageClass,
     read=kubernetes.client.StorageV1Api.read_storage_class,
     list=kubernetes.client.StorageV1Api.list_storage_class,
+    create=None,
+    patch=None,
     delete=None,
 )
 @dataclass(frozen=True)
 class StorageClass(
-    KubeResource[kubernetes.client.V1StorageClass],
+    KubeResource[kubernetes.client.V1StorageClass, KubeManifest],
 ):
     """General-purpose wrapper around one Kubernetes StorageClass object.
 
@@ -198,17 +201,67 @@ def _normalize_pvc_fields(
     return namespace, name, modes, storage_class, storage_request
 
 
+@dataclass(frozen=True)
+class PersistentVolumeClaimManifest:
+    """Desired state for one Kubernetes PersistentVolumeClaim."""
+
+    namespace: str
+    name: str
+    access_modes: Collection[str]
+    storage_class: str
+    storage_request: str
+    labels: Mapping[str, str] | None = None
+    annotations: Mapping[str, str] | None = None
+    data_source: Mapping[str, object] | None = None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render this desired state as a Kubernetes manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Kubernetes PersistentVolumeClaim manifest payload.
+        """
+        spec: dict[str, object] = {
+            "accessModes": list(self.access_modes),
+            "storageClassName": self.storage_class,
+            "resources": {
+                "requests": {
+                    "storage": self.storage_request,
+                },
+            },
+        }
+        if self.data_source is not None:
+            spec["dataSource"] = dict(self.data_source)
+        return {
+            "apiVersion": "v1",
+            "kind": "PersistentVolumeClaim",
+            "metadata": {
+                "name": self.name,
+                "namespace": self.namespace,
+                "labels": dict(self.labels or {}),
+                "annotations": dict(self.annotations or {}),
+            },
+            "spec": spec,
+        }
+
+
 @namespaced_resource(
     api=kubernetes.client.CoreV1Api,
     payload=kubernetes.client.V1PersistentVolumeClaim,
     read=kubernetes.client.CoreV1Api.read_namespaced_persistent_volume_claim,
     list=kubernetes.client.CoreV1Api.list_namespaced_persistent_volume_claim,
     list_all=kubernetes.client.CoreV1Api.list_persistent_volume_claim_for_all_namespaces,
+    create=None,
+    patch=None,
     delete=kubernetes.client.CoreV1Api.delete_namespaced_persistent_volume_claim,
 )
 @dataclass(frozen=True)
 class PersistentVolumeClaim(
-    KubeResource[kubernetes.client.V1PersistentVolumeClaim],
+    KubeResource[
+        kubernetes.client.V1PersistentVolumeClaim,
+        PersistentVolumeClaimManifest,
+    ],
 ):
     """General-purpose wrapper around one Kubernetes PersistentVolumeClaim object.
 
@@ -225,41 +278,6 @@ class PersistentVolumeClaim(
     """
 
     _obj: kubernetes.client.V1PersistentVolumeClaim
-
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        access_modes: Collection[str],
-        storage_class: str,
-        storage_request: str,
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-        data_source: Mapping[str, object] | None = None,
-    ) -> dict[str, object]:
-        spec: dict[str, object] = {
-            "accessModes": list(access_modes),
-            "storageClassName": storage_class,
-            "resources": {
-                "requests": {
-                    "storage": storage_request,
-                },
-            },
-        }
-        if data_source is not None:
-            spec["dataSource"] = dict(data_source)
-        return {
-            "apiVersion": "v1",
-            "kind": "PersistentVolumeClaim",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels or {}),
-                "annotations": dict(annotations or {}),
-            },
-            "spec": spec,
-        }
 
     @classmethod
     async def create(
@@ -360,7 +378,7 @@ class PersistentVolumeClaim(
             storage_class=storage_class,
             storage_request=storage_request,
         )
-        manifest = cls._manifest(
+        manifest = PersistentVolumeClaimManifest(
             namespace=namespace,
             name=name,
             access_modes=modes,
@@ -368,7 +386,7 @@ class PersistentVolumeClaim(
             storage_request=storage_request,
             labels=labels,
             annotations=annotations,
-        )
+        ).manifest()
 
         try:
             return await cls.create(
@@ -469,7 +487,7 @@ class PersistentVolumeClaim(
             raise OSError(msg)
         parse_pvc_size(storage_request)
 
-        manifest = cls._manifest(
+        manifest = PersistentVolumeClaimManifest(
             namespace=namespace,
             name=name,
             access_modes=modes,
@@ -482,7 +500,7 @@ class PersistentVolumeClaim(
                 "kind": "VolumeSnapshot",
                 "name": snapshot_name,
             },
-        )
+        ).manifest()
         return await cls.create(
             kube,
             namespace=namespace,
@@ -655,12 +673,20 @@ class PersistentVolumeClaim(
         PersistentVolumeClaim
             Fresh wrapper whose phase is `Bound`.
 
+        Raises
+        ------
+        OSError
+            If the PVC disappears before binding.
         """
-        return await self.wait_until(
+        live = await self.wait(
             kube,
             deadline=deadline,
-            predicate=lambda live: live.is_bound,
+            predicate=lambda live: live is None or live.is_bound,
         )
+        if live is None:
+            msg = "PersistentVolumeClaim disappeared while waiting to bind"
+            raise OSError(msg)
+        return live
 
     @property
     def phase(self) -> str:
@@ -766,11 +792,13 @@ class PersistentVolumeClaim(
     payload=kubernetes.client.V1PersistentVolume,
     read=kubernetes.client.CoreV1Api.read_persistent_volume,
     list=kubernetes.client.CoreV1Api.list_persistent_volume,
+    create=None,
+    patch=None,
     delete=None,
 )
 @dataclass(frozen=True)
 class PersistentVolume(
-    KubeResource[kubernetes.client.V1PersistentVolume],
+    KubeResource[kubernetes.client.V1PersistentVolume, KubeManifest],
 ):
     """General-purpose wrapper around one Kubernetes PersistentVolume object.
 

@@ -20,12 +20,12 @@ from bertrand.env.git.bertrand_git import (
     WORKTREE_ID_LABEL,
     WORKTREE_MOUNT,
 )
-from bertrand.env.kube.api.spec import VolumeSpec
+from bertrand.env.kube.api.manifest import VolumeSpec
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from bertrand.env.kube.api.spec import (
+    from bertrand.env.kube.api.manifest import (
         ContainerSpec,
         PodTemplateSpec,
         VolumeMountManifest,

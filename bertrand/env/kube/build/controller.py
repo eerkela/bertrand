@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, Deadline
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.build.job import publish_project_platforms
 from bertrand.env.kube.build.manifest import _publish_project_image_manifest
 from bertrand.env.kube.build.repository import (
@@ -50,7 +50,7 @@ from bertrand.env.kube.ceph.capacity import (
 )
 from bertrand.env.kube.ceph.snapshot import cleanup_orphaned_build_sources
 from bertrand.env.kube.control import MaintenanceClock
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.deployment import Deployment, DeploymentManifest
 from bertrand.env.kube.dra import (
     DRA_GROUP,
     RESOURCE_CLAIM_PLURAL,
@@ -59,13 +59,15 @@ from bertrand.env.kube.dra import (
 from bertrand.env.kube.rbac import (
     ClusterRole,
     ClusterRoleBinding,
+    ClusterRoleBindingManifest,
+    ClusterRoleManifest,
 )
-from bertrand.env.kube.service_account import ServiceAccount
+from bertrand.env.kube.service_account import ServiceAccount, ServiceAccountManifest
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.kube.api.spec import PolicyRuleManifest
+    from bertrand.env.kube.api.manifest import PolicyRuleManifest
     from bertrand.env.kube.job import Job
 
 BUILDKIT_BUILD_CONTROLLER = "bertrand-build-controller"
@@ -516,50 +518,62 @@ async def ensure_buildkit_build_controller(
         BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, deadline=deadline),
         ServiceAccount.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
-            labels=BUILDKIT_BUILD_LABELS,
+            intent=ServiceAccountManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
+                labels=BUILDKIT_BUILD_LABELS,
+            ),
             deadline=deadline,
         ),
         ClusterRole.upsert(
             kube,
-            name=BUILDKIT_BUILD_CONTROLLER,
-            rules=_controller_rules(),
-            labels=BUILDKIT_BUILD_LABELS,
+            intent=ClusterRoleManifest(
+                name=BUILDKIT_BUILD_CONTROLLER,
+                rules=_controller_rules(),
+                labels=BUILDKIT_BUILD_LABELS,
+            ),
             deadline=deadline,
         ),
     )
-    await ClusterRoleBinding.bind_service_account(
+    await ClusterRoleBinding.upsert(
         kube,
-        name=BUILDKIT_BUILD_CONTROLLER,
-        role_kind="ClusterRole",
-        role_name=BUILDKIT_BUILD_CONTROLLER,
-        service_account_name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
-        service_account_namespace=BERTRAND_NAMESPACE,
-        labels=BUILDKIT_BUILD_LABELS,
+        intent=ClusterRoleBindingManifest(
+            name=BUILDKIT_BUILD_CONTROLLER,
+            role_kind="ClusterRole",
+            role_name=BUILDKIT_BUILD_CONTROLLER,
+            service_account_name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
+            service_account_namespace=BERTRAND_NAMESPACE,
+            labels=BUILDKIT_BUILD_LABELS,
+        ),
         deadline=deadline,
     )
     deployment = await Deployment.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=BUILDKIT_BUILD_CONTROLLER,
-        labels=BUILDKIT_BUILD_LABELS,
-        selector={BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE},
-        replicas=1,
-        pod_template=PodTemplateSpec(
-            containers=[
-                ContainerSpec(
-                    name="controller",
-                    image=image,
-                    image_pull_policy="IfNotPresent",
-                    command=["python", "-m", "bertrand.env.kube.build.controller"],
-                )
-            ],
-            service_account_name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
-            automount_service_account_token=True,
-            node_selector={
-                CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE,
-            },
+        intent=DeploymentManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=BUILDKIT_BUILD_CONTROLLER,
+            labels=BUILDKIT_BUILD_LABELS,
+            selector={BUILDKIT_BUILD_LABEL: BUILDKIT_BUILD_LABEL_VALUE},
+            replicas=1,
+            pod_template=PodTemplateSpec(
+                containers=[
+                    ContainerSpec(
+                        name="controller",
+                        image=image,
+                        image_pull_policy="IfNotPresent",
+                        command=[
+                            "python",
+                            "-m",
+                            "bertrand.env.kube.build.controller",
+                        ],
+                    )
+                ],
+                service_account_name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
+                automount_service_account_token=True,
+                node_selector={
+                    CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE,
+                },
+            ),
         ),
         deadline=deadline,
     )

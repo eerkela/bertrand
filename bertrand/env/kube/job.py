@@ -11,6 +11,7 @@ import kubernetes
 from bertrand.env.git import Deadline, until
 
 from .api.resource import (
+    KubeManifest,
     KubeResource,
     WatchEvent,
     _watch,
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from .api.client import Kube
-    from .api.spec import PodTemplateSpec
+    from .api.manifest import PodTemplateSpec
 
 JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type JobCompletionMode = Literal["NonIndexed", "Indexed"]
@@ -131,7 +132,7 @@ def _job_spec_manifest(
         pod_template = replace(pod_template, restart_policy="Never")
     spec: dict[str, object] = {
         "backoffLimit": backoff_limit,
-        "template": replace(pod_template, labels=template_labels)._manifest(),
+        "template": replace(pod_template, labels=template_labels).manifest(),
     }
     if ttl_seconds_after_finished is not None:
         spec["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
@@ -146,17 +147,75 @@ def _job_spec_manifest(
     return spec
 
 
+@dataclass(frozen=True)
+class JobManifest:
+    """Desired state for one Kubernetes Job."""
+
+    namespace: str
+    name: str
+    labels: Mapping[str, str]
+    pod_template: PodTemplateSpec
+    annotations: Mapping[str, str] | None = None
+    backoff_limit: int = 0
+    ttl_seconds_after_finished: int | None = 3600
+    active_deadline_seconds: int | None = None
+    parallelism: int | None = None
+    completions: int | None = None
+    completion_mode: JobCompletionMode | None = None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render this desired state as a Kubernetes manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Kubernetes Job manifest payload.
+        """
+        _validate_job_execution(
+            owner="Job",
+            template_owner="Job",
+            backoff_limit=self.backoff_limit,
+            ttl_seconds_after_finished=self.ttl_seconds_after_finished,
+            active_deadline_seconds=self.active_deadline_seconds,
+            parallelism=self.parallelism,
+            completions=self.completions,
+            completion_mode=self.completion_mode,
+        )
+        return {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": self.name,
+                "namespace": self.namespace,
+                "labels": dict(self.labels),
+                "annotations": dict(self.annotations or {}),
+            },
+            "spec": _job_spec_manifest(
+                labels=self.labels,
+                pod_template=self.pod_template,
+                backoff_limit=self.backoff_limit,
+                ttl_seconds_after_finished=self.ttl_seconds_after_finished,
+                active_deadline_seconds=self.active_deadline_seconds,
+                parallelism=self.parallelism,
+                completions=self.completions,
+                completion_mode=self.completion_mode,
+            ),
+        }
+
+
 @namespaced_resource(
     api=kubernetes.client.BatchV1Api,
     payload=kubernetes.client.V1Job,
     read=kubernetes.client.BatchV1Api.read_namespaced_job,
     list=kubernetes.client.BatchV1Api.list_namespaced_job,
     list_all=kubernetes.client.BatchV1Api.list_job_for_all_namespaces,
+    create=None,
+    patch=None,
     delete=kubernetes.client.BatchV1Api.delete_namespaced_job,
 )
 @dataclass(frozen=True)
 class Job(
-    KubeResource[kubernetes.client.V1Job],
+    KubeResource[kubernetes.client.V1Job, KubeManifest],
 ):
     """General-purpose wrapper around one Kubernetes Job object.
 
@@ -229,42 +288,6 @@ class Job(
                 resource_version=event.resource_version,
             )
 
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str],
-        pod_template: PodTemplateSpec,
-        annotations: Mapping[str, str] | None,
-        backoff_limit: int,
-        ttl_seconds_after_finished: int | None,
-        active_deadline_seconds: int | None,
-        parallelism: int | None,
-        completions: int | None,
-        completion_mode: JobCompletionMode | None,
-    ) -> dict[str, object]:
-        return {
-            "apiVersion": "batch/v1",
-            "kind": "Job",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels),
-                "annotations": dict(annotations or {}),
-            },
-            "spec": _job_spec_manifest(
-                labels=labels,
-                pod_template=pod_template,
-                backoff_limit=backoff_limit,
-                ttl_seconds_after_finished=ttl_seconds_after_finished,
-                active_deadline_seconds=active_deadline_seconds,
-                parallelism=parallelism,
-                completions=completions,
-                completion_mode=completion_mode,
-            ),
-        }
-
     @classmethod
     async def create(
         cls,
@@ -329,18 +352,7 @@ class Job(
         if not namespace or not name:
             msg = "Job create requires non-empty namespace and name"
             raise OSError(msg)
-        _validate_job_execution(
-            owner="Job",
-            template_owner="Job",
-            backoff_limit=backoff_limit,
-            ttl_seconds_after_finished=ttl_seconds_after_finished,
-            active_deadline_seconds=active_deadline_seconds,
-            parallelism=parallelism,
-            completions=completions,
-            completion_mode=completion_mode,
-        )
-
-        manifest = cls._manifest(
+        manifest = JobManifest(
             namespace=namespace,
             name=name,
             labels=labels,
@@ -352,7 +364,7 @@ class Job(
             parallelism=parallelism,
             completions=completions,
             completion_mode=completion_mode,
-        )
+        ).manifest()
         api = kubernetes.client.BatchV1Api(kube.client)
         payload = await kube.run(
             lambda request_timeout: api.create_namespaced_job(
@@ -689,11 +701,17 @@ class Job(
         try:
             await self.delete(
                 kube,
+                namespace=self.namespace,
+                name=self.name,
                 deadline=deadline,
                 propagation_policy="Foreground",
             )
             if wait:
-                await self.wait_deleted(kube, deadline=deadline)
+                await self.wait(
+                    kube,
+                    deadline=deadline,
+                    predicate=lambda live: live is None,
+                )
         except (OSError, TimeoutError):
             return
 

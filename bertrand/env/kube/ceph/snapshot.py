@@ -199,7 +199,12 @@ async def maintain_repository_snapshots(
         created_at = snapshot.snapshot_created_at
         if created_at is None or now - created_at < retention:
             continue
-        await snapshot.delete(kube, deadline=deadline)
+        await snapshot.delete(
+            kube,
+            namespace=snapshot.namespace,
+            name=snapshot.name,
+            deadline=deadline,
+        )
         deleted_names.add(snapshot.name)
 
     snapshots_by_repo: dict[str, list[VolumeSnapshot]] = {}
@@ -443,7 +448,12 @@ async def cleanup_orphaned_build_sources(
             max_age=max_age,
         ):
             continue
-        await pvc.delete(kube, deadline=deadline)
+        await pvc.delete(
+            kube,
+            namespace=pvc.namespace,
+            name=pvc.name,
+            deadline=deadline,
+        )
         deleted += 1
 
     snapshots = await VolumeSnapshot.list(
@@ -463,7 +473,12 @@ async def cleanup_orphaned_build_sources(
             max_age=max_age,
         ):
             continue
-        await snapshot.delete(kube, deadline=deadline)
+        await snapshot.delete(
+            kube,
+            namespace=snapshot.namespace,
+            name=snapshot.name,
+            deadline=deadline,
+        )
         deleted += 1
 
     return deleted
@@ -585,11 +600,25 @@ async def _cleanup_build_source(
     deadline = Deadline(REPOSITORY_BUILD_SOURCE_CLEANUP_TIMEOUT_SECONDS)
     if pvc is not None:
         with suppress(OSError, TimeoutError, ValueError):
-            await pvc.delete(kube, deadline=deadline)
-            await pvc.wait_deleted(kube, deadline=deadline)
+            await pvc.delete(
+                kube,
+                namespace=pvc.namespace,
+                name=pvc.name,
+                deadline=deadline,
+            )
+            await pvc.wait(
+                kube,
+                deadline=deadline,
+                predicate=lambda live: live is None,
+            )
     if snapshot is not None:
         with suppress(OSError, TimeoutError, ValueError):
-            await snapshot.delete(kube, deadline=deadline)
+            await snapshot.delete(
+                kube,
+                namespace=snapshot.namespace,
+                name=snapshot.name,
+                deadline=deadline,
+            )
 
 
 def _snapshot_labels(

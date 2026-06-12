@@ -30,7 +30,7 @@ from bertrand.env.git import (
     sudo,
 )
 from bertrand.env.kube.api.client import K0S_SERVICE_NAME, Kube
-from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
+from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec, VolumeSpec
 from bertrand.env.kube.build.daemon import (
     BUILDKIT_CONFIG_KEY,
     BUILDKIT_CONFIG_NAME,
@@ -42,12 +42,12 @@ from bertrand.env.kube.build.refs import (
     rewrite_registry_ref,
     validate_tag,
 )
-from bertrand.env.kube.configmap import ConfigMap
-from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.configmap import ConfigMap, ConfigMapManifest
+from bertrand.env.kube.deployment import Deployment, DeploymentManifest
 from bertrand.env.kube.job import Job
 from bertrand.env.kube.network.profile import NetworkProfile
 from bertrand.env.kube.node import Node
-from bertrand.env.kube.service import Service, ServicePortView
+from bertrand.env.kube.service import Service, ServiceManifest, ServicePortView
 from bertrand.env.kube.volume import (
     PersistentVolumeClaim,
     StorageClass,
@@ -661,10 +661,12 @@ async def _write_image_repository_maintenance_status(
 ) -> None:
     await ConfigMap.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
-        labels=IMAGE_REPOSITORY_MAINTENANCE_LABELS,
-        data=status.data(),
+        intent=ConfigMapManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=IMAGE_REPOSITORY_MAINTENANCE_NAME,
+            labels=IMAGE_REPOSITORY_MAINTENANCE_LABELS,
+            data=status.data(),
+        ),
         deadline=deadline,
     )
 
@@ -1137,30 +1139,34 @@ async def ensure_image_repository(
         data = await current_buildkit_config_data(kube, deadline=deadline)
         await ConfigMap.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=BUILDKIT_CONFIG_NAME,
-            labels=IMAGE_REPOSITORY_LABELS,
-            data=data,
+            intent=ConfigMapManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=BUILDKIT_CONFIG_NAME,
+                labels=IMAGE_REPOSITORY_LABELS,
+                data=data,
+            ),
             deadline=deadline,
         )
 
     service_task = asyncio.create_task(
         Service.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=IMAGE_REPOSITORY_NAME,
-            labels=IMAGE_REPOSITORY_LABELS,
-            selector=IMAGE_REPOSITORY_SELECTOR,
-            service_type="NodePort",
-            ports=[
-                ServicePortView(
-                    name="registry",
-                    port=IMAGE_REPOSITORY_PORT,
-                    target_port=IMAGE_REPOSITORY_PORT,
-                    protocol="TCP",
-                    node_port=IMAGE_REPOSITORY_NODE_PORT,
-                )
-            ],
+            intent=ServiceManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=IMAGE_REPOSITORY_NAME,
+                labels=IMAGE_REPOSITORY_LABELS,
+                selector=IMAGE_REPOSITORY_SELECTOR,
+                service_type="NodePort",
+                ports=[
+                    ServicePortView(
+                        name="registry",
+                        port=IMAGE_REPOSITORY_PORT,
+                        target_port=IMAGE_REPOSITORY_PORT,
+                        protocol="TCP",
+                        node_port=IMAGE_REPOSITORY_NODE_PORT,
+                    )
+                ],
+            ),
             deadline=deadline,
         )
     )
@@ -1321,53 +1327,63 @@ async def _rollout_registry_config(
 ) -> None:
     config = await ConfigMap.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=IMAGE_REPOSITORY_CONFIG_NAME,
-        labels=IMAGE_REPOSITORY_LABELS,
-        data=registry_config_data(read_only=read_only),
+        intent=ConfigMapManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=IMAGE_REPOSITORY_CONFIG_NAME,
+            labels=IMAGE_REPOSITORY_LABELS,
+            data=registry_config_data(read_only=read_only),
+        ),
         deadline=deadline,
     )
     deployment = await Deployment.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=IMAGE_REPOSITORY_NAME,
-        labels=IMAGE_REPOSITORY_LABELS,
-        selector=IMAGE_REPOSITORY_SELECTOR,
-        pod_template=PodTemplateSpec(
-            containers=[
-                ContainerSpec(
-                    name="registry",
-                    image=IMAGE_REPOSITORY_IMAGE,
-                    image_pull_policy="IfNotPresent",
-                    command=["registry"],
-                    args=["serve", IMAGE_REPOSITORY_CONFIG_FILE],
-                    ports=[
-                        {
-                            "name": "registry",
-                            "containerPort": IMAGE_REPOSITORY_PORT,
-                            "protocol": "TCP",
-                        }
-                    ],
-                    readiness_probe={
-                        "httpGet": {"path": "/v2/", "port": IMAGE_REPOSITORY_PORT},
-                        "periodSeconds": 2,
-                        "failureThreshold": 30,
-                    },
-                    liveness_probe={
-                        "httpGet": {"path": "/v2/", "port": IMAGE_REPOSITORY_PORT},
-                        "initialDelaySeconds": 10,
-                        "periodSeconds": 10,
-                        "failureThreshold": 3,
-                    },
-                    volume_mounts=_volume_mounts(),
-                )
-            ],
-            volumes=_volumes(),
-            annotations={
-                IMAGE_REPOSITORY_CONFIG_HASH_ANNOTATION: _config_hash(config.data)
-            },
+        intent=DeploymentManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=IMAGE_REPOSITORY_NAME,
+            labels=IMAGE_REPOSITORY_LABELS,
+            selector=IMAGE_REPOSITORY_SELECTOR,
+            pod_template=PodTemplateSpec(
+                containers=[
+                    ContainerSpec(
+                        name="registry",
+                        image=IMAGE_REPOSITORY_IMAGE,
+                        image_pull_policy="IfNotPresent",
+                        command=["registry"],
+                        args=["serve", IMAGE_REPOSITORY_CONFIG_FILE],
+                        ports=[
+                            {
+                                "name": "registry",
+                                "containerPort": IMAGE_REPOSITORY_PORT,
+                                "protocol": "TCP",
+                            }
+                        ],
+                        readiness_probe={
+                            "httpGet": {
+                                "path": "/v2/",
+                                "port": IMAGE_REPOSITORY_PORT,
+                            },
+                            "periodSeconds": 2,
+                            "failureThreshold": 30,
+                        },
+                        liveness_probe={
+                            "httpGet": {
+                                "path": "/v2/",
+                                "port": IMAGE_REPOSITORY_PORT,
+                            },
+                            "initialDelaySeconds": 10,
+                            "periodSeconds": 10,
+                            "failureThreshold": 3,
+                        },
+                        volume_mounts=_volume_mounts(),
+                    )
+                ],
+                volumes=_volumes(),
+                annotations={
+                    IMAGE_REPOSITORY_CONFIG_HASH_ANNOTATION: _config_hash(config.data)
+                },
+            ),
+            strategy={"type": "Recreate", "rollingUpdate": None},
         ),
-        strategy={"type": "Recreate", "rollingUpdate": None},
         deadline=deadline,
     )
     await deployment.wait_rollout(kube, deadline=deadline)

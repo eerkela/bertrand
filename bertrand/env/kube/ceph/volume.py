@@ -471,7 +471,12 @@ async def delete_repository_volume_claim(
             )
             raise OSError(msg)
 
-    await pvc.delete(kube, deadline=deadline)
+    await pvc.delete(
+        kube,
+        namespace=pvc.namespace,
+        name=pvc.name,
+        deadline=deadline,
+    )
 
 
 async def resolve_repository_volume_ceph_path(
@@ -1607,8 +1612,17 @@ async def delete_repository_snapshot_artifacts(
         deadline=deadline,
     )
     for pvc in sorted(pvcs, key=lambda item: item.name):
-        await pvc.delete(kube, deadline=deadline)
-        await pvc.wait_deleted(kube, deadline=deadline)
+        await pvc.delete(
+            kube,
+            namespace=pvc.namespace,
+            name=pvc.name,
+            deadline=deadline,
+        )
+        await pvc.wait(
+            kube,
+            deadline=deadline,
+            predicate=lambda live: live is None,
+        )
 
     snapshots = await VolumeSnapshot.list(
         kube,
@@ -1621,7 +1635,12 @@ async def delete_repository_snapshot_artifacts(
         deadline=deadline,
     )
     for snapshot in sorted(snapshots, key=lambda item: item.name):
-        await snapshot.delete(kube, deadline=deadline)
+        await snapshot.delete(
+            kube,
+            namespace=snapshot.namespace,
+            name=snapshot.name,
+            deadline=deadline,
+        )
 
 
 async def delete_all_repository_volumes(
@@ -1689,7 +1708,7 @@ async def delete_all_repository_volumes(
             scope_value=repo_id,
             deadline=deadline,
         )
-        await REPOSITORY_STATE_RESOURCE.delete_by_name(
+        await REPOSITORY_STATE_RESOURCE.delete(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=record.name,
@@ -1891,7 +1910,7 @@ async def gc_repository_volumes(
                 record=record,
                 deadline=deadline,
             )
-            await REPOSITORY_STATE_RESOURCE.delete_by_name(
+            await REPOSITORY_STATE_RESOURCE.delete(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 name=record.name,

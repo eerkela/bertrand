@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import kubernetes
 
-from .api.client import Kube
 from .api.resource import (
     KubeResource,
     namespaced_resource,
@@ -17,7 +16,6 @@ from .api.resource import (
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.git import Deadline
 
 type NetworkPolicyType = Literal["Ingress", "Egress"]
 
@@ -41,17 +39,70 @@ def _policy_types(
     return tuple(result)
 
 
+@dataclass(frozen=True)
+class NetworkPolicyManifest:
+    """Desired state for one Kubernetes NetworkPolicy."""
+
+    namespace: str
+    name: str
+    pod_selector: Mapping[str, str]
+    policy_types: Collection[NetworkPolicyType] = ("Ingress",)
+    ingress: Collection[Mapping[str, object]] | None = None
+    egress: Collection[Mapping[str, object]] | None = None
+    labels: Mapping[str, str] | None = None
+    annotations: Mapping[str, str] | None = None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render this desired state as a Kubernetes manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Kubernetes NetworkPolicy manifest payload.
+
+        Raises
+        ------
+        OSError
+            If the pod selector is empty.
+        """
+        if not self.pod_selector:
+            msg = "NetworkPolicy requires a non-empty pod selector"
+            raise OSError(msg)
+        normalized_types = _policy_types(self.policy_types)
+        spec: dict[str, object] = {
+            "podSelector": {"matchLabels": dict(self.pod_selector)},
+            "policyTypes": list(normalized_types),
+        }
+        if "Ingress" in normalized_types:
+            spec["ingress"] = [dict(rule) for rule in self.ingress or ()]
+        if "Egress" in normalized_types:
+            spec["egress"] = [dict(rule) for rule in self.egress or ()]
+        return {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {
+                "name": self.name,
+                "namespace": self.namespace,
+                "labels": dict(self.labels or {}),
+                "annotations": dict(self.annotations or {}),
+            },
+            "spec": spec,
+        }
+
+
 @namespaced_resource(
     api=kubernetes.client.NetworkingV1Api,
     payload=kubernetes.client.V1NetworkPolicy,
     read=kubernetes.client.NetworkingV1Api.read_namespaced_network_policy,
     list=kubernetes.client.NetworkingV1Api.list_namespaced_network_policy,
     list_all=kubernetes.client.NetworkingV1Api.list_network_policy_for_all_namespaces,
+    create=kubernetes.client.NetworkingV1Api.create_namespaced_network_policy,
+    patch=kubernetes.client.NetworkingV1Api.patch_namespaced_network_policy,
     delete=kubernetes.client.NetworkingV1Api.delete_namespaced_network_policy,
 )
 @dataclass(frozen=True)
 class NetworkPolicy(
-    KubeResource[kubernetes.client.V1NetworkPolicy],
+    KubeResource[kubernetes.client.V1NetworkPolicy, NetworkPolicyManifest],
 ):
     """General-purpose wrapper around one Kubernetes NetworkPolicy object.
 
@@ -67,140 +118,6 @@ class NetworkPolicy(
     """
 
     _obj: kubernetes.client.V1NetworkPolicy
-
-    @staticmethod
-    def _manifest(
-        *,
-        namespace: str,
-        name: str,
-        pod_selector: Mapping[str, str],
-        policy_types: Collection[NetworkPolicyType],
-        ingress: Collection[Mapping[str, object]] | None,
-        egress: Collection[Mapping[str, object]] | None,
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
-        normalized_types = _policy_types(policy_types)
-        spec: dict[str, object] = {
-            "podSelector": {"matchLabels": dict(pod_selector)},
-            "policyTypes": list(normalized_types),
-        }
-        if "Ingress" in normalized_types:
-            spec["ingress"] = [dict(rule) for rule in ingress or ()]
-        if "Egress" in normalized_types:
-            spec["egress"] = [dict(rule) for rule in egress or ()]
-        return {
-            "apiVersion": "networking.k8s.io/v1",
-            "kind": "NetworkPolicy",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels or {}),
-                "annotations": dict(annotations or {}),
-            },
-            "spec": spec,
-        }
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        pod_selector: Mapping[str, str],
-        deadline: Deadline,
-        policy_types: Collection[NetworkPolicyType] = ("Ingress",),
-        ingress: Collection[Mapping[str, object]] | None = None,
-        egress: Collection[Mapping[str, object]] | None = None,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
-    ) -> NetworkPolicy:
-        """Create or patch one Kubernetes NetworkPolicy from intent fields.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the NetworkPolicy.
-        name : str
-            NetworkPolicy name to create or patch.
-        pod_selector : Mapping[str, str]
-            Pod label selector for the NetworkPolicy `spec.podSelector.matchLabels`.
-        deadline : Deadline
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        policy_types : Collection[NetworkPolicyType], optional
-            Network directions governed by this policy.
-        ingress : Collection[Mapping[str, object]] | None, optional
-            Raw Kubernetes ingress rule dictionaries. An empty collection with
-            `policyTypes = ["Ingress"]` denies all ingress to selected Pods.
-        egress : Collection[Mapping[str, object]] | None, optional
-            Raw Kubernetes egress rule dictionaries.
-        labels : Mapping[str, str] | None, optional
-            Labels to apply to `metadata.labels`.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to `metadata.annotations`.
-
-        Returns
-        -------
-        NetworkPolicy
-            Wrapped created or patched NetworkPolicy.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes create/patch fails or the intent is missing identity data.
-        """
-        namespace = namespace.strip()
-        name = name.strip()
-        if not namespace or not name:
-            msg = "NetworkPolicy upsert requires non-empty namespace and name"
-            raise OSError(msg)
-        if not pod_selector:
-            msg = "NetworkPolicy upsert requires a non-empty pod selector"
-            raise OSError(msg)
-
-        manifest = cls._manifest(
-            namespace=namespace,
-            name=name,
-            pod_selector=pod_selector,
-            policy_types=policy_types,
-            ingress=ingress,
-            egress=egress,
-            labels=labels,
-            annotations=annotations,
-        )
-        api = kubernetes.client.NetworkingV1Api(kube.client)
-        try:
-            payload = await kube.run(
-                lambda request_timeout: api.create_namespaced_network_policy(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to create NetworkPolicy {namespace}/{name}",
-                missing_ok=False,
-            )
-        except OSError as err:
-            if not isinstance(err, Kube.APIError) or err.status != 409:
-                raise
-            payload = await kube.run(
-                lambda request_timeout: api.patch_namespaced_network_policy(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to patch NetworkPolicy {namespace}/{name}",
-                missing_ok=False,
-            )
-        if not isinstance(payload, kubernetes.client.V1NetworkPolicy):
-            msg = "malformed Kubernetes NetworkPolicy payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @property
     def pod_selector(self) -> Mapping[str, str]:

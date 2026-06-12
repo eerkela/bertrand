@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
-from .api.client import Kube
 from .api.resource import (
     KubeResource,
     namespaced_resource,
@@ -18,7 +17,37 @@ from .api.resource import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from bertrand.env.git import Deadline
+
+@dataclass(frozen=True)
+class SecretManifest:
+    """Desired state for one opaque Kubernetes Secret."""
+
+    namespace: str
+    name: str
+    payload: bytes
+    labels: Mapping[str, str] | None = None
+    annotations: Mapping[str, str] | None = None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render this desired state as a Kubernetes manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Kubernetes Secret manifest payload.
+        """
+        return {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": self.name,
+                "namespace": self.namespace,
+                "labels": dict(self.labels or {}),
+                "annotations": dict(self.annotations or {}),
+            },
+            "type": "Opaque",
+            "data": {"value": base64.b64encode(self.payload).decode("ascii")},
+        }
 
 
 @namespaced_resource(
@@ -27,11 +56,13 @@ if TYPE_CHECKING:
     read=kube_client.CoreV1Api.read_namespaced_secret,
     list=kube_client.CoreV1Api.list_namespaced_secret,
     list_all=kube_client.CoreV1Api.list_secret_for_all_namespaces,
+    create=kube_client.CoreV1Api.create_namespaced_secret,
+    patch=kube_client.CoreV1Api.patch_namespaced_secret,
     delete=kube_client.CoreV1Api.delete_namespaced_secret,
 )
 @dataclass(frozen=True)
 class Secret(
-    KubeResource[kube_client.V1Secret],
+    KubeResource[kube_client.V1Secret, SecretManifest],
 ):
     """General-purpose wrapper around one Kubernetes Secret object.
 
@@ -42,96 +73,6 @@ class Secret(
     """
 
     _obj: kube_client.V1Secret
-
-    @classmethod
-    async def upsert(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-        payload: bytes,
-        deadline: Deadline,
-    ) -> Secret:
-        """Create or patch one Kubernetes Secret payload.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the secret.
-        name : str
-            Secret name to create or patch.
-        labels : Mapping[str, str] | None
-            Labels to apply to `metadata.labels`.
-        annotations : Mapping[str, str] | None
-            Annotations to apply to `metadata.annotations`.
-        payload : bytes
-            Raw payload bytes to store at `data.value` (base64-encoded on write).
-        deadline : Deadline
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Secret
-            Wrapped created or patched Kubernetes secret.
-
-        Raises
-        ------
-        OSError
-            If namespace or name is empty, or Kubernetes rejects the request.
-        """
-        namespace = namespace.strip()
-        name = name.strip()
-        if not namespace or not name:
-            msg = "Secret upsert requires non-empty namespace and name"
-            raise OSError(msg)
-        manifest = {
-            "apiVersion": "v1",
-            "kind": "Secret",
-            "metadata": {
-                "name": name,
-                "namespace": namespace,
-                "labels": dict(labels or {}),
-                "annotations": dict(annotations or {}),
-            },
-            "type": "Opaque",
-            "data": {"value": base64.b64encode(payload).decode("ascii")},
-        }
-
-        api = kube_client.CoreV1Api(kube.client)
-        try:
-            result = await kube.run(
-                lambda request_timeout: api.create_namespaced_secret(
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to create Secret {namespace}/{name}",
-                missing_ok=False,
-            )
-        except OSError as err:
-            if not isinstance(err, Kube.APIError) or err.status != 409:
-                raise
-            result = await kube.run(
-                lambda request_timeout: api.patch_namespaced_secret(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to patch Secret {namespace}/{name}",
-                missing_ok=False,
-            )
-        if not isinstance(result, kube_client.V1Secret):
-            msg = "malformed Kubernetes Secret payload"
-            raise OSError(msg)
-        return cls(_obj=result)
 
     @property
     def value(self) -> bytes:
