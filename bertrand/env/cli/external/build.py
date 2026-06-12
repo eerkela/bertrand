@@ -29,8 +29,8 @@ from bertrand.env.kube.build.request import (
     submit_buildkit_build,
     wait_buildkit_build,
 )
-from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE
-from bertrand.env.kube.job import JOB_RESOURCE
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -293,7 +293,7 @@ async def _publish_project_image(
     async def follow_build_logs(name: str) -> None:
         while True:
             try:
-                job = await JOB_RESOURCE.get(
+                job = await Job.get(
                     kube,
                     namespace=BERTRAND_NAMESPACE,
                     name=name,
@@ -415,7 +415,7 @@ async def _assert_build_runtime(kube: Kube, *, deadline: Deadline) -> None:
             deadline=deadline,
         ),
     )
-    controller = await DEPLOYMENT_RESOURCE.get(
+    controller = await Deployment.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=BUILDKIT_BUILD_CONTROLLER,

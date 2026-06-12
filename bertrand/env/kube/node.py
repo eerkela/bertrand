@@ -5,17 +5,24 @@ from __future__ import annotations
 import os
 import platform
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
+from bertrand.env.git import EMPTY_MAPPING
+
 from .api.client import Kube
-from .api.resource import KubeResource, Watchable, builtin_resource
+from .api.resource import (
+    KubeResource,
+    WatchEvent,
+    _watch,
+    cluster_resource,
+)
 from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import AsyncIterator, Collection, Mapping
 
     from bertrand.env.git import Deadline
 
@@ -62,11 +69,16 @@ class TaintView:
     value: str = ""
 
 
-@builtin_resource(api="core", scope="cluster", endpoint="node")
+@cluster_resource(
+    api=kubernetes.client.CoreV1Api,
+    payload=kubernetes.client.V1Node,
+    read=kubernetes.client.CoreV1Api.read_node,
+    list=kubernetes.client.CoreV1Api.list_node,
+    delete=kubernetes.client.CoreV1Api.delete_node,
+)
 @dataclass(frozen=True)
 class Node(
     KubeResource[kubernetes.client.V1Node],
-    Watchable,
 ):
     """General-purpose wrapper around one Kubernetes Node object.
 
@@ -83,6 +95,57 @@ class Node(
     """
 
     _obj: kubernetes.client.V1Node
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str = "",
+        resource_version: str = "",
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Nodes.
+
+        Yields
+        ------
+        WatchEvent[Node]
+            Node watch events.
+
+        Raises
+        ------
+        ValueError
+            If a namespace filter is supplied for this cluster-scoped resource.
+        OSError
+            If Kubernetes returns a malformed Node watch payload.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        if namespace:
+            msg = "Node is cluster-scoped; cannot watch by namespace"
+            raise ValueError(msg)
+        api = kubernetes.client.CoreV1Api(kube.client)
+        async for event in _watch(
+            api.list_node,
+            deadline=deadline,
+            context="failed to watch Nodes",
+            resource_version=resource_version,
+            label_selector=(
+                ",".join(f"{key}={value}" for key, value in labels.items())
+                if labels
+                else ""
+            ),
+            field_selector=field_selector,
+        ):
+            if not isinstance(event.object, kubernetes.client.V1Node):
+                msg = "malformed Kubernetes Node watch payload"
+                raise OSError(msg)
+            yield WatchEvent(
+                type=event.type,
+                object=cls(_obj=event.object),
+                resource_version=event.resource_version,
+            )
 
     @classmethod
     async def local(cls, kube: Kube, *, deadline: Deadline) -> Node:
@@ -379,8 +442,9 @@ class Node(
         if not name:
             msg = "cannot patch Kubernetes node with missing metadata.name"
             raise OSError(msg)
+        api = kubernetes.client.CoreV1Api(kube.client)
         payload = await kube.run(
-            lambda request_timeout: kube.core.patch_node(
+            lambda request_timeout: api.patch_node(
                 name=name,
                 body=body,
                 _request_timeout=request_timeout,
@@ -663,7 +727,7 @@ class Node(
         kube: Kube,
         *,
         deadline: Deadline,
-        labels: Mapping[str, str] | None = None,
+        labels: Mapping[str, str] = EMPTY_MAPPING,
         namespaces: Collection[str] | None = None,
     ) -> builtins.list[Pod]:
         """List pods scheduled onto this node across all namespaces.
@@ -674,7 +738,7 @@ class Node(
             Active Kubernetes API context.
         deadline : Deadline
             Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
+        labels : Mapping[str, str], optional
             Optional pod label selector filters.
         namespaces : Collection[str] | None, optional
             Optional namespace filter.  If omitted, query all namespaces.  If

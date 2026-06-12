@@ -214,7 +214,11 @@ exclude = [
 
 [tool.ty.src]
 include = ["bertrand", "test", "ast_tests"]
-exclude = []
+exclude = [
+    "bertrand/env/kube/ceph/_csi_pb2.py",
+    "bertrand/env/kube/ceph/_csi_pb2.pyi",
+    "bertrand/env/kube/ceph/_csi_pb2_grpc.py",
+]
 respect-ignore-files = true
 
 [tool.ty.analysis]

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from bertrand.env.config.core import _check_kube_name, _check_uuid
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
-from bertrand.env.kube.secret import SECRET_RESOURCE, Secret
+from bertrand.env.kube.secret import Secret
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -274,7 +274,7 @@ async def list_capability_secrets(
         labels[CAPABILITY_SCOPE_VALUE_V1] = expected_scope_value
     expected_id = _check_kube_name(capability_id) if capability_id is not None else None
 
-    secrets = await SECRET_RESOURCE.list(
+    secrets = await Secret.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=labels,
@@ -364,7 +364,7 @@ async def resolve_capability_secret(
     refs.append(CapabilityRef(kind=kind, capability_id=capability_id, scope="shared"))
 
     for ref in refs:
-        secret = await SECRET_RESOURCE.get(
+        secret = await Secret.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=ref.name,
@@ -422,7 +422,7 @@ async def delete_capabilities_for_scope(
     )
     for ref, secret in capabilities:
         capability_ref_from_secret(secret, expected=ref)
-        await SECRET_RESOURCE.delete(kube, secret, deadline=deadline)
+        await secret.delete(kube, deadline=deadline)
 
 
 def _check_kind(kind: str) -> CapabilityKind:

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
+from kubernetes import client as kube_client
+
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.ceph.capacity import (
     STORAGE_ACTION_PHASES,
@@ -20,8 +22,8 @@ from bertrand.env.kube.ceph.csi import (
     CSI_DRIVER_NAME,
     CSI_NODE_NAME,
 )
-from bertrand.env.kube.daemonset import DAEMON_SET_RESOURCE
-from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE
+from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.deployment import Deployment
 
 if TYPE_CHECKING:
     from bertrand.env.kube.api.client import Kube
@@ -357,22 +359,23 @@ async def storage_csi_status(
     dict[str, object]
         JSON-serializable CSI readiness payload.
     """
+    storage_api = kube_client.StorageV1Api(kube.client)
     driver, controller, node = await asyncio.gather(
         kube.run(
-            lambda request_timeout: kube.storage.read_csi_driver(
+            lambda request_timeout: storage_api.read_csi_driver(
                 name=CSI_DRIVER_NAME,
                 _request_timeout=request_timeout,
             ),
             deadline=deadline,
             context=f"failed to inspect CSIDriver {CSI_DRIVER_NAME!r}",
         ),
-        DEPLOYMENT_RESOURCE.get(
+        Deployment.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=CSI_CONTROLLER_NAME,
             deadline=deadline,
         ),
-        DAEMON_SET_RESOURCE.get(
+        DaemonSet.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=CSI_NODE_NAME,

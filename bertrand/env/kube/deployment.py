@@ -4,32 +4,37 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    Watchable,
-    builtin_resource,
+    WatchEvent,
+    _watch,
+    namespaced_resource,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
 
     from bertrand.env.git import Deadline
 
-    from .api.client import Kube
     from .api.spec import DeploymentStrategyManifest, PodTemplateSpec
 
 
-@builtin_resource(api="apps", scope="namespaced", endpoint="deployment")
+@namespaced_resource(
+    api=kubernetes.client.AppsV1Api,
+    payload=kubernetes.client.V1Deployment,
+    read=kubernetes.client.AppsV1Api.read_namespaced_deployment,
+    list=kubernetes.client.AppsV1Api.list_namespaced_deployment,
+    list_all=kubernetes.client.AppsV1Api.list_deployment_for_all_namespaces,
+    delete=kubernetes.client.AppsV1Api.delete_namespaced_deployment,
+)
 @dataclass(frozen=True)
 class Deployment(
     KubeResource[kubernetes.client.V1Deployment],
-    Watchable,
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes Deployment object.
 
@@ -45,6 +50,61 @@ class Deployment(
     """
 
     _obj: kubernetes.client.V1Deployment
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str = "",
+        resource_version: str = "",
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Deployments.
+
+        Yields
+        ------
+        WatchEvent[Deployment]
+            Deployment watch events.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns a malformed Deployment watch payload.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        api = kubernetes.client.AppsV1Api(kube.client)
+        if namespace:
+            watch_fn = api.list_namespaced_deployment
+            api_kwargs = {"namespace": namespace}
+            context = f"failed to watch Deployments in namespace {namespace!r}"
+        else:
+            watch_fn = api.list_deployment_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch Deployments across all namespaces"
+        async for event in _watch(
+            watch_fn,
+            deadline=deadline,
+            context=context,
+            resource_version=resource_version,
+            label_selector=(
+                ",".join(f"{key}={value}" for key, value in labels.items())
+                if labels
+                else ""
+            ),
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            if not isinstance(event.object, kubernetes.client.V1Deployment):
+                msg = "malformed Kubernetes Deployment watch payload"
+                raise OSError(msg)
+            yield WatchEvent(
+                type=event.type,
+                object=cls(_obj=event.object),
+                resource_version=event.resource_version,
+            )
 
     @staticmethod
     def _manifest(
@@ -189,13 +249,36 @@ class Deployment(
             paused=paused,
         )
 
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kubernetes.client.AppsV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_deployment(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create Deployment {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_deployment(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch Deployment {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kubernetes.client.V1Deployment):
+            msg = "malformed Kubernetes Deployment payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def pod_annotations(self) -> Mapping[str, str]:
@@ -427,32 +510,14 @@ class Deployment(
         ------
         ValueError
             If `minimum` is less than one.
-        OSError
-            If this Deployment has incomplete Kubernetes metadata.
         """
         if minimum < 1:
             msg = "minimum available Deployment replicas must be positive"
             raise ValueError(msg)
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for Deployment availability with missing "
-                "metadata.name/namespace"
-            )
-            raise OSError(msg)
         return await self.wait_until(
             kube,
             deadline=deadline,
-            predicate=lambda live: live.available_replicas >= minimum,
-            pending_message=f"Deployment {namespace}/{name} is not available yet",
-            missing_message=(
-                f"Deployment {namespace}/{name} disappeared while waiting for "
-                "availability"
-            ),
-            timeout_message=(
-                f"timed out waiting for Deployment {namespace}/{name} availability"
-            ),
+            predicate=lambda live: live.has_available_replicas(minimum),
         )
 
     async def wait_rollout(
@@ -483,20 +548,10 @@ class Deployment(
         ------
         ValueError
             If `minimum` is less than one.
-        OSError
-            If this Deployment has incomplete Kubernetes metadata.
         """
         if minimum < 1:
             msg = "minimum rolled out Deployment replicas must be positive"
             raise ValueError(msg)
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for Deployment rollout with missing "
-                "metadata.name/namespace"
-            )
-            raise OSError(msg)
         target_generation = self.generation
         return await self.wait_until(
             kube,
@@ -508,15 +563,6 @@ class Deployment(
                 )
                 and live.updated_replicas >= minimum
                 and live.available_replicas >= minimum
-            ),
-            pending_message=(
-                f"Deployment {namespace}/{name} rollout is not complete yet"
-            ),
-            missing_message=(
-                f"Deployment {namespace}/{name} disappeared while waiting for rollout"
-            ),
-            timeout_message=(
-                f"timed out waiting for Deployment {namespace}/{name} rollout"
             ),
         )
 
@@ -554,8 +600,9 @@ class Deployment(
         if not namespace or not name:
             msg = "cannot scale Deployment with missing metadata.name/namespace"
             raise OSError(msg)
+        api = kubernetes.client.AppsV1Api(kube.client)
         payload = await kube.run(
-            lambda request_timeout: kube.apps.patch_namespaced_deployment_scale(
+            lambda request_timeout: api.patch_namespaced_deployment_scale(
                 name=name,
                 namespace=namespace,
                 body={"spec": {"replicas": replicas}},

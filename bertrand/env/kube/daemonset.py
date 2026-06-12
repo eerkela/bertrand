@@ -4,36 +4,96 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import kubernetes
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    Watchable,
-    builtin_resource,
+    WatchEvent,
+    _watch,
+    namespaced_resource,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
 
     from bertrand.env.git import Deadline
 
-    from .api.client import Kube
     from .api.spec import PodTemplateSpec
 
 
-@builtin_resource(api="apps", scope="namespaced", endpoint="daemon_set")
+@namespaced_resource(
+    api=kubernetes.client.AppsV1Api,
+    payload=kubernetes.client.V1DaemonSet,
+    read=kubernetes.client.AppsV1Api.read_namespaced_daemon_set,
+    list=kubernetes.client.AppsV1Api.list_namespaced_daemon_set,
+    list_all=kubernetes.client.AppsV1Api.list_daemon_set_for_all_namespaces,
+    delete=kubernetes.client.AppsV1Api.delete_namespaced_daemon_set,
+)
 @dataclass(frozen=True)
 class DaemonSet(
     KubeResource[kubernetes.client.V1DaemonSet],
-    Watchable,
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes DaemonSet object."""
 
     _obj: kubernetes.client.V1DaemonSet
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str = "",
+        resource_version: str = "",
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch DaemonSets.
+
+        Yields
+        ------
+        WatchEvent[DaemonSet]
+            DaemonSet watch events.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns a malformed DaemonSet watch payload.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        api = kubernetes.client.AppsV1Api(kube.client)
+        if namespace:
+            watch_fn = api.list_namespaced_daemon_set
+            api_kwargs = {"namespace": namespace}
+            context = f"failed to watch DaemonSets in namespace {namespace!r}"
+        else:
+            watch_fn = api.list_daemon_set_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch DaemonSets across all namespaces"
+        async for event in _watch(
+            watch_fn,
+            deadline=deadline,
+            context=context,
+            resource_version=resource_version,
+            label_selector=(
+                ",".join(f"{key}={value}" for key, value in labels.items())
+                if labels
+                else ""
+            ),
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            if not isinstance(event.object, kubernetes.client.V1DaemonSet):
+                msg = "malformed Kubernetes DaemonSet watch payload"
+                raise OSError(msg)
+            yield WatchEvent(
+                type=event.type,
+                object=cls(_obj=event.object),
+                resource_version=event.resource_version,
+            )
 
     @staticmethod
     def _manifest(
@@ -120,13 +180,36 @@ class DaemonSet(
             pod_template=pod_template,
             annotations=annotations,
         )
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kubernetes.client.AppsV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_daemon_set(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create DaemonSet {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_daemon_set(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch DaemonSet {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kubernetes.client.V1DaemonSet):
+            msg = "malformed Kubernetes DaemonSet payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def generation(self) -> int:
@@ -322,32 +405,14 @@ class DaemonSet(
         ------
         ValueError
             If `minimum` is negative.
-        OSError
-            If this DaemonSet has incomplete Kubernetes metadata.
         """
         if minimum < 0:
             msg = "DaemonSet availability minimum cannot be negative"
             raise ValueError(msg)
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for DaemonSet availability with missing "
-                "metadata.name/namespace"
-            )
-            raise OSError(msg)
         return await self.wait_until(
             kube,
             deadline=deadline,
             predicate=lambda live: live.has_available_pods(minimum),
-            pending_message=f"DaemonSet {namespace}/{name} is not available yet",
-            missing_message=(
-                f"DaemonSet {namespace}/{name} disappeared while waiting for "
-                "availability"
-            ),
-            timeout_message=(
-                f"timed out waiting for DaemonSet {namespace}/{name} availability"
-            ),
         )
 
     async def wait_rollout(
@@ -377,19 +442,10 @@ class DaemonSet(
         ------
         ValueError
             If `minimum` is negative.
-        OSError
-            If this DaemonSet has incomplete Kubernetes metadata.
         """
         if minimum < 0:
             msg = "DaemonSet rollout minimum cannot be negative"
             raise ValueError(msg)
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for DaemonSet rollout with missing metadata.name/namespace"
-            )
-            raise OSError(msg)
         target_generation = self.generation
         return await self.wait_until(
             kube,
@@ -400,12 +456,5 @@ class DaemonSet(
                     or live.observed_generation >= target_generation
                 )
                 and live.rollout_ready(minimum)
-            ),
-            pending_message=f"DaemonSet {namespace}/{name} rollout is not complete yet",
-            missing_message=(
-                f"DaemonSet {namespace}/{name} disappeared while waiting for rollout"
-            ),
-            timeout_message=(
-                f"timed out waiting for DaemonSet {namespace}/{name} rollout"
             ),
         )

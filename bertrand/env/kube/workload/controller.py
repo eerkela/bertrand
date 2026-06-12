@@ -9,12 +9,11 @@ from typing import TYPE_CHECKING, Literal, cast
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.capability.device import upsert_resource_claim_templates
 from bertrand.env.kube.cronjob import (
-    CRON_JOB_RESOURCE,
     CronJob,
     CronJobConcurrencyPolicy,
 )
-from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE, Deployment
-from bertrand.env.kube.job import JOB_RESOURCE, Job, JobCompletionMode
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.job import Job, JobCompletionMode
 from bertrand.env.kube.network.workload import (
     delete_workload_http_routes,
     delete_workload_network_policy,
@@ -25,7 +24,7 @@ from bertrand.env.kube.network.workload import (
     prepare_workload_http_routes,
     prune_workload_http_routes,
 )
-from bertrand.env.kube.pod import POD_RESOURCE, Pod
+from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.workload.base import WorkloadIdentity, WorkloadPod
 
 if TYPE_CHECKING:
@@ -723,7 +722,7 @@ async def _scale_deployment(
     replicas: int,
     deadline: Deadline,
 ) -> int | None:
-    deployment = await DEPLOYMENT_RESOURCE.get(
+    deployment = await Deployment.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
@@ -751,7 +750,7 @@ async def _set_cronjob_suspended(
     suspend: bool,
     deadline: Deadline,
 ) -> bool | None:
-    cronjob = await CRON_JOB_RESOURCE.get(
+    cronjob = await CronJob.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
@@ -785,9 +784,8 @@ async def _delete_active_execution(
         deadline=deadline,
     )
     for job in jobs:
-        await JOB_RESOURCE.delete(
+        await job.delete(
             kube,
-            job,
             deadline=deadline,
             propagation_policy="Foreground",
             grace_period_seconds=grace_period_seconds,
@@ -798,9 +796,8 @@ async def _delete_active_execution(
         deadline=deadline,
     )
     for pod in pods:
-        await POD_RESOURCE.delete(
+        await pod.delete(
             kube,
-            pod,
             deadline=deadline,
             grace_period_seconds=grace_period_seconds,
         )
@@ -823,7 +820,7 @@ async def _active_workload_jobs(
     identity: WorkloadIdentity,
     deadline: Deadline,
 ) -> tuple[Job, ...]:
-    jobs = await JOB_RESOURCE.list(
+    jobs = await Job.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=identity.managed_selector,
@@ -841,7 +838,7 @@ async def _active_workload_pods(
     identity: WorkloadIdentity,
     deadline: Deadline,
 ) -> tuple[Pod, ...]:
-    pods = await POD_RESOURCE.list(
+    pods = await Pod.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=identity.managed_selector,
@@ -891,7 +888,7 @@ async def _delete_deployment(
     propagation_policy: DeletionPropagationPolicy = "Background",
     grace_period_seconds: int | None = None,
 ) -> bool:
-    deployment = await DEPLOYMENT_RESOURCE.get(
+    deployment = await Deployment.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
@@ -900,9 +897,8 @@ async def _delete_deployment(
     _assert_managed(deployment, identity=identity, kind="Deployment")
     if deployment is None:
         return False
-    await DEPLOYMENT_RESOURCE.delete(
+    await deployment.delete(
         kube,
-        deployment,
         deadline=deadline,
         propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,
@@ -918,7 +914,7 @@ async def _delete_cronjob(
     propagation_policy: DeletionPropagationPolicy = "Background",
     grace_period_seconds: int | None = None,
 ) -> bool:
-    cronjob = await CRON_JOB_RESOURCE.get(
+    cronjob = await CronJob.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=identity.name,
@@ -927,9 +923,8 @@ async def _delete_cronjob(
     _assert_managed(cronjob, identity=identity, kind="CronJob")
     if cronjob is None:
         return False
-    await CRON_JOB_RESOURCE.delete(
+    await cronjob.delete(
         kube,
-        cronjob,
         deadline=deadline,
         propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,

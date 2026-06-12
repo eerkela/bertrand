@@ -8,16 +8,15 @@ from typing import TYPE_CHECKING
 from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline, until
 from bertrand.env.kube.api.client import kubectl
 from bertrand.env.kube.crd import (
-    CUSTOM_RESOURCE_DEFINITION_RESOURCE,
     CustomResourceDefinition,
 )
 from bertrand.env.kube.custom_object import (
     CustomObject,
     CustomObjectResource,
 )
-from bertrand.env.kube.daemonset import DAEMON_SET_RESOURCE, DaemonSet
-from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE, Deployment
-from bertrand.env.kube.namespace import NAMESPACE_RESOURCE, Namespace
+from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.namespace import Namespace
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -359,14 +358,14 @@ async def metallb_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]
         JSON-serializable MetalLB readiness and configuration summary.
     """
     namespace, controller, speaker = await asyncio.gather(
-        NAMESPACE_RESOURCE.get(kube, name=METALLB_NAMESPACE, deadline=deadline),
-        DEPLOYMENT_RESOURCE.get(
+        Namespace.get(kube, name=METALLB_NAMESPACE, deadline=deadline),
+        Deployment.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=METALLB_CONTROLLER_DEPLOYMENT,
             deadline=deadline,
         ),
-        DAEMON_SET_RESOURCE.get(
+        DaemonSet.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=METALLB_SPEAKER_DAEMONSET,
@@ -458,7 +457,7 @@ async def _ensure_managed_metallb_namespace(
     *,
     deadline: Deadline,
 ) -> None:
-    namespace = await NAMESPACE_RESOURCE.get(
+    namespace = await Namespace.get(
         kube, name=METALLB_NAMESPACE, deadline=deadline
     )
     if namespace is not None and not _labels_managed(namespace.labels):
@@ -477,7 +476,7 @@ async def _ensure_managed_metallb_namespace(
 
 
 async def _require_managed_metallb_namespace(kube: Kube, *, deadline: Deadline) -> None:
-    namespace = await NAMESPACE_RESOURCE.get(
+    namespace = await Namespace.get(
         kube, name=METALLB_NAMESPACE, deadline=deadline
     )
     if namespace is None:
@@ -515,7 +514,7 @@ async def _wait_crd_established(
     deadline: Deadline,
 ) -> CustomResourceDefinition:
     async def established(attempt_deadline: Deadline) -> CustomResourceDefinition:
-        crd = await CUSTOM_RESOURCE_DEFINITION_RESOURCE.get(
+        crd = await CustomResourceDefinition.get(
             kube,
             name=name,
             deadline=attempt_deadline,
@@ -541,7 +540,7 @@ async def _wait_crd_established(
 
 async def _wait_controller_available(kube: Kube, *, deadline: Deadline) -> Deployment:
     async def available(attempt_deadline: Deadline) -> Deployment:
-        deployment = await DEPLOYMENT_RESOURCE.get(
+        deployment = await Deployment.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=METALLB_CONTROLLER_DEPLOYMENT,
@@ -568,7 +567,7 @@ async def _wait_controller_available(kube: Kube, *, deadline: Deadline) -> Deplo
 
 async def _wait_speaker_available(kube: Kube, *, deadline: Deadline) -> DaemonSet:
     async def available(attempt_deadline: Deadline) -> DaemonSet:
-        daemonset = await DAEMON_SET_RESOURCE.get(
+        daemonset = await DaemonSet.get(
             kube,
             namespace=METALLB_NAMESPACE,
             name=METALLB_SPEAKER_DAEMONSET,
@@ -596,7 +595,7 @@ async def _wait_speaker_available(kube: Kube, *, deadline: Deadline) -> DaemonSe
 async def _crd_status(kube: Kube, *, deadline: Deadline) -> dict[str, bool]:
     crds = await asyncio.gather(
         *(
-            CUSTOM_RESOURCE_DEFINITION_RESOURCE.get(kube, name=name, deadline=deadline)
+            CustomResourceDefinition.get(kube, name=name, deadline=deadline)
             for name in METALLB_CRDS
         )
     )

@@ -36,6 +36,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PosixPath
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, TextIO, cast
 
 if TYPE_CHECKING:
@@ -63,6 +64,7 @@ else:
 
 # generic utils
 SHORT_DELAY = 0.1
+EMPTY_MAPPING: Mapping[str, str] = MappingProxyType({})
 ROOT_DIR = Path(Path(sys.executable).anchor)
 HOST_MOUNTS = ROOT_DIR / "proc" / "self" / "mountinfo"
 NORMALIZE_ARCH = {

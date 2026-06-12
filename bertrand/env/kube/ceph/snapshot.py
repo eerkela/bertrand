@@ -18,19 +18,10 @@ from bertrand.env.git import (
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.snapshot import (
-    VOLUME_SNAPSHOT_CLASS_RESOURCE,
-    VOLUME_SNAPSHOT_RESOURCE,
-    create_volume_snapshot,
-    create_volume_snapshot_class,
-    delete_volume_snapshot,
-    volume_snapshot_class_deletion_policy,
-    volume_snapshot_class_driver,
-    volume_snapshot_created_at,
-    volume_snapshot_ready_to_use,
-    wait_volume_snapshot_ready,
+    VolumeSnapshot,
+    VolumeSnapshotClass,
 )
 from bertrand.env.kube.volume import (
-    PERSISTENT_VOLUME_CLAIM_RESOURCE,
     PersistentVolumeClaim,
     StorageClass,
 )
@@ -51,8 +42,6 @@ from .volume import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection, Mapping
-
-    from bertrand.env.kube.custom_object import CustomObject
 
 REPOSITORY_SNAPSHOT_CLASS_LABEL = "bertrand.dev/ceph-repository-snapshot-class"
 REPOSITORY_BUILD_REQUEST_LABEL = "bertrand.dev/buildkit-build-name"
@@ -75,7 +64,7 @@ async def ensure_repository_snapshot_support(
     kube: Kube,
     *,
     deadline: Deadline,
-) -> CustomObject:
+) -> VolumeSnapshotClass:
     """Ensure repository snapshot primitives are usable.
 
     Parameters
@@ -87,7 +76,7 @@ async def ensure_repository_snapshot_support(
 
     Returns
     -------
-    CustomObject
+    VolumeSnapshotClass
         CephFS-compatible snapshot class selected for repository snapshots.
 
     Raises
@@ -119,7 +108,7 @@ async def create_repository_snapshot(
     *,
     repo_id: str,
     deadline: Deadline,
-) -> CustomObject:
+) -> VolumeSnapshot:
     """Create one retained snapshot for a managed repository volume.
 
     Parameters
@@ -133,7 +122,7 @@ async def create_repository_snapshot(
 
     Returns
     -------
-    CustomObject
+    VolumeSnapshot
         Ready retained snapshot.
     """
     repo_id = _check_uuid(repo_id)
@@ -188,7 +177,7 @@ async def maintain_repository_snapshots(
 
     now = datetime.now(UTC)
     retention = timedelta(seconds=retention_seconds)
-    retained = await VOLUME_SNAPSHOT_RESOURCE.list(
+    retained = await VolumeSnapshot.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels=_snapshot_labels(purpose=REPOSITORY_SNAPSHOT_PURPOSE_RETAINED),
@@ -207,13 +196,13 @@ async def maintain_repository_snapshots(
     for snapshot in sorted(retained, key=lambda item: item.name):
         if len(deleted_names) >= delete_limit:
             break
-        created_at = volume_snapshot_created_at(snapshot)
+        created_at = snapshot.snapshot_created_at
         if created_at is None or now - created_at < retention:
             continue
-        await delete_volume_snapshot(kube, snapshot, deadline=deadline)
+        await snapshot.delete(kube, deadline=deadline)
         deleted_names.add(snapshot.name)
 
-    snapshots_by_repo: dict[str, list[CustomObject]] = {}
+    snapshots_by_repo: dict[str, list[VolumeSnapshot]] = {}
     for snapshot in retained:
         if snapshot.name in deleted_names:
             continue
@@ -229,9 +218,9 @@ async def maintain_repository_snapshots(
         repo_snapshots = snapshots_by_repo.get(record.spec.repo_id, [])
         fresh = False
         for snapshot in repo_snapshots:
-            created_at = volume_snapshot_created_at(snapshot)
+            created_at = snapshot.snapshot_created_at
             if (
-                volume_snapshot_ready_to_use(snapshot)
+                snapshot.ready_to_use
                 and created_at is not None
                 and created_at >= fresh_boundary
             ):
@@ -282,7 +271,7 @@ async def next_repository_snapshot_time(
         msg = "repository snapshot interval and retention must be positive"
         raise ValueError(msg)
     now = datetime.now(UTC)
-    retained = await VOLUME_SNAPSHOT_RESOURCE.list(
+    retained = await VolumeSnapshot.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels=_snapshot_labels(purpose=REPOSITORY_SNAPSHOT_PURPOSE_RETAINED),
@@ -297,14 +286,14 @@ async def next_repository_snapshot_time(
         )
         if record.spec.phase == "Ready"
     ]
-    snapshots_by_repo: dict[str, list[CustomObject]] = {}
+    snapshots_by_repo: dict[str, list[VolumeSnapshot]] = {}
     for snapshot in retained:
         repo_id = snapshot.labels.get(REPO_ID_LABEL, "")
         if repo_id:
             snapshots_by_repo.setdefault(repo_id, []).append(snapshot)
     retention = timedelta(seconds=retention_seconds)
     for snapshot in retained:
-        created_at = volume_snapshot_created_at(snapshot)
+        created_at = snapshot.snapshot_created_at
         if created_at is not None and now - created_at >= retention:
             return now
     if not active_records:
@@ -315,8 +304,8 @@ async def next_repository_snapshot_time(
     for record in active_records:
         ready: list[datetime] = []
         for snapshot in snapshots_by_repo.get(record.spec.repo_id, []):
-            created_at = volume_snapshot_created_at(snapshot)
-            if volume_snapshot_ready_to_use(snapshot) and created_at is not None:
+            created_at = snapshot.snapshot_created_at
+            if snapshot.ready_to_use and created_at is not None:
                 ready.append(created_at)
         if not ready:
             return now
@@ -360,7 +349,7 @@ async def prepared_repository_build_source(
     if not build_name:
         msg = "repository build snapshot requires a non-empty build name"
         raise ValueError(msg)
-    snapshot: CustomObject | None = None
+    snapshot: VolumeSnapshot | None = None
     pvc: PersistentVolumeClaim | None = None
     try:
         snapshot, volume = await _create_snapshot(
@@ -434,7 +423,7 @@ async def cleanup_orphaned_build_sources(
     max_age = timedelta(seconds=max_age_seconds)
     deleted = 0
 
-    pvcs = await PERSISTENT_VOLUME_CLAIM_RESOURCE.list(
+    pvcs = await PersistentVolumeClaim.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels={
@@ -454,10 +443,10 @@ async def cleanup_orphaned_build_sources(
             max_age=max_age,
         ):
             continue
-        await PERSISTENT_VOLUME_CLAIM_RESOURCE.delete(kube, pvc, deadline=deadline)
+        await pvc.delete(kube, deadline=deadline)
         deleted += 1
 
-    snapshots = await VOLUME_SNAPSHOT_RESOURCE.list(
+    snapshots = await VolumeSnapshot.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels=_snapshot_labels(purpose=REPOSITORY_SNAPSHOT_PURPOSE_BUILD),
@@ -468,13 +457,13 @@ async def cleanup_orphaned_build_sources(
             break
         if not _build_source_orphaned(
             labels=snapshot.labels,
-            created_at=volume_snapshot_created_at(snapshot),
+            created_at=snapshot.snapshot_created_at,
             active_build_names=active,
             now=now,
             max_age=max_age,
         ):
             continue
-        await delete_volume_snapshot(kube, snapshot, deadline=deadline)
+        await snapshot.delete(kube, deadline=deadline)
         deleted += 1
 
     return deleted
@@ -485,19 +474,19 @@ async def _ensure_snapshot_class(
     *,
     storage: StorageClass,
     deadline: Deadline,
-) -> CustomObject:
-    classes = await VOLUME_SNAPSHOT_CLASS_RESOURCE.list(kube, deadline=deadline)
+) -> VolumeSnapshotClass:
+    classes = await VolumeSnapshotClass.list(kube, deadline=deadline)
     matches = [
         item
         for item in classes
-        if volume_snapshot_class_driver(item) == storage.provisioner
-        and volume_snapshot_class_deletion_policy(item) == "Delete"
+        if item.driver == storage.provisioner
+        and item.deletion_policy == "Delete"
     ]
     if matches:
         return sorted(matches, key=lambda item: item.name)[0]
 
     name = _snapshot_class_name(storage.provisioner)
-    existing = await VOLUME_SNAPSHOT_CLASS_RESOURCE.get(
+    existing = await VolumeSnapshotClass.get(
         kube,
         name=name,
         deadline=deadline,
@@ -506,7 +495,7 @@ async def _ensure_snapshot_class(
         _assert_snapshot_class(existing, driver=storage.provisioner)
         return existing
     try:
-        return await create_volume_snapshot_class(
+        return await VolumeSnapshotClass.create(
             kube,
             name=name,
             driver=storage.provisioner,
@@ -521,7 +510,7 @@ async def _ensure_snapshot_class(
     except OSError as err:
         if not isinstance(err, Kube.APIError) or err.status != 409:
             raise
-    existing = await VOLUME_SNAPSHOT_CLASS_RESOURCE.get(
+    existing = await VolumeSnapshotClass.get(
         kube,
         name=name,
         deadline=deadline,
@@ -540,7 +529,7 @@ async def _create_snapshot(
     purpose: str,
     build_name: str | None,
     deadline: Deadline,
-) -> tuple[CustomObject, PersistentVolumeClaim]:
+) -> tuple[VolumeSnapshot, PersistentVolumeClaim]:
     volume = await _repository_volume_claim(
         kube,
         repo_id=repo_id,
@@ -551,7 +540,7 @@ async def _create_snapshot(
         kube,
         deadline=deadline,
     )
-    snapshot = await create_volume_snapshot(
+    snapshot = await VolumeSnapshot.create(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=_snapshot_name(repo_id=repo_id, purpose=purpose, build_name=build_name),
@@ -567,7 +556,7 @@ async def _create_snapshot(
         },
         deadline=deadline,
     )
-    ready = await wait_volume_snapshot_ready(kube, snapshot, deadline=deadline)
+    ready = await snapshot.wait_ready(kube, deadline=deadline)
     return ready, volume
 
 
@@ -591,18 +580,16 @@ async def _cleanup_build_source(
     kube: Kube,
     *,
     pvc: PersistentVolumeClaim | None,
-    snapshot: CustomObject | None,
+    snapshot: VolumeSnapshot | None,
 ) -> None:
     deadline = Deadline(REPOSITORY_BUILD_SOURCE_CLEANUP_TIMEOUT_SECONDS)
     if pvc is not None:
         with suppress(OSError, TimeoutError, ValueError):
-            await PERSISTENT_VOLUME_CLAIM_RESOURCE.delete(kube, pvc, deadline=deadline)
-            await PERSISTENT_VOLUME_CLAIM_RESOURCE.wait_deleted(
-                kube, pvc, deadline=deadline
-            )
+            await pvc.delete(kube, deadline=deadline)
+            await pvc.wait_deleted(kube, deadline=deadline)
     if snapshot is not None:
         with suppress(OSError, TimeoutError, ValueError):
-            await delete_volume_snapshot(kube, snapshot, deadline=deadline)
+            await snapshot.delete(kube, deadline=deadline)
 
 
 def _snapshot_labels(
@@ -687,15 +674,15 @@ def _snapshot_class_parameters(parameters: Mapping[str, str]) -> dict[str, str]:
     return out
 
 
-def _assert_snapshot_class(snapshot_class: CustomObject, *, driver: str) -> None:
-    snapshot_driver = volume_snapshot_class_driver(snapshot_class)
+def _assert_snapshot_class(snapshot_class: VolumeSnapshotClass, *, driver: str) -> None:
+    snapshot_driver = snapshot_class.driver
     if snapshot_driver != driver:
         msg = (
             f"VolumeSnapshotClass {snapshot_class.name!r} uses driver "
             f"{snapshot_driver!r}, expected {driver!r}"
         )
         raise OSError(msg)
-    if volume_snapshot_class_deletion_policy(snapshot_class) != "Delete":
+    if snapshot_class.deletion_policy != "Delete":
         msg = (
             f"VolumeSnapshotClass {snapshot_class.name!r} must use "
             "deletionPolicy=Delete"

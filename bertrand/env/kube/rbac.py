@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING, Literal, Self
 
 from kubernetes import client as kube_client
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    builtin_resource,
+    cluster_resource,
+    namespaced_resource,
 )
 
 if TYPE_CHECKING:
@@ -18,7 +19,6 @@ if TYPE_CHECKING:
 
     from bertrand.env.git import Deadline
 
-    from .api.client import Kube
     from .api.spec import PolicyRuleManifest
 
 type RoleBindingRoleKind = Literal["Role", "ClusterRole"]
@@ -26,11 +26,16 @@ type _RoleKind = Literal["ClusterRole", "Role"]
 type _BindingKind = Literal["ClusterRoleBinding", "RoleBinding"]
 
 
-@builtin_resource(api="rbac", scope="cluster", endpoint="cluster_role")
+@cluster_resource(
+    api=kube_client.RbacAuthorizationV1Api,
+    payload=kube_client.V1ClusterRole,
+    read=kube_client.RbacAuthorizationV1Api.read_cluster_role,
+    list=kube_client.RbacAuthorizationV1Api.list_cluster_role,
+    delete=kube_client.RbacAuthorizationV1Api.delete_cluster_role,
+)
 @dataclass(frozen=True)
 class ClusterRole(
     KubeResource[kube_client.V1ClusterRole],
-    DeclarativeResource,
 ):
     """Wrapper around one Kubernetes ClusterRole object."""
 
@@ -53,6 +58,11 @@ class ClusterRole(
         -------
         ClusterRole
             Wrapped created or patched ClusterRole.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes rejects the create or patch request.
         """
         manifest = rbac_role_manifest(
             kind="ClusterRole",
@@ -62,19 +72,46 @@ class ClusterRole(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.upsert_manifest(
-            kube,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kube_client.RbacAuthorizationV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_cluster_role(
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create ClusterRole {name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_cluster_role(
+                    name=name,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch ClusterRole {name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kube_client.V1ClusterRole):
+            msg = "malformed Kubernetes ClusterRole payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
 
-@builtin_resource(api="rbac", scope="cluster", endpoint="cluster_role_binding")
+@cluster_resource(
+    api=kube_client.RbacAuthorizationV1Api,
+    payload=kube_client.V1ClusterRoleBinding,
+    read=kube_client.RbacAuthorizationV1Api.read_cluster_role_binding,
+    list=kube_client.RbacAuthorizationV1Api.list_cluster_role_binding,
+    delete=kube_client.RbacAuthorizationV1Api.delete_cluster_role_binding,
+)
 @dataclass(frozen=True)
 class ClusterRoleBinding(
     KubeResource[kube_client.V1ClusterRoleBinding],
-    DeclarativeResource,
 ):
     """Wrapper around one Kubernetes ClusterRoleBinding object."""
 
@@ -100,6 +137,11 @@ class ClusterRoleBinding(
         -------
         ClusterRoleBinding
             Wrapped created or patched ClusterRoleBinding.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes rejects the create or patch request.
         """
         manifest = rbac_service_account_binding_manifest(
             kind="ClusterRoleBinding",
@@ -112,19 +154,47 @@ class ClusterRoleBinding(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.upsert_manifest(
-            kube,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kube_client.RbacAuthorizationV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_cluster_role_binding(
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create ClusterRoleBinding {name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_cluster_role_binding(
+                    name=name,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch ClusterRoleBinding {name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kube_client.V1ClusterRoleBinding):
+            msg = "malformed Kubernetes ClusterRoleBinding payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
 
-@builtin_resource(api="rbac", scope="namespaced", endpoint="role")
+@namespaced_resource(
+    api=kube_client.RbacAuthorizationV1Api,
+    payload=kube_client.V1Role,
+    read=kube_client.RbacAuthorizationV1Api.read_namespaced_role,
+    list=kube_client.RbacAuthorizationV1Api.list_namespaced_role,
+    list_all=kube_client.RbacAuthorizationV1Api.list_role_for_all_namespaces,
+    delete=kube_client.RbacAuthorizationV1Api.delete_namespaced_role,
+)
 @dataclass(frozen=True)
 class Role(
     KubeResource[kube_client.V1Role],
-    DeclarativeResource,
 ):
     """Wrapper around one Kubernetes Role object."""
 
@@ -148,6 +218,11 @@ class Role(
         -------
         Role
             Wrapped created or patched Role.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes rejects the create or patch request.
         """
         manifest = rbac_role_manifest(
             kind="Role",
@@ -157,20 +232,49 @@ class Role(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kube_client.RbacAuthorizationV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_role(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create Role {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_role(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch Role {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kube_client.V1Role):
+            msg = "malformed Kubernetes Role payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
 
-@builtin_resource(api="rbac", scope="namespaced", endpoint="role_binding")
+@namespaced_resource(
+    api=kube_client.RbacAuthorizationV1Api,
+    payload=kube_client.V1RoleBinding,
+    read=kube_client.RbacAuthorizationV1Api.read_namespaced_role_binding,
+    list=kube_client.RbacAuthorizationV1Api.list_namespaced_role_binding,
+    list_all=kube_client.RbacAuthorizationV1Api.list_role_binding_for_all_namespaces,
+    delete=kube_client.RbacAuthorizationV1Api.delete_namespaced_role_binding,
+)
 @dataclass(frozen=True)
 class RoleBinding(
     KubeResource[kube_client.V1RoleBinding],
-    DeclarativeResource,
 ):
     """Wrapper around one Kubernetes RoleBinding object."""
 
@@ -197,6 +301,11 @@ class RoleBinding(
         -------
         RoleBinding
             Wrapped created or patched RoleBinding.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes rejects the create or patch request.
         """
         manifest = rbac_service_account_binding_manifest(
             kind="RoleBinding",
@@ -209,13 +318,36 @@ class RoleBinding(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kube_client.RbacAuthorizationV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_role_binding(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create RoleBinding {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_role_binding(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch RoleBinding {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kube_client.V1RoleBinding):
+            msg = "malformed Kubernetes RoleBinding payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
 
 def _rule_manifests(rules: Collection[PolicyRuleManifest]) -> list[dict[str, object]]:

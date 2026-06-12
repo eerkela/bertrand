@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    builtin_resource,
+    namespaced_resource,
 )
 
 if TYPE_CHECKING:
@@ -18,14 +18,18 @@ if TYPE_CHECKING:
 
     from bertrand.env.git import Deadline
 
-    from .api.client import Kube
 
-
-@builtin_resource(api="core", scope="namespaced", endpoint="service_account")
+@namespaced_resource(
+    api=kube_client.CoreV1Api,
+    payload=kube_client.V1ServiceAccount,
+    read=kube_client.CoreV1Api.read_namespaced_service_account,
+    list=kube_client.CoreV1Api.list_namespaced_service_account,
+    list_all=kube_client.CoreV1Api.list_service_account_for_all_namespaces,
+    delete=kube_client.CoreV1Api.delete_namespaced_service_account,
+)
 @dataclass(frozen=True)
 class ServiceAccount(
     KubeResource[kube_client.V1ServiceAccount],
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes ServiceAccount object.
 
@@ -105,10 +109,33 @@ class ServiceAccount(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kube_client.CoreV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_service_account(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create ServiceAccount {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_service_account(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch ServiceAccount {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kube_client.V1ServiceAccount):
+            msg = "malformed Kubernetes ServiceAccount payload"
+            raise OSError(msg)
+        return cls(_obj=payload)

@@ -4,28 +4,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
+from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.api.resource import (
-    DeclarativeResource,
     KubeResource,
-    builtin_resource,
+    namespaced_resource,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from bertrand.env.git import Deadline
-    from bertrand.env.kube.api.client import Kube
 
 
-@builtin_resource(api="core", scope="namespaced", endpoint="config_map")
+@namespaced_resource(
+    api=kube_client.CoreV1Api,
+    payload=kube_client.V1ConfigMap,
+    read=kube_client.CoreV1Api.read_namespaced_config_map,
+    list=kube_client.CoreV1Api.list_namespaced_config_map,
+    list_all=kube_client.CoreV1Api.list_config_map_for_all_namespaces,
+    delete=kube_client.CoreV1Api.delete_namespaced_config_map,
+)
 @dataclass(frozen=True)
 class ConfigMap(
     KubeResource[kube_client.V1ConfigMap],
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes ConfigMap object.
 
@@ -79,7 +84,7 @@ class ConfigMap(
         binary_data: Mapping[str, str] | None = None,
         labels: Mapping[str, str] | None = None,
         annotations: Mapping[str, str] | None = None,
-    ) -> ConfigMap:
+    ) -> Self:
         """Create or patch one Kubernetes ConfigMap from intent-level fields.
 
         Parameters
@@ -126,13 +131,36 @@ class ConfigMap(
             annotations=annotations,
         )
 
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kube_client.CoreV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_config_map(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create ConfigMap {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_config_map(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch ConfigMap {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kube_client.V1ConfigMap):
+            msg = "malformed Kubernetes ConfigMap payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def data(self) -> Mapping[str, str]:

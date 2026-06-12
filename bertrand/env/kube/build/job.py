@@ -40,8 +40,8 @@ from bertrand.env.kube.capability.device import (
     select_device_claims,
 )
 from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
-from bertrand.env.kube.configmap import CONFIG_MAP_RESOURCE, ConfigMap
-from bertrand.env.kube.dra import RESOURCE_CLAIM_TEMPLATE_RESOURCE
+from bertrand.env.kube.configmap import ConfigMap
+from bertrand.env.kube.dra import ResourceClaimTemplate
 from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
@@ -392,7 +392,7 @@ async def _publish_target(
             if remaining <= 0:
                 continue
             try:
-                await RESOURCE_CLAIM_TEMPLATE_RESOURCE.delete_by_name(
+                await ResourceClaimTemplate.delete_by_name(
                     kube,
                     namespace=template.namespace,
                     name=template.name,
@@ -619,13 +619,13 @@ async def _delete_config_map(
     if deadline is None:
         return
     try:
-        config = await CONFIG_MAP_RESOURCE.get(
+        config = await ConfigMap.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=name,
             deadline=deadline,
         )
         if config is not None:
-            await CONFIG_MAP_RESOURCE.delete(kube, config, deadline=deadline)
+            await config.delete(kube, deadline=deadline)
     except (OSError, TimeoutError):
         return

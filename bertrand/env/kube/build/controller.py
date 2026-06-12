@@ -50,17 +50,15 @@ from bertrand.env.kube.ceph.capacity import (
 )
 from bertrand.env.kube.ceph.snapshot import cleanup_orphaned_build_sources
 from bertrand.env.kube.control import MaintenanceClock
-from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE, Deployment
+from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.dra import (
     DRA_GROUP,
     RESOURCE_CLAIM_PLURAL,
     RESOURCE_CLAIM_TEMPLATE_PLURAL,
 )
 from bertrand.env.kube.rbac import (
-    CLUSTER_ROLE_BINDING_RESOURCE,
-    CLUSTER_ROLE_RESOURCE,
-    rbac_role_manifest,
-    rbac_service_account_binding_manifest,
+    ClusterRole,
+    ClusterRoleBinding,
 )
 from bertrand.env.kube.service_account import ServiceAccount
 
@@ -402,7 +400,7 @@ async def _maybe_registry_storage_gc(
             )
             return
 
-        deployment = await DEPLOYMENT_RESOURCE.get(
+        deployment = await Deployment.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=IMAGE_REPOSITORY_NAME,
@@ -523,32 +521,22 @@ async def ensure_buildkit_build_controller(
             labels=BUILDKIT_BUILD_LABELS,
             deadline=deadline,
         ),
-        CLUSTER_ROLE_RESOURCE.upsert(
+        ClusterRole.upsert(
             kube,
             name=BUILDKIT_BUILD_CONTROLLER,
-            manifest=rbac_role_manifest(
-                kind="ClusterRole",
-                namespace=None,
-                name=BUILDKIT_BUILD_CONTROLLER,
-                labels=BUILDKIT_BUILD_LABELS,
-                rules=_controller_rules(),
-            ),
+            rules=_controller_rules(),
+            labels=BUILDKIT_BUILD_LABELS,
             deadline=deadline,
         ),
     )
-    await CLUSTER_ROLE_BINDING_RESOURCE.upsert(
+    await ClusterRoleBinding.bind_service_account(
         kube,
         name=BUILDKIT_BUILD_CONTROLLER,
-        manifest=rbac_service_account_binding_manifest(
-            kind="ClusterRoleBinding",
-            namespace=None,
-            name=BUILDKIT_BUILD_CONTROLLER,
-            role_kind="ClusterRole",
-            role_name=BUILDKIT_BUILD_CONTROLLER,
-            service_account_name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
-            service_account_namespace=BERTRAND_NAMESPACE,
-            labels=BUILDKIT_BUILD_LABELS,
-        ),
+        role_kind="ClusterRole",
+        role_name=BUILDKIT_BUILD_CONTROLLER,
+        service_account_name=BUILDKIT_BUILD_SERVICE_ACCOUNT,
+        service_account_namespace=BERTRAND_NAMESPACE,
+        labels=BUILDKIT_BUILD_LABELS,
         deadline=deadline,
     )
     deployment = await Deployment.upsert(

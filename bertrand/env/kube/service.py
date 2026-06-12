@@ -8,18 +8,16 @@ from typing import TYPE_CHECKING, Literal
 
 import kubernetes
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    builtin_resource,
+    namespaced_resource,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
     from bertrand.env.git import Deadline
-
-    from .api.client import Kube
 
 type ServiceType = Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
 
@@ -49,11 +47,17 @@ class ServicePortView:
     node_port: int | None = None
 
 
-@builtin_resource(api="core", scope="namespaced", endpoint="service")
+@namespaced_resource(
+    api=kubernetes.client.CoreV1Api,
+    payload=kubernetes.client.V1Service,
+    read=kubernetes.client.CoreV1Api.read_namespaced_service,
+    list=kubernetes.client.CoreV1Api.list_namespaced_service,
+    list_all=kubernetes.client.CoreV1Api.list_service_for_all_namespaces,
+    delete=kubernetes.client.CoreV1Api.delete_namespaced_service,
+)
 @dataclass(frozen=True)
 class Service(
     KubeResource[kubernetes.client.V1Service],
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes Service object.
 
@@ -160,13 +164,36 @@ class Service(
             annotations=annotations,
             service_type=service_type,
         )
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kubernetes.client.CoreV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_service(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create Service {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_service(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch Service {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kubernetes.client.V1Service):
+            msg = "malformed Kubernetes Service payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def selector(self) -> Mapping[str, str]:

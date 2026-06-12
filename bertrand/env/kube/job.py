@@ -11,16 +11,22 @@ import kubernetes
 from bertrand.env.git import Deadline, until
 
 from .api.resource import (
-    CreatableResource,
     KubeResource,
-    Watchable,
-    builtin_resource,
+    WatchEvent,
+    _watch,
+    namespaced_resource,
 )
 from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Mapping,
+        Sequence,
+    )
     from datetime import datetime
 
     from .api.client import Kube
@@ -140,12 +146,17 @@ def _job_spec_manifest(
     return spec
 
 
-@builtin_resource(api="batch", scope="namespaced", endpoint="job")
+@namespaced_resource(
+    api=kubernetes.client.BatchV1Api,
+    payload=kubernetes.client.V1Job,
+    read=kubernetes.client.BatchV1Api.read_namespaced_job,
+    list=kubernetes.client.BatchV1Api.list_namespaced_job,
+    list_all=kubernetes.client.BatchV1Api.list_job_for_all_namespaces,
+    delete=kubernetes.client.BatchV1Api.delete_namespaced_job,
+)
 @dataclass(frozen=True)
 class Job(
     KubeResource[kubernetes.client.V1Job],
-    Watchable,
-    CreatableResource,
 ):
     """General-purpose wrapper around one Kubernetes Job object.
 
@@ -162,6 +173,61 @@ class Job(
     """
 
     _obj: kubernetes.client.V1Job
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str = "",
+        resource_version: str = "",
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Jobs.
+
+        Yields
+        ------
+        WatchEvent[Job]
+            Job watch events.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns a malformed Job watch payload.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        api = kubernetes.client.BatchV1Api(kube.client)
+        if namespace:
+            watch_fn = api.list_namespaced_job
+            api_kwargs = {"namespace": namespace}
+            context = f"failed to watch Jobs in namespace {namespace!r}"
+        else:
+            watch_fn = api.list_job_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch Jobs across all namespaces"
+        async for event in _watch(
+            watch_fn,
+            deadline=deadline,
+            context=context,
+            resource_version=resource_version,
+            label_selector=(
+                ",".join(f"{key}={value}" for key, value in labels.items())
+                if labels
+                else ""
+            ),
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            if not isinstance(event.object, kubernetes.client.V1Job):
+                msg = "malformed Kubernetes Job watch payload"
+                raise OSError(msg)
+            yield WatchEvent(
+                type=event.type,
+                object=cls(_obj=event.object),
+                resource_version=event.resource_version,
+            )
 
     @staticmethod
     def _manifest(
@@ -287,16 +353,21 @@ class Job(
             completions=completions,
             completion_mode=completion_mode,
         )
-        return await cls.create_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-            malformed_message=(
-                f"malformed Kubernetes Job payload while creating {name!r}"
+        api = kubernetes.client.BatchV1Api(kube.client)
+        payload = await kube.run(
+            lambda request_timeout: api.create_namespaced_job(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
             ),
+            deadline=deadline,
+            context=f"failed to create Job {namespace}/{name}",
+            missing_ok=False,
         )
+        if not isinstance(payload, kubernetes.client.V1Job):
+            msg = "malformed Kubernetes Job payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def active(self) -> int:

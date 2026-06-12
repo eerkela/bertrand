@@ -13,7 +13,7 @@ import shlex
 import shutil
 import socket
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 from urllib.parse import urlparse
@@ -129,7 +129,7 @@ async def kubectl(
     )
 
 
-@dataclass
+@dataclass(frozen=True)
 class Kube:
     """Context-managed Kubernetes client wrapper for Bertrand runtime operations.
 
@@ -137,24 +137,6 @@ class Kube:
     ----------
     client : kubernetes.client.ApiClient
         Underlying Kubernetes API transport instance.
-    core : kubernetes.client.CoreV1Api
-        Core v1 API surface for typed built-in resources.
-    apps : kubernetes.client.AppsV1Api
-        Apps v1 API surface for Deployments and related workload resources.
-    custom : kubernetes.client.CustomObjectsApi
-        Custom object API surface for CRD interactions.
-    batch : kubernetes.client.BatchV1Api
-        Batch v1 API surface for Jobs and related execution resources.
-    networking : kubernetes.client.NetworkingV1Api
-        Networking v1 API surface for NetworkPolicy resources.
-    apiextensions : kubernetes.client.ApiextensionsV1Api
-        API extensions v1 surface for CRDs.
-    rbac : kubernetes.client.RbacAuthorizationV1Api
-        RBAC authorization v1 API surface.
-    storage : kubernetes.client.StorageV1Api
-        Storage v1 API surface for StorageClass resources.
-    coordination : kubernetes.client.CoordinationV1Api
-        Coordination v1 API surface for Lease resources.
     """
 
     class APIError(OSError):
@@ -199,43 +181,7 @@ class Kube:
                 in self.detail.lower()
             )
 
-    client: kubernetes.client.ApiClient = field(repr=False)
-    core: kubernetes.client.CoreV1Api = field(init=False, repr=False)
-    apps: kubernetes.client.AppsV1Api = field(init=False, repr=False)
-    custom: kubernetes.client.CustomObjectsApi = field(init=False, repr=False)
-    batch: kubernetes.client.BatchV1Api = field(init=False, repr=False)
-    networking: kubernetes.client.NetworkingV1Api = field(init=False, repr=False)
-    apiextensions: kubernetes.client.ApiextensionsV1Api = field(init=False, repr=False)
-    rbac: kubernetes.client.RbacAuthorizationV1Api = field(init=False, repr=False)
-    storage: kubernetes.client.StorageV1Api = field(init=False, repr=False)
-    coordination: kubernetes.client.CoordinationV1Api = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        """Initialize typed Kubernetes API handles from the shared transport.
-
-        Raises
-        ------
-        AttributeError
-            If the API client is missing attributes required by Kubernetes wrappers.
-        TypeError
-            If the API client cannot be used to construct Kubernetes wrappers.
-        ValueError
-            If the API client is rejected while constructing Kubernetes wrappers.
-        """
-        try:
-            self.core = kubernetes.client.CoreV1Api(self.client)
-            self.apps = kubernetes.client.AppsV1Api(self.client)
-            self.custom = kubernetes.client.CustomObjectsApi(self.client)
-            self.batch = kubernetes.client.BatchV1Api(self.client)
-            self.networking = kubernetes.client.NetworkingV1Api(self.client)
-            self.apiextensions = kubernetes.client.ApiextensionsV1Api(self.client)
-            self.rbac = kubernetes.client.RbacAuthorizationV1Api(self.client)
-            self.storage = kubernetes.client.StorageV1Api(self.client)
-            self.coordination = kubernetes.client.CoordinationV1Api(self.client)
-        except (AttributeError, TypeError, ValueError):
-            with contextlib.suppress(OSError, RuntimeError, ValueError):
-                self.client.close()
-            raise
+    client: kubernetes.client.ApiClient
 
     @staticmethod
     async def _systemd_ready(deadline: Deadline) -> bool:

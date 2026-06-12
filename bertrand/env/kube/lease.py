@@ -3,32 +3,36 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from kubernetes import client as kube_client
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    Watchable,
-    builtin_resource,
+    WatchEvent,
+    _watch,
+    namespaced_resource,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
     from datetime import datetime
 
     from bertrand.env.git import Deadline
 
-    from .api.client import Kube
 
-
-@builtin_resource(api="coordination", scope="namespaced", endpoint="lease")
+@namespaced_resource(
+    api=kube_client.CoordinationV1Api,
+    payload=kube_client.V1Lease,
+    read=kube_client.CoordinationV1Api.read_namespaced_lease,
+    list=kube_client.CoordinationV1Api.list_namespaced_lease,
+    list_all=kube_client.CoordinationV1Api.list_lease_for_all_namespaces,
+    delete=kube_client.CoordinationV1Api.delete_namespaced_lease,
+)
 @dataclass(frozen=True)
 class Lease(
     KubeResource[kube_client.V1Lease],
-    Watchable,
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes Lease object.
 
@@ -39,6 +43,61 @@ class Lease(
     """
 
     _obj: kube_client.V1Lease
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str = "",
+        resource_version: str = "",
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Leases.
+
+        Yields
+        ------
+        WatchEvent[Lease]
+            Lease watch events.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns a malformed Lease watch payload.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        api = kube_client.CoordinationV1Api(kube.client)
+        if namespace:
+            watch_fn = api.list_namespaced_lease
+            api_kwargs = {"namespace": namespace}
+            context = f"failed to watch Leases in namespace {namespace!r}"
+        else:
+            watch_fn = api.list_lease_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch Leases across all namespaces"
+        async for event in _watch(
+            watch_fn,
+            deadline=deadline,
+            context=context,
+            resource_version=resource_version,
+            label_selector=(
+                ",".join(f"{key}={value}" for key, value in labels.items())
+                if labels
+                else ""
+            ),
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            if not isinstance(event.object, kube_client.V1Lease):
+                msg = "malformed Kubernetes Lease watch payload"
+                raise OSError(msg)
+            yield WatchEvent(
+                type=event.type,
+                object=cls(_obj=event.object),
+                resource_version=event.resource_version,
+            )
 
     @staticmethod
     def _manifest(
@@ -138,8 +197,9 @@ class Lease(
             msg = "Lease duration must be positive"
             raise OSError(msg)
 
+        api = kube_client.CoordinationV1Api(kube.client)
         created = await kube.run(
-            lambda request_timeout: kube.coordination.create_namespaced_lease(
+            lambda request_timeout: api.create_namespaced_lease(
                 namespace=namespace,
                 body=cls._manifest(
                     namespace=namespace,
@@ -235,8 +295,9 @@ class Lease(
             msg = "Lease duration must be positive"
             raise OSError(msg)
 
+        api = kube_client.CoordinationV1Api(kube.client)
         replaced = await kube.run(
-            lambda request_timeout: kube.coordination.replace_namespaced_lease(
+            lambda request_timeout: api.replace_namespaced_lease(
                 name=name,
                 namespace=namespace,
                 body=cls._manifest(
@@ -333,13 +394,36 @@ class Lease(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kube_client.CoordinationV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_lease(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create Lease {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_lease(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch Lease {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kube_client.V1Lease):
+            msg = "malformed Kubernetes Lease payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def holder_identity(self) -> str:

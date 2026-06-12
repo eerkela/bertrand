@@ -74,12 +74,10 @@ from bertrand.env.kube.ceph.volume import (
 from bertrand.env.kube.control import MaintenanceClock
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
-from bertrand.env.kube.node import NODE_RESOURCE
+from bertrand.env.kube.node import Node
 from bertrand.env.kube.rbac import (
-    CLUSTER_ROLE_BINDING_RESOURCE,
-    CLUSTER_ROLE_RESOURCE,
-    rbac_role_manifest,
-    rbac_service_account_binding_manifest,
+    ClusterRole,
+    ClusterRoleBinding,
 )
 from bertrand.env.kube.service_account import ServiceAccount
 
@@ -133,32 +131,22 @@ async def _ensure_rbac(kube: Kube, *, deadline: Deadline) -> None:
             labels=STORAGE_CONTROLLER_LABELS,
             deadline=deadline,
         ),
-        CLUSTER_ROLE_RESOURCE.upsert(
+        ClusterRole.upsert(
             kube,
             name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-            manifest=rbac_role_manifest(
-                kind="ClusterRole",
-                namespace=None,
-                name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-                labels=STORAGE_CONTROLLER_LABELS,
-                rules=_storage_controller_rbac_rules(),
-            ),
+            rules=_storage_controller_rbac_rules(),
+            labels=STORAGE_CONTROLLER_LABELS,
             deadline=deadline,
         ),
     )
-    await CLUSTER_ROLE_BINDING_RESOURCE.upsert(
+    await ClusterRoleBinding.bind_service_account(
         kube,
         name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-        manifest=rbac_service_account_binding_manifest(
-            kind="ClusterRoleBinding",
-            namespace=None,
-            name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-            role_kind="ClusterRole",
-            role_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-            service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
-            service_account_namespace=BERTRAND_NAMESPACE,
-            labels=STORAGE_CONTROLLER_LABELS,
-        ),
+        role_kind="ClusterRole",
+        role_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
+        service_account_name=STORAGE_CONTROLLER_SERVICE_ACCOUNT,
+        service_account_namespace=BERTRAND_NAMESPACE,
+        labels=STORAGE_CONTROLLER_LABELS,
         deadline=deadline,
     )
 
@@ -420,7 +408,7 @@ async def _watch_storage_resource(
 
 
 async def _ready_storage_nodes(kube: Kube, *, deadline: Deadline) -> list[str]:
-    nodes = await NODE_RESOURCE.list(
+    nodes = await Node.list(
         kube,
         labels={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
         deadline=deadline,

@@ -12,6 +12,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NoReturn, override
 
+from kubernetes import client as kube_client
+
 from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
@@ -37,7 +39,7 @@ from bertrand.env.kube.ceph.capacity import (
 )
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
-from bertrand.env.kube.volume import PERSISTENT_VOLUME_CLAIM_RESOURCE
+from bertrand.env.kube.volume import PersistentVolumeClaim
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
@@ -103,8 +105,9 @@ async def ensure_ceph_osd_csi_driver(
             "storageCapacity": False,
         },
     }
+    api = kube_client.StorageV1Api(kube.client)
     existing = await kube.run(
-        lambda request_timeout: kube.storage.read_csi_driver(
+        lambda request_timeout: api.read_csi_driver(
             name=CSI_DRIVER_NAME,
             _request_timeout=request_timeout,
         ),
@@ -113,7 +116,7 @@ async def ensure_ceph_osd_csi_driver(
     )
     if existing is None:
         await kube.run(
-            lambda request_timeout: kube.storage.create_csi_driver(
+            lambda request_timeout: api.create_csi_driver(
                 body=driver_manifest,
                 _request_timeout=request_timeout,
             ),
@@ -122,7 +125,7 @@ async def ensure_ceph_osd_csi_driver(
         )
     else:
         await kube.run(
-            lambda request_timeout: kube.storage.patch_csi_driver(
+            lambda request_timeout: api.patch_csi_driver(
                 name=CSI_DRIVER_NAME,
                 body=driver_manifest,
                 _request_timeout=request_timeout,
@@ -488,7 +491,7 @@ class BertrandOSDCSIDriver(
         requested = _capacity_request(request.capacity_range)
 
         async def invoke(kube: Kube) -> _csi_pb2.CreateVolumeResponse:
-            claim = await PERSISTENT_VOLUME_CLAIM_RESOURCE.get(
+            claim = await PersistentVolumeClaim.get(
                 kube,
                 namespace=pvc_namespace,
                 name=pvc_name,

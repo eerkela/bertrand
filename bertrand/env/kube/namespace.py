@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    builtin_resource,
+    cluster_resource,
 )
 
 if TYPE_CHECKING:
@@ -18,16 +18,17 @@ if TYPE_CHECKING:
 
     from bertrand.env.git import Deadline
 
-    from .api.client import Kube
 
-NAMESPACE_WAIT_POLL_INTERVAL_SECONDS = 0.5
-
-
-@builtin_resource(api="core", scope="cluster", endpoint="namespace")
+@cluster_resource(
+    api=kube_client.CoreV1Api,
+    payload=kube_client.V1Namespace,
+    read=kube_client.CoreV1Api.read_namespace,
+    list=kube_client.CoreV1Api.list_namespace,
+    delete=kube_client.CoreV1Api.delete_namespace,
+)
 @dataclass(frozen=True)
 class Namespace(
     KubeResource[kube_client.V1Namespace],
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes Namespace object.
 
@@ -97,12 +98,34 @@ class Namespace(
             msg = "Namespace upsert requires non-empty name"
             raise OSError(msg)
         manifest = cls._manifest(name=name, labels=labels, annotations=annotations)
-        return await cls.upsert_manifest(
-            kube,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kube_client.CoreV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespace(
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create Namespace {name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespace(
+                    name=name,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch Namespace {name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kube_client.V1Namespace):
+            msg = "malformed Kubernetes Namespace payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def phase(self) -> str:

@@ -3,36 +3,41 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    Watchable,
-    builtin_resource,
+    WatchEvent,
+    _watch,
+    namespaced_resource,
 )
 from .job import JobCompletionMode, _job_spec_manifest, _validate_job_execution
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import AsyncIterator, Mapping
     from datetime import datetime
 
     from bertrand.env.git import Deadline
 
-    from .api.client import Kube
     from .api.spec import PodTemplateSpec
 
 type CronJobConcurrencyPolicy = Literal["Allow", "Forbid", "Replace"]
 
 
-@builtin_resource(api="batch", scope="namespaced", endpoint="cron_job")
+@namespaced_resource(
+    api=kubernetes.client.BatchV1Api,
+    payload=kubernetes.client.V1CronJob,
+    read=kubernetes.client.BatchV1Api.read_namespaced_cron_job,
+    list=kubernetes.client.BatchV1Api.list_namespaced_cron_job,
+    list_all=kubernetes.client.BatchV1Api.list_cron_job_for_all_namespaces,
+    delete=kubernetes.client.BatchV1Api.delete_namespaced_cron_job,
+)
 @dataclass(frozen=True)
 class CronJob(
     KubeResource[kubernetes.client.V1CronJob],
-    Watchable,
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes CronJob object.
 
@@ -48,6 +53,61 @@ class CronJob(
     """
 
     _obj: kubernetes.client.V1CronJob
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str = "",
+        resource_version: str = "",
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch CronJobs.
+
+        Yields
+        ------
+        WatchEvent[CronJob]
+            CronJob watch events.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns a malformed CronJob watch payload.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        api = kubernetes.client.BatchV1Api(kube.client)
+        if namespace:
+            watch_fn = api.list_namespaced_cron_job
+            api_kwargs = {"namespace": namespace}
+            context = f"failed to watch CronJobs in namespace {namespace!r}"
+        else:
+            watch_fn = api.list_cron_job_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch CronJobs across all namespaces"
+        async for event in _watch(
+            watch_fn,
+            deadline=deadline,
+            context=context,
+            resource_version=resource_version,
+            label_selector=(
+                ",".join(f"{key}={value}" for key, value in labels.items())
+                if labels
+                else ""
+            ),
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            if not isinstance(event.object, kubernetes.client.V1CronJob):
+                msg = "malformed Kubernetes CronJob watch payload"
+                raise OSError(msg)
+            yield WatchEvent(
+                type=event.type,
+                object=cls(_obj=event.object),
+                resource_version=event.resource_version,
+            )
 
     @staticmethod
     def _manifest(
@@ -244,13 +304,36 @@ class CronJob(
             failed_jobs_history_limit=failed_jobs_history_limit,
             time_zone=time_zone,
         )
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kubernetes.client.BatchV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_cron_job(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create CronJob {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_cron_job(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch CronJob {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kubernetes.client.V1CronJob):
+            msg = "malformed Kubernetes CronJob payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def active(self) -> int:
@@ -330,8 +413,9 @@ class CronJob(
         if not namespace or not name:
             msg = "cannot suspend CronJob with missing metadata.name/namespace"
             raise OSError(msg)
+        api = kubernetes.client.BatchV1Api(kube.client)
         payload = await kube.run(
-            lambda request_timeout: kube.batch.patch_namespaced_cron_job(
+            lambda request_timeout: api.patch_namespaced_cron_job(
                 name=name,
                 namespace=namespace,
                 body={"spec": {"suspend": suspend}},

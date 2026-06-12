@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    builtin_resource,
+    cluster_resource,
 )
 
 if TYPE_CHECKING:
@@ -18,18 +18,17 @@ if TYPE_CHECKING:
 
     from bertrand.env.git import Deadline
 
-    from .api.client import Kube
 
-
-@builtin_resource(
-    api="apiextensions",
-    scope="cluster",
-    endpoint="custom_resource_definition",
+@cluster_resource(
+    api=kube_client.ApiextensionsV1Api,
+    payload=kube_client.V1CustomResourceDefinition,
+    read=kube_client.ApiextensionsV1Api.read_custom_resource_definition,
+    list=kube_client.ApiextensionsV1Api.list_custom_resource_definition,
+    delete=kube_client.ApiextensionsV1Api.delete_custom_resource_definition,
 )
 @dataclass(frozen=True)
 class CustomResourceDefinition(
     KubeResource[kube_client.V1CustomResourceDefinition],
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes CRD object."""
 
@@ -169,12 +168,34 @@ class CustomResourceDefinition(
             scope=scope,
             short_names=short_names,
         )
-        return await cls.upsert_manifest(
-            kube,
-            name=name,
-            manifest=body,
-            deadline=deadline,
-        )
+        api = kube_client.ApiextensionsV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_custom_resource_definition(
+                    body=body,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create CRD {name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_custom_resource_definition(
+                    name=name,
+                    body=body,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch CRD {name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kube_client.V1CustomResourceDefinition):
+            msg = "malformed Kubernetes CustomResourceDefinition payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def is_established(self) -> bool:
@@ -208,13 +229,9 @@ class CustomResourceDefinition(
         CustomResourceDefinition
             Refreshed CRD wrapper that reports `Established=True`.
         """
-        name = self.name
         return await self.wait_until(
             kube,
             deadline=deadline,
             predicate=lambda live: live.is_established,
-            pending_message=f"CRD {name!r} is not established yet",
-            missing_message=f"CRD {name!r} disappeared",
-            timeout_message=f"timed out waiting for CRD {name!r} establishment",
             check_current=True,
         )

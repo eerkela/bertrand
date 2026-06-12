@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
 
+from kubernetes import client as kube_client
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bertrand.env.git import Deadline, until
@@ -18,18 +19,15 @@ from bertrand.env.kube.crd import CustomResourceDefinition
 from .api.client import Kube
 from .api.resource import (
     RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
-    ResourceScope,
     WatchEvent,
     WatchExpiredError,
-    _label_selector,
-    _normalized_namespaces,
     _watch,
 )
 
 if TYPE_CHECKING:
     import builtins
 
-type CustomObjectScope = ResourceScope
+type CustomObjectScope = Literal["cluster", "namespaced"]
 type _CustomObjectFragment = Mapping[str, object] | BaseModel
 type _CustomOperation = Literal[
     "get",
@@ -39,18 +37,18 @@ type _CustomOperation = Literal[
     "patch_status",
     "delete",
 ]
-type _CustomEndpoint = Callable[..., object]
-_CUSTOM_ENDPOINTS: dict[_CustomOperation, tuple[str, str]] = {
-    "get": ("get_cluster_custom_object", "get_namespaced_custom_object"),
-    "list": ("list_cluster_custom_object", "list_namespaced_custom_object"),
-    "create": ("create_cluster_custom_object", "create_namespaced_custom_object"),
-    "patch": ("patch_cluster_custom_object", "patch_namespaced_custom_object"),
-    "patch_status": (
-        "patch_cluster_custom_object_status",
-        "patch_namespaced_custom_object_status",
-    ),
-    "delete": ("delete_cluster_custom_object", "delete_namespaced_custom_object"),
-}
+
+
+def _normalized_namespaces(
+    namespaces: Collection[str] | None,
+) -> tuple[str, ...] | None:
+    if namespaces is None:
+        return None
+    normalized = {namespace.strip() for namespace in namespaces}
+    normalized.discard("")
+    return tuple(sorted(normalized))
+
+
 _CustomResourceClass = TypeVar("_CustomResourceClass", bound=type[Any])
 
 
@@ -209,7 +207,7 @@ class CustomObject:
 
 
 @dataclass(frozen=True)
-class _CustomObjectAPI[T_co]:
+class CustomObjectResource[T_co]:
     """Raw adapter for an installed or Bertrand-owned custom-object API.
 
     Parameters
@@ -373,11 +371,17 @@ class _CustomObjectAPI[T_co]:
             namespace=namespace,
             namespaces=namespaces,
         )
+        selector = self._merged_labels(labels)
+        label_selector = (
+            ",".join(f"{key}={value}" for key, value in selector.items())
+            if selector
+            else ""
+        )
         payloads = await self._list_payloads(
             kube,
             deadline=deadline,
             namespaces=selected,
-            label_selector=_label_selector(self._selector(labels)),
+            label_selector=label_selector,
             field_selector=field_selector.strip(),
         )
         out: builtins.list[T_co] = []
@@ -409,7 +413,7 @@ class _CustomObjectAPI[T_co]:
         selected = self._namespace_filter(action="watch", namespace=namespace)
         normalized = _normalized_namespaces(selected)
         namespace = None if normalized is None else next(iter(normalized), None)
-        labels = self._selector(labels)
+        labels = self._merged_labels(labels)
         field_selector = field_selector.strip()
         current_version = resource_version.strip()
         can_emit_initial = emit_initial and not current_version
@@ -702,25 +706,36 @@ class _CustomObjectAPI[T_co]:
         resource_version: str,
         field_selector: str,
     ) -> AsyncIterator[WatchEvent[T_co]]:
-        endpoint = self._custom_endpoint(kube, "list", namespace=namespace)
-        api_kwargs = self._custom_kwargs(
-            namespace=namespace,
-            name=None,
-            body=None,
-            label_selector="",
-            field_selector="",
+        api = kube_client.CustomObjectsApi(kube.client)
+        api_kwargs: dict[str, object] = {
+            "group": self.group,
+            "version": self.version,
+            "plural": self.plural,
+        }
+        if namespace is None:
+            watch_fn = api.list_cluster_custom_object
+        else:
+            api_kwargs["namespace"] = namespace
+            watch_fn = api.list_namespaced_custom_object
+        label_selector = (
+            ",".join(f"{key}={value}" for key, value in labels.items())
+            if labels
+            else ""
         )
         async for event in _watch(
-            endpoint,
-            wrapper=self._wrap_payload,
+            watch_fn,
             deadline=deadline,
             context=self._collection_context("watch", namespace),
             resource_version=resource_version,
-            label_selector=_label_selector(labels),
+            label_selector=label_selector,
             field_selector=field_selector,
             api_kwargs=api_kwargs,
         ):
-            yield event
+            yield WatchEvent(
+                type=event.type,
+                object=self._wrap_payload(event.object),
+                resource_version=event.resource_version,
+            )
 
     async def _snapshot(
         self,
@@ -731,10 +746,15 @@ class _CustomObjectAPI[T_co]:
         namespace: str | None = None,
         field_selector: str = "",
     ) -> tuple[builtins.list[CustomObject], str]:
+        label_selector = (
+            ",".join(f"{key}={value}" for key, value in labels.items())
+            if labels
+            else ""
+        )
         payloads = await self._list_payloads(
             kube,
             namespaces=(namespace,) if namespace else None,
-            label_selector=_label_selector(labels),
+            label_selector=label_selector,
             field_selector=field_selector,
             deadline=deadline,
         )
@@ -912,63 +932,170 @@ class _CustomObjectAPI[T_co]:
         label_selector: str = "",
         field_selector: str = "",
     ) -> object | None:
-        endpoint = self._custom_endpoint(kube, operation, namespace=namespace)
-        api_kwargs = self._custom_kwargs(
-            namespace=namespace,
-            name=name,
-            body=body,
-            label_selector=label_selector,
-            field_selector=field_selector,
+        api = kube_client.CustomObjectsApi(kube.client)
+        use_cluster = self.scope == "cluster" or (
+            operation == "list" and namespace is None
         )
-        return await kube.run(
-            lambda request_timeout: endpoint(
-                **api_kwargs,
+
+        def call(request_timeout: float | None) -> object:
+            if operation == "get":
+                if name is None:
+                    msg = f"{self.kind} read requires a name"
+                    raise OSError(msg)
+                if use_cluster:
+                    return api.get_cluster_custom_object(
+                        group=self.group,
+                        version=self.version,
+                        plural=self.plural,
+                        name=name,
+                        _request_timeout=request_timeout,
+                    )
+                if namespace is None:
+                    msg = f"{self.kind} read requires a namespace"
+                    raise OSError(msg)
+                return api.get_namespaced_custom_object(
+                    group=self.group,
+                    version=self.version,
+                    namespace=namespace,
+                    plural=self.plural,
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
+
+            if operation == "list":
+                if use_cluster:
+                    return api.list_cluster_custom_object(
+                        group=self.group,
+                        version=self.version,
+                        plural=self.plural,
+                        label_selector=label_selector or None,
+                        field_selector=field_selector or None,
+                        _request_timeout=request_timeout,
+                    )
+                if namespace is None:
+                    msg = f"{self.kind} list requires a namespace"
+                    raise OSError(msg)
+                return api.list_namespaced_custom_object(
+                    group=self.group,
+                    version=self.version,
+                    namespace=namespace,
+                    plural=self.plural,
+                    label_selector=label_selector or None,
+                    field_selector=field_selector or None,
+                    _request_timeout=request_timeout,
+                )
+
+            if operation == "create":
+                if body is None:
+                    msg = f"{self.kind} create requires a body"
+                    raise OSError(msg)
+                if use_cluster:
+                    return api.create_cluster_custom_object(
+                        group=self.group,
+                        version=self.version,
+                        plural=self.plural,
+                        body=dict(body),
+                        _request_timeout=request_timeout,
+                    )
+                if namespace is None:
+                    msg = f"{self.kind} create requires a namespace"
+                    raise OSError(msg)
+                return api.create_namespaced_custom_object(
+                    group=self.group,
+                    version=self.version,
+                    namespace=namespace,
+                    plural=self.plural,
+                    body=dict(body),
+                    _request_timeout=request_timeout,
+                )
+
+            if operation == "patch":
+                if name is None:
+                    msg = f"{self.kind} patch requires a name"
+                    raise OSError(msg)
+                if body is None:
+                    msg = f"{self.kind} patch requires a body"
+                    raise OSError(msg)
+                if use_cluster:
+                    return api.patch_cluster_custom_object(
+                        group=self.group,
+                        version=self.version,
+                        plural=self.plural,
+                        name=name,
+                        body=dict(body),
+                        _request_timeout=request_timeout,
+                    )
+                if namespace is None:
+                    msg = f"{self.kind} patch requires a namespace"
+                    raise OSError(msg)
+                return api.patch_namespaced_custom_object(
+                    group=self.group,
+                    version=self.version,
+                    namespace=namespace,
+                    plural=self.plural,
+                    name=name,
+                    body=dict(body),
+                    _request_timeout=request_timeout,
+                )
+
+            if operation == "patch_status":
+                if name is None:
+                    msg = f"{self.kind} status patch requires a name"
+                    raise OSError(msg)
+                if body is None:
+                    msg = f"{self.kind} status patch requires a body"
+                    raise OSError(msg)
+                if use_cluster:
+                    return api.patch_cluster_custom_object_status(
+                        group=self.group,
+                        version=self.version,
+                        plural=self.plural,
+                        name=name,
+                        body=dict(body),
+                        _request_timeout=request_timeout,
+                    )
+                if namespace is None:
+                    msg = f"{self.kind} status patch requires a namespace"
+                    raise OSError(msg)
+                return api.patch_namespaced_custom_object_status(
+                    group=self.group,
+                    version=self.version,
+                    namespace=namespace,
+                    plural=self.plural,
+                    name=name,
+                    body=dict(body),
+                    _request_timeout=request_timeout,
+                )
+
+            if name is None:
+                msg = f"{self.kind} delete requires a name"
+                raise OSError(msg)
+            if use_cluster:
+                return api.delete_cluster_custom_object(
+                    group=self.group,
+                    version=self.version,
+                    plural=self.plural,
+                    name=name,
+                    _request_timeout=request_timeout,
+                )
+            if namespace is None:
+                msg = f"{self.kind} delete requires a namespace"
+                raise OSError(msg)
+            return api.delete_namespaced_custom_object(
+                group=self.group,
+                version=self.version,
+                namespace=namespace,
+                plural=self.plural,
+                name=name,
                 _request_timeout=request_timeout,
-            ),
+            )
+
+        return await kube.run(
+            call,
             deadline=deadline,
             context=context,
             missing_ok=missing_ok,
         )
-
-    def _custom_endpoint(
-        self,
-        kube: Kube,
-        operation: _CustomOperation,
-        *,
-        namespace: str | None,
-    ) -> _CustomEndpoint:
-        cluster_method, namespaced_method = _CUSTOM_ENDPOINTS[operation]
-        use_cluster = self.scope == "cluster" or (
-            operation == "list" and namespace is None
-        )
-        method = cluster_method if use_cluster else namespaced_method
-        return cast("_CustomEndpoint", getattr(kube.custom, method))
-
-    def _custom_kwargs(
-        self,
-        *,
-        namespace: str | None,
-        name: str | None,
-        body: Mapping[str, object] | None,
-        label_selector: str,
-        field_selector: str,
-    ) -> dict[str, object]:
-        kwargs: dict[str, object] = {
-            "group": self.group,
-            "version": self.version,
-            "plural": self.plural,
-        }
-        if namespace is not None:
-            kwargs["namespace"] = namespace
-        if name is not None:
-            kwargs["name"] = name
-        if body is not None:
-            kwargs["body"] = body
-        if label_selector:
-            kwargs["label_selector"] = label_selector
-        if field_selector:
-            kwargs["field_selector"] = field_selector
-        return kwargs
 
     def _wrap_payload(self, payload: object) -> T_co:
         obj = CustomObject.from_payload(
@@ -1003,7 +1130,10 @@ class _CustomObjectAPI[T_co]:
             overrides=self.status_schema_overrides,
         )
 
-    def _selector(self, labels: Mapping[str, str] | None) -> Mapping[str, str] | None:
+    def _merged_labels(
+        self,
+        labels: Mapping[str, str] | None,
+    ) -> Mapping[str, str] | None:
         if not self.labels:
             return labels
         merged = dict(self.labels)
@@ -1521,9 +1651,9 @@ class CustomResource(CustomObject):
             raise TypeError(msg) from err
 
     @classmethod
-    def _api(cls) -> _CustomObjectAPI[Self]:
+    def _api(cls) -> CustomObjectResource[Self]:
         config = cls._config()
-        return _CustomObjectAPI(
+        return CustomObjectResource(
             group=config.group,
             version=config.version,
             kind=config.kind,

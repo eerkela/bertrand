@@ -16,14 +16,12 @@ from bertrand.env.kube.dev.mailbox import (
     DEV_GROUP,
     code_open_host_labels,
 )
-from bertrand.env.kube.pod import POD_RESOURCE, Pod
+from bertrand.env.kube.pod import Pod
 from bertrand.env.kube.rbac import (
-    CLUSTER_ROLE_BINDING_RESOURCE,
-    CLUSTER_ROLE_RESOURCE,
-    ROLE_BINDING_RESOURCE,
-    ROLE_RESOURCE,
-    rbac_role_manifest,
-    rbac_service_account_binding_manifest,
+    ClusterRole,
+    ClusterRoleBinding,
+    Role,
+    RoleBinding,
 )
 from bertrand.env.kube.service_account import ServiceAccount
 from bertrand.env.kube.workload.controller import ensure_workload_claim_templates
@@ -83,62 +81,42 @@ async def ensure_dev_backend(kube: Kube, *, deadline: Deadline) -> None:
             labels=_DEV_LABELS,
             deadline=deadline,
         ),
-        ROLE_RESOURCE.upsert(
+        Role.upsert(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DEV_SERVICE_ACCOUNT,
-            manifest=rbac_role_manifest(
-                kind="Role",
-                namespace=BERTRAND_NAMESPACE,
-                name=DEV_SERVICE_ACCOUNT,
-                labels=_DEV_LABELS,
-                rules=_dev_namespace_rules(),
-            ),
+            rules=_dev_namespace_rules(),
+            labels=_DEV_LABELS,
             deadline=deadline,
         ),
-        CLUSTER_ROLE_RESOURCE.upsert(
+        ClusterRole.upsert(
             kube,
             name=DEV_SERVICE_ACCOUNT,
-            manifest=rbac_role_manifest(
-                kind="ClusterRole",
-                namespace=None,
-                name=DEV_SERVICE_ACCOUNT,
-                labels=_DEV_LABELS,
-                rules=_dev_cluster_rules(),
-            ),
+            rules=_dev_cluster_rules(),
+            labels=_DEV_LABELS,
             deadline=deadline,
         ),
     )
     await asyncio.gather(
-        ROLE_BINDING_RESOURCE.upsert(
+        RoleBinding.bind_service_account(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=DEV_SERVICE_ACCOUNT,
-            manifest=rbac_service_account_binding_manifest(
-                kind="RoleBinding",
-                namespace=BERTRAND_NAMESPACE,
-                name=DEV_SERVICE_ACCOUNT,
-                role_kind="Role",
-                role_name=DEV_SERVICE_ACCOUNT,
-                service_account_name=DEV_SERVICE_ACCOUNT,
-                service_account_namespace=BERTRAND_NAMESPACE,
-                labels=_DEV_LABELS,
-            ),
+            role_kind="Role",
+            role_name=DEV_SERVICE_ACCOUNT,
+            service_account_name=DEV_SERVICE_ACCOUNT,
+            service_account_namespace=BERTRAND_NAMESPACE,
+            labels=_DEV_LABELS,
             deadline=deadline,
         ),
-        CLUSTER_ROLE_BINDING_RESOURCE.upsert(
+        ClusterRoleBinding.bind_service_account(
             kube,
             name=DEV_SERVICE_ACCOUNT,
-            manifest=rbac_service_account_binding_manifest(
-                kind="ClusterRoleBinding",
-                namespace=None,
-                name=DEV_SERVICE_ACCOUNT,
-                role_kind="ClusterRole",
-                role_name=DEV_SERVICE_ACCOUNT,
-                service_account_name=DEV_SERVICE_ACCOUNT,
-                service_account_namespace=BERTRAND_NAMESPACE,
-                labels=_DEV_LABELS,
-            ),
+            role_kind="ClusterRole",
+            role_name=DEV_SERVICE_ACCOUNT,
+            service_account_name=DEV_SERVICE_ACCOUNT,
+            service_account_namespace=BERTRAND_NAMESPACE,
+            labels=_DEV_LABELS,
             deadline=deadline,
         ),
     )
@@ -280,7 +258,7 @@ async def wait_dev_session_running(
         if remaining <= 0:
             msg = f"timed out waiting for dev session Pod {pod.name!r}"
             raise TimeoutError(msg)
-        live = await POD_RESOURCE.refresh(kube, current, deadline=deadline)
+        live = await current.refresh(kube, deadline=deadline)
         if live is None:
             msg = f"dev session Pod {pod.name!r} disappeared before running"
             raise OSError(msg)
@@ -321,16 +299,15 @@ async def delete_dev_backend_state(
         DEV_SESSION_LABEL: DEV_SESSION_LABEL_VALUE,
         DEV_SESSION_HOST_LABEL: _hash_label(host_id),
     }
-    pods = await POD_RESOURCE.list(
+    pods = await Pod.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels=pod_labels,
         deadline=deadline,
     )
     for pod in pods:
-        await POD_RESOURCE.delete(
+        await pod.delete(
             kube,
-            pod,
             deadline=deadline,
             grace_period_seconds=1,
         )

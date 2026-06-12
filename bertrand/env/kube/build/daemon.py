@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 
 from bertrand.env.git import BERTRAND_NAMESPACE, NO_DEADLINE, STATE, Deadline
 from bertrand.env.kube.api.spec import ContainerSpec, PodTemplateSpec, VolumeSpec
-from bertrand.env.kube.daemonset import DAEMON_SET_RESOURCE, DaemonSet
-from bertrand.env.kube.node import NODE_RESOURCE, Node
-from bertrand.env.kube.pod import POD_RESOURCE, Pod
+from bertrand.env.kube.daemonset import DaemonSet
+from bertrand.env.kube.node import Node
+from bertrand.env.kube.pod import Pod
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -220,7 +220,7 @@ async def ensure_buildkit_pool(
     OSError
         If the cluster has no ready, schedulable Linux build nodes.
     """
-    nodes = await NODE_RESOURCE.list(kube, deadline=deadline)
+    nodes = await Node.list(kube, deadline=deadline)
     if not _eligible_nodes_from(nodes):
         msg = "BuildKit pool requires at least one ready schedulable Linux node"
         raise OSError(msg)
@@ -385,14 +385,14 @@ async def _buildkit_pool_inventory(
     deadline: Deadline,
 ) -> _BuildKitPoolInventory:
     daemonset, nodes, pods = await asyncio.gather(
-        DAEMON_SET_RESOURCE.get(
+        DaemonSet.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BUILDKIT_NAME,
             deadline=deadline,
         ),
-        NODE_RESOURCE.list(kube, deadline=deadline),
-        POD_RESOURCE.list(
+        Node.list(kube, deadline=deadline),
+        Pod.list(
             kube,
             deadline=deadline,
             namespaces=(BERTRAND_NAMESPACE,),

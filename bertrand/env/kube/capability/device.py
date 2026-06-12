@@ -29,20 +29,18 @@ from bertrand.env.kube.custom_object import (
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.dra import (
     DEVICE_CLASS_PLURAL,
-    DEVICE_CLASS_RESOURCE,
     DRA_GROUP,
     RESOURCE_CLAIM_PLURAL,
     RESOURCE_CLAIM_TEMPLATE_PLURAL,
-    RESOURCE_CLAIM_TEMPLATE_RESOURCE,
     RESOURCE_SLICE_PLURAL,
-    RESOURCE_SLICE_RESOURCE,
+    DeviceClass,
+    ResourceClaimTemplate,
+    ResourceSlice,
     ensure_dra_api,
 )
 from bertrand.env.kube.rbac import (
-    CLUSTER_ROLE_BINDING_RESOURCE,
-    CLUSTER_ROLE_RESOURCE,
-    rbac_role_manifest,
-    rbac_service_account_binding_manifest,
+    ClusterRole,
+    ClusterRoleBinding,
 )
 from bertrand.env.kube.service_account import ServiceAccount
 
@@ -250,7 +248,7 @@ async def ensure_dra_backend(
         BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, deadline=deadline),
     )
     await asyncio.gather(
-        DEVICE_CLASS_RESOURCE.upsert(
+        DeviceClass.upsert(
             kube,
             name=DRA_DEVICE_CLASS,
             spec=_device_class_spec(),
@@ -264,32 +262,22 @@ async def ensure_dra_backend(
             labels=_DRA_LABELS,
             deadline=deadline,
         ),
-        CLUSTER_ROLE_RESOURCE.upsert(
+        ClusterRole.upsert(
             kube,
             name=DRA_PROVIDER_NAME,
-            manifest=rbac_role_manifest(
-                kind="ClusterRole",
-                namespace=None,
-                name=DRA_PROVIDER_NAME,
-                labels=_DRA_LABELS,
-                rules=_provider_rules(),
-            ),
+            rules=_provider_rules(),
+            labels=_DRA_LABELS,
             deadline=deadline,
         ),
     )
-    await CLUSTER_ROLE_BINDING_RESOURCE.upsert(
+    await ClusterRoleBinding.bind_service_account(
         kube,
         name=DRA_PROVIDER_NAME,
-        manifest=rbac_service_account_binding_manifest(
-            kind="ClusterRoleBinding",
-            namespace=None,
-            name=DRA_PROVIDER_NAME,
-            role_kind="ClusterRole",
-            role_name=DRA_PROVIDER_NAME,
-            service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
-            service_account_namespace=BERTRAND_NAMESPACE,
-            labels=_DRA_LABELS,
-        ),
+        role_kind="ClusterRole",
+        role_name=DRA_PROVIDER_NAME,
+        service_account_name=DRA_PROVIDER_SERVICE_ACCOUNT,
+        service_account_namespace=BERTRAND_NAMESPACE,
+        labels=_DRA_LABELS,
         deadline=deadline,
     )
     daemonset = await DaemonSet.upsert(
@@ -755,7 +743,7 @@ async def create_resource_claim_templates(
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
     for capability_id in capability_ids:
-        template = await RESOURCE_CLAIM_TEMPLATE_RESOURCE.create(
+        template = await ResourceClaimTemplate.create_spec(
             kube,
             namespace=namespace,
             name=resource_claim_template_name(
@@ -812,7 +800,7 @@ async def upsert_resource_claim_templates(
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
     for capability_id in capability_ids:
-        template = await RESOURCE_CLAIM_TEMPLATE_RESOURCE.upsert(
+        template = await ResourceClaimTemplate.upsert(
             kube,
             namespace=namespace,
             name=resource_claim_template_name(
@@ -939,7 +927,7 @@ async def _publish_node_slice(
         node_names=(node_name,),
         deadline=deadline,
     )
-    await RESOURCE_SLICE_RESOURCE.upsert(
+    await ResourceSlice.upsert(
         kube,
         name=_resource_slice_name(node_name),
         spec=_resource_slice_spec(node_name, records),

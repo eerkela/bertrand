@@ -33,21 +33,17 @@ from bertrand.env.kube.build.request import (
 )
 from bertrand.env.kube.capability.base import delete_capabilities_for_scope
 from bertrand.env.kube.ceph.auth import RepoCredentials
-from bertrand.env.kube.cronjob import CRON_JOB_RESOURCE, CronJob
+from bertrand.env.kube.cronjob import CronJob
 from bertrand.env.kube.custom_object import (
     CustomObject,
     CustomObjectMetadata,
     CustomObjectResource,
 )
-from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE, Deployment
-from bertrand.env.kube.job import JOB_RESOURCE, Job
-from bertrand.env.kube.pod import POD_RESOURCE, Pod
-from bertrand.env.kube.snapshot import (
-    VOLUME_SNAPSHOT_RESOURCE,
-    delete_volume_snapshot,
-)
+from bertrand.env.kube.deployment import Deployment
+from bertrand.env.kube.job import Job
+from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.snapshot import VolumeSnapshot
 from bertrand.env.kube.volume import (
-    PERSISTENT_VOLUME_CLAIM_RESOURCE,
     PersistentVolume,
     PersistentVolumeClaim,
     StorageClass,
@@ -400,7 +396,7 @@ async def list_repository_volume_claims(
     if repo_id is not None:
         repo_id = _check_uuid(repo_id)
         labels[REPO_ID_LABEL] = repo_id
-    pvcs = await PERSISTENT_VOLUME_CLAIM_RESOURCE.list(
+    pvcs = await PersistentVolumeClaim.list(
         kube=kube,
         namespaces=(BERTRAND_NAMESPACE,),
         deadline=deadline,
@@ -454,7 +450,7 @@ async def delete_repository_volume_claim(
     """
     repo_id = _check_uuid(pvc.labels.get(REPO_ID_LABEL, ""))
     if not force:
-        pods = await POD_RESOURCE.list(
+        pods = await Pod.list(
             kube=kube,
             namespaces=(BERTRAND_NAMESPACE,),
             deadline=deadline,
@@ -475,9 +471,7 @@ async def delete_repository_volume_claim(
             )
             raise OSError(msg)
 
-    await PERSISTENT_VOLUME_CLAIM_RESOURCE.delete(
-        kube=kube, resource=pvc, deadline=deadline
-    )
+    await pvc.delete(kube, deadline=deadline)
 
 
 async def resolve_repository_volume_ceph_path(
@@ -876,7 +870,7 @@ class _RepositoryVolumeGcInventory:
             _list_buildkit_records(kube, deadline=deadline)
         )
         deployment_task = asyncio.create_task(
-            DEPLOYMENT_RESOURCE.list(
+            Deployment.list(
                 kube,
                 namespaces=(BERTRAND_NAMESPACE,),
                 labels={WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE},
@@ -884,7 +878,7 @@ class _RepositoryVolumeGcInventory:
             )
         )
         cronjob_task = asyncio.create_task(
-            CRON_JOB_RESOURCE.list(
+            CronJob.list(
                 kube,
                 namespaces=(BERTRAND_NAMESPACE,),
                 labels={WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE},
@@ -892,7 +886,7 @@ class _RepositoryVolumeGcInventory:
             )
         )
         job_task = asyncio.create_task(
-            JOB_RESOURCE.list(
+            Job.list(
                 kube,
                 namespaces=(BERTRAND_NAMESPACE,),
                 labels={WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE},
@@ -900,14 +894,14 @@ class _RepositoryVolumeGcInventory:
             )
         )
         pod_task = asyncio.create_task(
-            POD_RESOURCE.list(
+            Pod.list(
                 kube,
                 namespaces=(BERTRAND_NAMESPACE,),
                 deadline=deadline,
             )
         )
         snapshot_task = asyncio.create_task(
-            VOLUME_SNAPSHOT_RESOURCE.list(
+            VolumeSnapshot.list(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 labels={
@@ -1602,7 +1596,7 @@ async def delete_repository_snapshot_artifacts(
 
     """
     repo_id = _check_uuid(repo_id)
-    pvcs = await PERSISTENT_VOLUME_CLAIM_RESOURCE.list(
+    pvcs = await PersistentVolumeClaim.list(
         kube,
         namespaces=(BERTRAND_NAMESPACE,),
         labels={
@@ -1613,12 +1607,10 @@ async def delete_repository_snapshot_artifacts(
         deadline=deadline,
     )
     for pvc in sorted(pvcs, key=lambda item: item.name):
-        await PERSISTENT_VOLUME_CLAIM_RESOURCE.delete(kube, pvc, deadline=deadline)
-        await PERSISTENT_VOLUME_CLAIM_RESOURCE.wait_deleted(
-            kube, pvc, deadline=deadline
-        )
+        await pvc.delete(kube, deadline=deadline)
+        await pvc.wait_deleted(kube, deadline=deadline)
 
-    snapshots = await VOLUME_SNAPSHOT_RESOURCE.list(
+    snapshots = await VolumeSnapshot.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels={
@@ -1629,7 +1621,7 @@ async def delete_repository_snapshot_artifacts(
         deadline=deadline,
     )
     for snapshot in sorted(snapshots, key=lambda item: item.name):
-        await delete_volume_snapshot(kube, snapshot, deadline=deadline)
+        await snapshot.delete(kube, deadline=deadline)
 
 
 async def delete_all_repository_volumes(

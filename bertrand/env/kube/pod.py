@@ -4,23 +4,23 @@ from __future__ import annotations
 
 from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import kubernetes
 from kubernetes.stream import stream as kubernetes_stream
 
-from bertrand.env.git import Deadline, until
-
 from .api.resource import (
-    CreatableResource,
     KubeResource,
-    Watchable,
-    builtin_resource,
+    WatchEvent,
+    _watch,
+    namespaced_resource,
 )
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import Collection, Mapping
+    from collections.abc import AsyncIterator, Collection, Mapping
+
+    from bertrand.env.git import Deadline
 
     from .api.client import Kube
     from .api.spec import PodTemplateSpec
@@ -37,7 +37,6 @@ POD_SUPPORTED_CONTROLLER_KINDS = frozenset(
 )
 POD_ACTIVE_PHASES = frozenset({"Pending", "Running", "Unknown"})
 POD_TERMINAL_PHASES = frozenset({"Succeeded", "Failed"})
-POD_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
 def _join_status_detail(reason: str, message: str) -> str:
@@ -93,12 +92,17 @@ def _container_status_diagnostics(
     return tuple(out)
 
 
-@builtin_resource(api="core", scope="namespaced", endpoint="pod")
+@namespaced_resource(
+    api=kubernetes.client.CoreV1Api,
+    payload=kubernetes.client.V1Pod,
+    read=kubernetes.client.CoreV1Api.read_namespaced_pod,
+    list=kubernetes.client.CoreV1Api.list_namespaced_pod,
+    list_all=kubernetes.client.CoreV1Api.list_pod_for_all_namespaces,
+    delete=kubernetes.client.CoreV1Api.delete_namespaced_pod,
+)
 @dataclass(frozen=True)
 class Pod(
     KubeResource[kubernetes.client.V1Pod],
-    Watchable,
-    CreatableResource,
 ):
     """General-purpose wrapper around one Kubernetes Pod object.
 
@@ -109,6 +113,61 @@ class Pod(
     """
 
     _obj: kubernetes.client.V1Pod
+
+    @classmethod
+    async def watch(
+        cls,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        field_selector: str = "",
+        resource_version: str = "",
+    ) -> AsyncIterator[WatchEvent[Self]]:
+        """Watch Pods.
+
+        Yields
+        ------
+        WatchEvent[Pod]
+            Pod watch events.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes returns a malformed Pod watch payload.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        api = kubernetes.client.CoreV1Api(kube.client)
+        if namespace:
+            watch_fn = api.list_namespaced_pod
+            api_kwargs = {"namespace": namespace}
+            context = f"failed to watch Pods in namespace {namespace!r}"
+        else:
+            watch_fn = api.list_pod_for_all_namespaces
+            api_kwargs = {}
+            context = "failed to watch Pods across all namespaces"
+        async for event in _watch(
+            watch_fn,
+            deadline=deadline,
+            context=context,
+            resource_version=resource_version,
+            label_selector=(
+                ",".join(f"{key}={value}" for key, value in labels.items())
+                if labels
+                else ""
+            ),
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            if not isinstance(event.object, kubernetes.client.V1Pod):
+                msg = "malformed Kubernetes Pod watch payload"
+                raise OSError(msg)
+            yield WatchEvent(
+                type=event.type,
+                object=cls(_obj=event.object),
+                resource_version=event.resource_version,
+            )
 
     @staticmethod
     def _manifest(
@@ -204,16 +263,21 @@ class Pod(
             pod_template=pod_template,
             annotations=annotations,
         )
-        return await cls.create_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-            malformed_message=(
-                f"malformed Kubernetes Pod payload while creating {name!r}"
+        api = kubernetes.client.CoreV1Api(kube.client)
+        payload = await kube.run(
+            lambda request_timeout: api.create_namespaced_pod(
+                namespace=namespace,
+                body=manifest,
+                _request_timeout=request_timeout,
             ),
+            deadline=deadline,
+            context=f"failed to create Pod {namespace}/{name}",
+            missing_ok=False,
         )
+        if not isinstance(payload, kubernetes.client.V1Pod):
+            msg = "malformed Kubernetes Pod payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def phase(self) -> str:
@@ -543,8 +607,9 @@ class Pod(
         if container == "":
             container = None
 
+        api = kubernetes.client.CoreV1Api(kube.client)
         payload = await kube.run(
-            lambda request_timeout: kube.core.read_namespaced_pod_log(
+            lambda request_timeout: api.read_namespaced_pod_log(
                 name=name,
                 namespace=namespace,
                 container=container,
@@ -616,7 +681,7 @@ class Pod(
             raise OSError(msg)
         return await kube.run(
             lambda request_timeout: kubernetes_stream(
-                kube.core.connect_get_namespaced_pod_attach,
+                kubernetes.client.CoreV1Api(kube.client).connect_get_namespaced_pod_attach,
                 name=name,
                 namespace=namespace,
                 container=container,
@@ -647,44 +712,12 @@ class Pod(
         Pod
             Latest pod wrapper once phase converges to `Succeeded` or `Failed`.
 
-        Raises
-        ------
-        TimeoutError
-            If terminal phase convergence does not complete before `deadline`.
-        OSError
-            If this Pod has incomplete Kubernetes metadata.
         """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = (
-                "cannot wait for pod terminal phase with missing "
-                "metadata.name/namespace"
-            )
-            raise OSError(msg)
-
-        async def terminal(attempt_deadline: Deadline) -> Pod:
-            live = await self.refresh(kube, deadline=attempt_deadline)
-            if live is None:
-                msg = (
-                    f"pod {namespace}/{name} was deleted before reaching a "
-                    "terminal phase"
-                )
-                raise OSError(msg)
-            if live.is_terminal:
-                return live
-            msg = f"pod {namespace}/{name} is not terminal yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                terminal,
-                deadline=deadline,
-                delay=POD_WAIT_POLL_INTERVAL_SECONDS,
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for pod {namespace}/{name} terminal phase"
-            raise TimeoutError(msg) from err
+        return await self.wait_until(
+            kube,
+            deadline=deadline,
+            predicate=lambda live: live.is_terminal,
+        )
 
     async def evict(
         self,
@@ -720,8 +753,9 @@ class Pod(
             metadata=kubernetes.client.V1ObjectMeta(name=name, namespace=namespace),
             delete_options=None,
         )
+        api = kubernetes.client.CoreV1Api(kube.client)
         await kube.run(
-            lambda request_timeout: kube.core.create_namespaced_pod_eviction(
+            lambda request_timeout: api.create_namespaced_pod_eviction(
                 name=name,
                 namespace=namespace,
                 body=body,

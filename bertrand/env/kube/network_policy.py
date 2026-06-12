@@ -8,18 +8,16 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import kubernetes
 
+from .api.client import Kube
 from .api.resource import (
-    DeclarativeResource,
     KubeResource,
-    builtin_resource,
+    namespaced_resource,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
     from bertrand.env.git import Deadline
-
-    from .api.client import Kube
 
 type NetworkPolicyType = Literal["Ingress", "Egress"]
 
@@ -43,11 +41,17 @@ def _policy_types(
     return tuple(result)
 
 
-@builtin_resource(api="networking", scope="namespaced", endpoint="network_policy")
+@namespaced_resource(
+    api=kubernetes.client.NetworkingV1Api,
+    payload=kubernetes.client.V1NetworkPolicy,
+    read=kubernetes.client.NetworkingV1Api.read_namespaced_network_policy,
+    list=kubernetes.client.NetworkingV1Api.list_namespaced_network_policy,
+    list_all=kubernetes.client.NetworkingV1Api.list_network_policy_for_all_namespaces,
+    delete=kubernetes.client.NetworkingV1Api.delete_namespaced_network_policy,
+)
 @dataclass(frozen=True)
 class NetworkPolicy(
     KubeResource[kubernetes.client.V1NetworkPolicy],
-    DeclarativeResource,
 ):
     """General-purpose wrapper around one Kubernetes NetworkPolicy object.
 
@@ -167,13 +171,36 @@ class NetworkPolicy(
             labels=labels,
             annotations=annotations,
         )
-        return await cls.upsert_manifest(
-            kube,
-            namespace=namespace,
-            name=name,
-            manifest=manifest,
-            deadline=deadline,
-        )
+        api = kubernetes.client.NetworkingV1Api(kube.client)
+        try:
+            payload = await kube.run(
+                lambda request_timeout: api.create_namespaced_network_policy(
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create NetworkPolicy {namespace}/{name}",
+                missing_ok=False,
+            )
+        except OSError as err:
+            if not isinstance(err, Kube.APIError) or err.status != 409:
+                raise
+            payload = await kube.run(
+                lambda request_timeout: api.patch_namespaced_network_policy(
+                    name=name,
+                    namespace=namespace,
+                    body=manifest,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch NetworkPolicy {namespace}/{name}",
+                missing_ok=False,
+            )
+        if not isinstance(payload, kubernetes.client.V1NetworkPolicy):
+            msg = "malformed Kubernetes NetworkPolicy payload"
+            raise OSError(msg)
+        return cls(_obj=payload)
 
     @property
     def pod_selector(self) -> Mapping[str, str]:

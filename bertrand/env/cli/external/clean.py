@@ -240,7 +240,7 @@ async def _delete_kubernetes_node(state: CleanState) -> None:
         return
     node = await Node.local(state.kube, deadline=state.deadline)
     await node.drain(state.kube, deadline=state.deadline, force=state.force)
-    await Node.resource.delete_by_name(
+    await Node.delete_by_name(
         state.kube,
         name=node.name,
         deadline=state.deadline,

@@ -38,10 +38,10 @@ from bertrand.env.kube.build.repository import (
 from bertrand.env.kube.capability.device import list_device_inventory
 from bertrand.env.kube.ceph.bootstrap import rook_ceph_ready
 from bertrand.env.kube.ceph.capacity import read_storage_state
-from bertrand.env.kube.crd import CUSTOM_RESOURCE_DEFINITION_RESOURCE
-from bertrand.env.kube.deployment import DEPLOYMENT_RESOURCE
+from bertrand.env.kube.crd import CustomResourceDefinition
+from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.dev.mailbox import CODE_OPEN_PLURAL, DEV_GROUP
-from bertrand.env.kube.namespace import NAMESPACE_RESOURCE, Namespace
+from bertrand.env.kube.namespace import Namespace
 from bertrand.env.kube.network.bootstrap import (
     ENVOY_GATEWAY_DEPLOYMENT,
     ENVOY_GATEWAY_NAMESPACE,
@@ -73,7 +73,7 @@ from bertrand.env.kube.node_identity import (
     BertrandNodeRecord,
     list_bertrand_nodes,
 )
-from bertrand.env.kube.volume import STORAGE_CLASS_RESOURCE
+from bertrand.env.kube.volume import StorageClass
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -863,7 +863,7 @@ async def _probe_bool(fn: Callable[[], Awaitable[bool]]) -> dict[str, object]:
 
 
 async def _namespace_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
-    namespace = await NAMESPACE_RESOURCE.get(
+    namespace = await Namespace.get(
         kube,
         name=BERTRAND_NAMESPACE,
         deadline=deadline,
@@ -894,7 +894,7 @@ async def _buildkit_status(kube: Kube, *, deadline: Deadline) -> dict[str, objec
 
 
 async def _gateway_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
-    deployment = await DEPLOYMENT_RESOURCE.get(
+    deployment = await Deployment.get(
         kube,
         namespace=ENVOY_GATEWAY_NAMESPACE,
         name=ENVOY_GATEWAY_DEPLOYMENT,
@@ -916,7 +916,7 @@ async def _rook_ceph_status(kube: Kube, *, deadline: Deadline) -> dict[str, obje
 
 
 async def _ceph_csi_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
-    classes = await STORAGE_CLASS_RESOURCE.list(kube, deadline=deadline)
+    classes = await StorageClass.list(kube, deadline=deadline)
     names = [storage.name for storage in classes if storage.is_cephfs]
     return {
         "ready": bool(names),
@@ -937,7 +937,7 @@ async def _storage_status(kube: Kube, *, deadline: Deadline) -> dict[str, object
 
 
 async def _dev_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
-    crd = await CUSTOM_RESOURCE_DEFINITION_RESOURCE.get(
+    crd = await CustomResourceDefinition.get(
         kube,
         name=f"{CODE_OPEN_PLURAL}.{DEV_GROUP}",
         deadline=deadline,
