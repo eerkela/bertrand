@@ -233,7 +233,7 @@ class JobManifest:
     list=kubernetes.client.BatchV1Api.list_namespaced_job,
     list_all=kubernetes.client.BatchV1Api.list_job_for_all_namespaces,
     create=kubernetes.client.BatchV1Api.create_namespaced_job,
-    patch=None,
+    patch=kubernetes.client.BatchV1Api.patch_namespaced_job,
     delete=kubernetes.client.BatchV1Api.delete_namespaced_job,
 )
 @dataclass(frozen=True)

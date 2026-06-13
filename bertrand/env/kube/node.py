@@ -73,7 +73,7 @@ class TaintView:
     read=kubernetes.client.CoreV1Api.read_node,
     list=kubernetes.client.CoreV1Api.list_node,
     create=None,
-    patch=None,
+    patch=kubernetes.client.CoreV1Api.patch_node,
     delete=kubernetes.client.CoreV1Api.delete_node,
 )
 @dataclass(frozen=True)
@@ -392,131 +392,6 @@ class Node(
             msg = f"malformed Kubernetes node patch response for {name!r}"
             raise OSError(msg)
         return payload
-
-    async def set_label(
-        self,
-        kube: Kube,
-        *,
-        label: str,
-        value: str,
-        deadline: Deadline,
-    ) -> None:
-        """Apply or overwrite one node label.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        label : str
-            Label key to apply.
-        value : str
-            Label value to apply.
-        deadline : Deadline
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-        """
-        await self._patch(
-            kube=kube,
-            body={"metadata": {"labels": {label: value}}},
-            deadline=deadline,
-            context=f"failed to set label {label!r} on Kubernetes node {self.name!r}",
-        )
-
-    async def remove_label(
-        self,
-        kube: Kube,
-        *,
-        label: str,
-        deadline: Deadline,
-    ) -> None:
-        """Remove one node label when present.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        label : str
-            Label key to remove.
-        deadline : Deadline
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-        """
-        labels = dict(self.labels)
-        if label not in labels:
-            return
-        labels.pop(label, None)
-        await self._patch(
-            kube=kube,
-            body={"metadata": {"labels": labels}},
-            deadline=deadline,
-            context=(
-                f"failed to remove label {label!r} from Kubernetes node {self.name!r}"
-            ),
-        )
-
-    async def set_annotation(
-        self,
-        kube: Kube,
-        *,
-        key: str,
-        value: str,
-        deadline: Deadline,
-    ) -> None:
-        """Apply or overwrite one node annotation.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        key : str
-            Annotation key to apply.
-        value : str
-            Annotation value to apply.
-        deadline : Deadline
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-        """
-        await self._patch(
-            kube=kube,
-            body={"metadata": {"annotations": {key: value}}},
-            deadline=deadline,
-            context=(
-                f"failed to set annotation {key!r} on Kubernetes node {self.name!r}"
-            ),
-        )
-
-    async def remove_annotation(
-        self,
-        kube: Kube,
-        *,
-        key: str,
-        deadline: Deadline,
-    ) -> None:
-        """Remove one node annotation when present.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        key : str
-            Annotation key to remove.
-        deadline : Deadline
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-        """
-        annotations = dict(self.annotations)
-        if key not in annotations:
-            return
-        annotations.pop(key, None)
-        await self._patch(
-            kube=kube,
-            body={"metadata": {"annotations": annotations}},
-            deadline=deadline,
-            context=(
-                f"failed to remove annotation {key!r} from Kubernetes node "
-                f"{self.name!r}"
-            ),
-        )
 
     async def cordon(self, kube: Kube, *, deadline: Deadline) -> None:
         """Mark this node unschedulable.

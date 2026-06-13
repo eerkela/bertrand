@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapp
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, TypeVar, cast
 
 from kubernetes import client as kube_client
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -40,6 +40,30 @@ type _CustomOperation = Literal[
     "patch_status",
     "delete",
 ]
+
+
+class _CustomObjectManifest(Protocol):
+    """Push-side intent for a custom-object write."""
+
+    @property
+    def name(self) -> str:
+        """Return the Kubernetes object name."""
+        ...
+
+    @property
+    def namespace(self) -> str | None:
+        """Return the Kubernetes namespace, if the object is namespaced."""
+        ...
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the full Kubernetes custom-object manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes manifest to send to the custom-object API.
+        """
+        ...
 
 
 def _normalized_namespaces(
@@ -540,60 +564,34 @@ class CustomObjectResource[T_co]:
         self,
         kube: Kube,
         *,
-        name: str,
-        spec: _CustomObjectFragment,
+        intent: _CustomObjectManifest,
         deadline: Deadline,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
     ) -> T_co:
-        """Create one custom object from intent fields.
+        """Create one custom object from a typed manifest intent.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        intent : _CustomObjectManifest
+            Push-side manifest intent to create.
+        deadline : Deadline
+            Maximum request budget in seconds.
 
         Returns
         -------
         T_co
             Wrapped created object.
         """
-        namespace = self._object_namespace(namespace, action="create")
-        return await self.create_manifest(
-            kube,
-            manifest=self._body(
-                namespace=namespace,
-                name=name,
-                spec=spec,
-                labels=labels,
-                annotations=annotations,
-            ),
-            deadline=deadline,
-            namespace=namespace,
-        )
-
-    async def create_manifest(
-        self,
-        kube: Kube,
-        *,
-        manifest: Mapping[str, object],
-        deadline: Deadline,
-        namespace: str | None = None,
-        name: str | None = None,
-        context: str | None = None,
-    ) -> T_co:
-        """Create one custom object from a complete Kubernetes manifest.
-
-        Returns
-        -------
-        T_co
-            Wrapped created object.
-        """
-        namespace = self._object_namespace(namespace, action="create")
-        label = self._manifest_label(manifest, namespace=namespace, name=name)
+        namespace, name, body = self._manifest_body(intent, action="create")
+        label = self._object_label(name=name, namespace=namespace)
         payload = await self._run_custom(
             kube,
             "create",
             namespace=namespace,
-            body=dict(manifest),
+            body=body,
             deadline=deadline,
-            context=context or f"failed to create {self.kind} {label}",
+            context=f"failed to create {self.kind} {label}",
             missing_ok=True,
         )
         return self._wrap_payload(payload)
@@ -602,15 +600,19 @@ class CustomObjectResource[T_co]:
         self,
         kube: Kube,
         *,
-        name: str,
+        intent: _CustomObjectManifest,
         deadline: Deadline,
-        namespace: str | None = None,
-        spec: _CustomObjectFragment | None = None,
-        manifest: Mapping[str, object] | None = None,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
     ) -> T_co:
-        """Create or patch one custom object from intent fields.
+        """Create or patch one custom object from a typed manifest intent.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        intent : _CustomObjectManifest
+            Push-side manifest intent to create or patch.
+        deadline : Deadline
+            Maximum request budget in seconds.
 
         Returns
         -------
@@ -620,22 +622,10 @@ class CustomObjectResource[T_co]:
         Raises
         ------
         OSError
-            If neither `spec` nor `manifest` is provided, or the API call fails.
+            If the intent or rendered manifest is malformed, or the API call fails.
         """
-        namespace = self._object_namespace(namespace, action="upsert")
-        if manifest is None:
-            if spec is None:
-                msg = "custom object upsert requires spec or manifest"
-                raise OSError(msg)
-            manifest = self._body(
-                namespace=namespace,
-                name=name,
-                spec=spec,
-                labels=labels,
-                annotations=annotations,
-            )
+        namespace, name, body = self._manifest_body(intent, action="upsert")
         label = self._object_label(name=name, namespace=namespace)
-        body = dict(manifest)
         try:
             payload = await self._run_custom(
                 kube,
@@ -912,28 +902,59 @@ class CustomObjectResource[T_co]:
             raise ValueError(msg)
         return (namespace,) if namespace else namespaces
 
-    def _body(
+    def _manifest_body(
         self,
+        intent: _CustomObjectManifest,
         *,
-        namespace: str | None,
-        name: str,
-        spec: _CustomObjectFragment,
-        labels: Mapping[str, str] | None,
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
+        action: Literal["create", "upsert"],
+    ) -> tuple[str | None, str, dict[str, object]]:
+        name = intent.name.strip()
+        if not name:
+            msg = f"{self.kind} {action} requires a name"
+            raise OSError(msg)
+        namespace = self._object_namespace(intent.namespace, action=action)
+        raw = intent.manifest()
+        if not isinstance(raw, Mapping):
+            msg = f"{self.kind} manifest intent returned a malformed manifest"
+            raise OSError(msg)
+        body = dict(raw)
+        metadata = body.get("metadata")
+        if not isinstance(metadata, Mapping):
+            msg = f"{self.kind} manifest must define metadata"
+            raise OSError(msg)
+        metadata = dict(cast("Mapping[str, object]", metadata))
+        body_name = str(metadata.get("name") or "").strip()
+        if body_name != name:
+            msg = (
+                f"{self.kind} manifest metadata.name {body_name!r} does not match "
+                f"intent name {name!r}"
+            )
+            raise OSError(msg)
+        body_namespace = str(metadata.get("namespace") or "").strip()
+        if self.scope == "cluster":
+            if body_namespace:
+                msg = f"{self.kind} manifest must not define metadata.namespace"
+                raise OSError(msg)
+            metadata.pop("namespace", None)
+        elif body_namespace != namespace:
+            msg = (
+                f"{self.kind} manifest metadata.namespace {body_namespace!r} does "
+                f"not match intent namespace {namespace!r}"
+            )
+            raise OSError(msg)
+        labels = metadata.get("labels", {})
+        if labels is None:
+            labels = {}
+        if not isinstance(labels, Mapping):
+            msg = f"{self.kind} manifest metadata.labels must be a mapping"
+            raise OSError(msg)
         merged_labels = dict(self.labels)
-        merged_labels.update(labels or {})
-        return {
-            "apiVersion": self.api_version,
-            "kind": self.kind,
-            "metadata": self._metadata(
-                name=name,
-                namespace=namespace,
-                labels=merged_labels,
-                annotations=annotations,
-            ),
-            "spec": _custom_object_fragment(spec),
-        }
+        merged_labels.update(
+            {str(key): str(value) for key, value in labels.items()}
+        )
+        metadata["labels"] = merged_labels
+        body["metadata"] = metadata
+        return namespace, name, body
 
     async def _run_custom(
         self,
@@ -1170,47 +1191,6 @@ class CustomObjectResource[T_co]:
     ) -> str:
         context = f"failed to {action} {self.kind}s"
         return context if namespace is None else f"{context} in namespace {namespace!r}"
-
-    def _manifest_label(
-        self,
-        manifest: Mapping[str, object],
-        *,
-        namespace: str | None,
-        name: str | None,
-    ) -> str:
-        self._require_manifest_name(manifest)
-        metadata = cast("Mapping[str, object]", manifest["metadata"])
-        object_name = name or str(metadata.get("name") or "").strip()
-        return self._object_label(name=object_name, namespace=namespace)
-
-    def _metadata(
-        self,
-        *,
-        name: str,
-        namespace: str | None,
-        labels: Mapping[str, str],
-        annotations: Mapping[str, str] | None,
-    ) -> dict[str, object]:
-        metadata: dict[str, object] = {
-            "name": name,
-            "labels": dict(labels),
-            "annotations": dict(annotations or {}),
-        }
-        if self.scope == "namespaced":
-            metadata["namespace"] = namespace
-        return metadata
-
-    @staticmethod
-    def _require_manifest_name(body: Mapping[str, object]) -> None:
-        metadata = body.get("metadata")
-        if not isinstance(metadata, Mapping):
-            msg = "custom object manifest must define metadata"
-            raise OSError(msg)
-        metadata = cast("Mapping[str, object]", metadata)
-        name = str(metadata.get("name") or "").strip()
-        if not name:
-            msg = "custom object manifest must define metadata.name"
-            raise OSError(msg)
 
 
 @dataclass(frozen=True)
@@ -1476,18 +1456,23 @@ class CustomResource(CustomObject):
             yield event
 
     @classmethod
-    async def create_spec(
+    async def create(
         cls,
         kube: Kube,
         *,
-        name: str,
-        spec: _CustomObjectFragment,
+        intent: _CustomObjectManifest,
         deadline: Deadline,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
     ) -> Self:
-        """Create one custom object from intent fields.
+        """Create one custom object from a typed manifest intent.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        intent : _CustomObjectManifest
+            Push-side manifest intent to create.
+        deadline : Deadline
+            Maximum request budget in seconds.
 
         Returns
         -------
@@ -1496,39 +1481,8 @@ class CustomResource(CustomObject):
         """
         return await cls._api().create(
             kube,
-            name=name,
-            spec=spec,
+            intent=intent,
             deadline=deadline,
-            namespace=namespace,
-            labels=labels,
-            annotations=annotations,
-        )
-
-    @classmethod
-    async def create_manifest(
-        cls,
-        kube: Kube,
-        *,
-        manifest: Mapping[str, object],
-        deadline: Deadline,
-        namespace: str | None = None,
-        name: str | None = None,
-        context: str | None = None,
-    ) -> Self:
-        """Create one custom object from a complete Kubernetes manifest.
-
-        Returns
-        -------
-        CustomResource
-            Wrapped created object.
-        """
-        return await cls._api().create_manifest(
-            kube,
-            manifest=manifest,
-            deadline=deadline,
-            namespace=namespace,
-            name=name,
-            context=context,
         )
 
     @classmethod
@@ -1536,15 +1490,19 @@ class CustomResource(CustomObject):
         cls,
         kube: Kube,
         *,
-        name: str,
+        intent: _CustomObjectManifest,
         deadline: Deadline,
-        namespace: str | None = None,
-        spec: _CustomObjectFragment | None = None,
-        manifest: Mapping[str, object] | None = None,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
     ) -> Self:
-        """Create or patch one custom object from intent fields.
+        """Create or patch one custom object from a typed manifest intent.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        intent : _CustomObjectManifest
+            Push-side manifest intent to create or patch.
+        deadline : Deadline
+            Maximum request budget in seconds.
 
         Returns
         -------
@@ -1553,13 +1511,8 @@ class CustomResource(CustomObject):
         """
         return await cls._api().upsert(
             kube,
-            name=name,
+            intent=intent,
             deadline=deadline,
-            namespace=namespace,
-            spec=spec,
-            manifest=manifest,
-            labels=labels,
-            annotations=annotations,
         )
 
     @classmethod

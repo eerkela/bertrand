@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol
 
 from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline, until
 from bertrand.env.kube.api.client import kubectl
@@ -61,6 +62,28 @@ METALLB_CRDS = (
 METALLB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
+class _MetalLBManifest(Protocol):
+    @property
+    def name(self) -> str:
+        """Return the MetalLB object name."""
+        ...
+
+    @property
+    def namespace(self) -> str | None:
+        """Return the MetalLB object namespace."""
+        ...
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes custom-object manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        ...
+
+
 _IP_ADDRESS_POOL_RESOURCE = CustomObjectResource[CustomObject](
     group=METALLB_GROUP,
     version=METALLB_V1BETA1,
@@ -111,6 +134,220 @@ _SERVICE_BGP_STATUS_RESOURCE: CustomObjectResource[CustomObject] = CustomObjectR
 )
 
 
+@dataclass(frozen=True)
+class IPAddressPoolManifest:
+    """Push-side manifest for one MetalLB IPAddressPool.
+
+    Parameters
+    ----------
+    name : str
+        IPAddressPool name.
+    addresses : Sequence[str]
+        Address ranges delegated to MetalLB.
+    auto_assign : bool
+        Whether MetalLB may automatically allocate from this pool.
+    """
+
+    name: str
+    addresses: Sequence[str]
+    auto_assign: bool
+
+    @property
+    def namespace(self) -> str:
+        """Return the MetalLB namespace."""
+        return METALLB_NAMESPACE
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes IPAddressPool manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{METALLB_GROUP}/{METALLB_V1BETA1}",
+            "kind": "IPAddressPool",
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": METALLB_LABELS,
+            },
+            "spec": {
+                "addresses": list(self.addresses),
+                "autoAssign": self.auto_assign,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class L2AdvertisementManifest:
+    """Push-side manifest for one MetalLB L2Advertisement.
+
+    Parameters
+    ----------
+    name : str
+        L2Advertisement name.
+    pool : str
+        IPAddressPool name to advertise.
+    interfaces : Sequence[str]
+        Optional interface names to advertise from.
+    """
+
+    name: str
+    pool: str
+    interfaces: Sequence[str]
+
+    @property
+    def namespace(self) -> str:
+        """Return the MetalLB namespace."""
+        return METALLB_NAMESPACE
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes L2Advertisement manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        spec: dict[str, object] = {"ipAddressPools": [self.pool]}
+        if self.interfaces:
+            spec["interfaces"] = list(self.interfaces)
+        return {
+            "apiVersion": f"{METALLB_GROUP}/{METALLB_V1BETA1}",
+            "kind": "L2Advertisement",
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": METALLB_LABELS,
+            },
+            "spec": spec,
+        }
+
+
+@dataclass(frozen=True)
+class BGPPeerManifest:
+    """Push-side manifest for one MetalLB BGPPeer.
+
+    Parameters
+    ----------
+    name : str
+        BGPPeer name.
+    peer_address : str
+        Router address MetalLB should connect to.
+    peer_asn : int
+        Remote router ASN.
+    local_asn : int
+        ASN MetalLB should use for the local side.
+    peer_port : int | None
+        Optional remote BGP port.
+    source_address : str | None
+        Optional local source address.
+    password_secret : str | None
+        Optional same-namespace basic-auth Secret for TCP MD5.
+    """
+
+    name: str
+    peer_address: str
+    peer_asn: int
+    local_asn: int
+    peer_port: int | None
+    source_address: str | None
+    password_secret: str | None
+
+    @property
+    def namespace(self) -> str:
+        """Return the MetalLB namespace."""
+        return METALLB_NAMESPACE
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes BGPPeer manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        spec: dict[str, object] = {
+            "peerAddress": self.peer_address,
+            "peerASN": self.peer_asn,
+            "myASN": self.local_asn,
+        }
+        if self.peer_port is not None:
+            spec["peerPort"] = self.peer_port
+        if self.source_address:
+            spec["sourceAddress"] = self.source_address
+        if self.password_secret:
+            spec["passwordSecret"] = {"name": self.password_secret}
+        return {
+            "apiVersion": f"{METALLB_GROUP}/{METALLB_V1BETA2}",
+            "kind": "BGPPeer",
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": METALLB_LABELS,
+            },
+            "spec": spec,
+        }
+
+
+@dataclass(frozen=True)
+class BGPAdvertisementManifest:
+    """Push-side manifest for one MetalLB BGPAdvertisement.
+
+    Parameters
+    ----------
+    name : str
+        BGPAdvertisement name.
+    pool : str
+        IPAddressPool name to advertise.
+    peers : Sequence[str]
+        Optional BGPPeer names to target.
+    local_pref : int | None
+        Optional BGP local preference.
+    communities : Sequence[str]
+        Optional BGP communities to attach.
+    """
+
+    name: str
+    pool: str
+    peers: Sequence[str]
+    local_pref: int | None
+    communities: Sequence[str]
+
+    @property
+    def namespace(self) -> str:
+        """Return the MetalLB namespace."""
+        return METALLB_NAMESPACE
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes BGPAdvertisement manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        spec: dict[str, object] = {"ipAddressPools": [self.pool]}
+        if self.peers:
+            spec["peers"] = list(self.peers)
+        if self.local_pref is not None:
+            spec["localPref"] = self.local_pref
+        if self.communities:
+            spec["communities"] = list(self.communities)
+        return {
+            "apiVersion": f"{METALLB_GROUP}/{METALLB_V1BETA1}",
+            "kind": "BGPAdvertisement",
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": METALLB_LABELS,
+            },
+            "spec": spec,
+        }
+
+
 async def upsert_ip_address_pool(
     kube: Kube,
     *,
@@ -145,8 +382,11 @@ async def upsert_ip_address_pool(
         _IP_ADDRESS_POOL_RESOURCE,
         kube,
         kind="IPAddressPool",
-        name=name,
-        spec={"addresses": list(normalized), "autoAssign": auto_assign},
+        intent=IPAddressPoolManifest(
+            name=name,
+            addresses=normalized,
+            auto_assign=auto_assign,
+        ),
         deadline=deadline,
     )
 
@@ -181,16 +421,16 @@ async def upsert_l2_advertisement(
     """
     name = _required_name(name, kind="L2Advertisement")
     pool = _required_name(pool, kind="IPAddressPool")
-    spec: dict[str, object] = {"ipAddressPools": [pool]}
     normalized_interfaces = _string_tuple(interfaces)
-    if normalized_interfaces:
-        spec["interfaces"] = list(normalized_interfaces)
     return await _managed_upsert(
         _L2_ADVERTISEMENT_RESOURCE,
         kube,
         kind="L2Advertisement",
-        name=name,
-        spec=spec,
+        intent=L2AdvertisementManifest(
+            name=name,
+            pool=pool,
+            interfaces=normalized_interfaces,
+        ),
         deadline=deadline,
     )
 
@@ -237,23 +477,19 @@ async def upsert_bgp_peer(
     """
     name = _required_name(name, kind="BGPPeer")
     peer_address = _required_name(peer_address, kind="peer address")
-    spec: dict[str, object] = {
-        "peerAddress": peer_address,
-        "peerASN": peer_asn,
-        "myASN": local_asn,
-    }
-    if peer_port is not None:
-        spec["peerPort"] = peer_port
-    if source_address:
-        spec["sourceAddress"] = source_address
-    if password_secret:
-        spec["passwordSecret"] = {"name": password_secret}
     return await _managed_upsert(
         _BGP_PEER_RESOURCE,
         kube,
         kind="BGPPeer",
-        name=name,
-        spec=spec,
+        intent=BGPPeerManifest(
+            name=name,
+            peer_address=peer_address,
+            peer_asn=peer_asn,
+            local_asn=local_asn,
+            peer_port=peer_port,
+            source_address=source_address,
+            password_secret=password_secret,
+        ),
         deadline=deadline,
     )
 
@@ -294,21 +530,19 @@ async def upsert_bgp_advertisement(
     """
     name = _required_name(name, kind="BGPAdvertisement")
     pool = _required_name(pool, kind="IPAddressPool")
-    spec: dict[str, object] = {"ipAddressPools": [pool]}
     normalized_peers = _string_tuple(peers)
     normalized_communities = _string_tuple(communities)
-    if normalized_peers:
-        spec["peers"] = list(normalized_peers)
-    if local_pref is not None:
-        spec["localPref"] = local_pref
-    if normalized_communities:
-        spec["communities"] = list(normalized_communities)
     return await _managed_upsert(
         _BGP_ADVERTISEMENT_RESOURCE,
         kube,
         kind="BGPAdvertisement",
-        name=name,
-        spec=spec,
+        intent=BGPAdvertisementManifest(
+            name=name,
+            pool=pool,
+            peers=normalized_peers,
+            local_pref=local_pref,
+            communities=normalized_communities,
+        ),
         deadline=deadline,
     )
 
@@ -612,24 +846,20 @@ async def _managed_upsert[T](
     kube: Kube,
     *,
     kind: str,
-    name: str,
-    spec: Mapping[str, object],
+    intent: _MetalLBManifest,
     deadline: Deadline,
 ) -> T:
     await _require_managed_metallb_namespace(kube, deadline=deadline)
     current = await resource.get(
         kube,
         namespace=METALLB_NAMESPACE,
-        name=name,
+        name=intent.name,
         deadline=deadline,
     )
     _assert_managed(current, kind=kind)
     return await resource.upsert(
         kube,
-        namespace=METALLB_NAMESPACE,
-        name=name,
-        spec=spec,
-        labels=METALLB_LABELS,
+        intent=intent,
         deadline=deadline,
     )
 

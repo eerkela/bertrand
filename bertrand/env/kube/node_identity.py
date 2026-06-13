@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import platform
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -16,7 +17,7 @@ from bertrand.env.kube.custom_object import CustomResource, custom_resource
 from bertrand.env.kube.node import Node
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Mapping
 
     from bertrand.env.kube.api.client import Kube
 
@@ -78,6 +79,48 @@ class _BertrandNodeSpec(BaseModel):
         if value.tzinfo is None:
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
+
+
+@dataclass(frozen=True)
+class BertrandNodeManifest:
+    """Push-side manifest for a BertrandNode identity record.
+
+    Parameters
+    ----------
+    name : str
+        Kubernetes custom-object name.
+    spec : _BertrandNodeSpec
+        Desired Bertrand node identity spec.
+    labels : Mapping[str, str]
+        Metadata labels to apply.
+    """
+
+    name: str
+    spec: _BertrandNodeSpec
+    labels: Mapping[str, str]
+
+    @property
+    def namespace(self) -> None:
+        """Return `None` because BertrandNode is cluster-scoped."""
+        return None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes BertrandNode manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{BERTRAND_NODE_GROUP}/{BERTRAND_NODE_VERSION}",
+            "kind": BERTRAND_NODE_KIND,
+            "metadata": {
+                "name": self.name,
+                "labels": dict(self.labels),
+            },
+            "spec": self.spec.model_dump(mode="json"),
+        }
 
 
 @custom_resource(
@@ -205,13 +248,15 @@ async def ensure_local_bertrand_node(
     )
     return await BertrandNodeRecord.upsert(
         kube,
-        name=bertrand_node_name(host_id),
-        spec=spec,
-        labels={
-            BERTRAND_NODE_HOST_LABEL: _hash_label(host_id),
-            BERTRAND_NODE_KUBE_LABEL: _hash_label(node.name),
-            BERTRAND_NODE_PHASE_LABEL: "active",
-        },
+        intent=BertrandNodeManifest(
+            name=bertrand_node_name(host_id),
+            spec=spec,
+            labels={
+                BERTRAND_NODE_HOST_LABEL: _hash_label(host_id),
+                BERTRAND_NODE_KUBE_LABEL: _hash_label(node.name),
+                BERTRAND_NODE_PHASE_LABEL: "active",
+            },
+        ),
         deadline=deadline,
     )
 
@@ -280,13 +325,15 @@ async def retire_bertrand_node(
     )
     return await BertrandNodeRecord.upsert(
         kube,
-        name=existing.name,
-        spec=spec,
-        labels={
-            BERTRAND_NODE_HOST_LABEL: _hash_label(existing.host_id),
-            BERTRAND_NODE_KUBE_LABEL: _hash_label(existing.node_name),
-            BERTRAND_NODE_PHASE_LABEL: "retired",
-        },
+        intent=BertrandNodeManifest(
+            name=existing.name,
+            spec=spec,
+            labels={
+                BERTRAND_NODE_HOST_LABEL: _hash_label(existing.host_id),
+                BERTRAND_NODE_KUBE_LABEL: _hash_label(existing.node_name),
+                BERTRAND_NODE_PHASE_LABEL: "retired",
+            },
+        ),
         deadline=deadline,
     )
 

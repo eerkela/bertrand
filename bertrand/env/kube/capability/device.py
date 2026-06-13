@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -34,8 +35,11 @@ from bertrand.env.kube.dra import (
     RESOURCE_CLAIM_TEMPLATE_PLURAL,
     RESOURCE_SLICE_PLURAL,
     DeviceClass,
+    DeviceClassManifest,
     ResourceClaimTemplate,
+    ResourceClaimTemplateManifest,
     ResourceSlice,
+    ResourceSliceManifest,
     ensure_dra_api,
 )
 from bertrand.env.kube.rbac import (
@@ -132,6 +136,48 @@ class _BertrandDeviceSpec(BaseModel):
     def _normalize_attributes(cls, value: dict[str, str]) -> dict[str, str]:
         return {
             key.strip(): str(item) for key, item in sorted(value.items()) if key.strip()
+        }
+
+
+@dataclass(frozen=True)
+class BertrandDeviceManifest:
+    """Push-side manifest for a BertrandDevice inventory record.
+
+    Parameters
+    ----------
+    name : str
+        Kubernetes custom-object name.
+    spec : _BertrandDeviceSpec
+        Desired Bertrand device inventory spec.
+    labels : Mapping[str, str]
+        Metadata labels to apply.
+    """
+
+    name: str
+    spec: _BertrandDeviceSpec
+    labels: Mapping[str, str]
+
+    @property
+    def namespace(self) -> None:
+        """Return `None` because BertrandDevice is cluster-scoped."""
+        return None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes BertrandDevice manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{BERTRAND_DEVICE_GROUP}/{BERTRAND_DEVICE_VERSION}",
+            "kind": BERTRAND_DEVICE_KIND,
+            "metadata": {
+                "name": self.name,
+                "labels": dict(self.labels),
+            },
+            "spec": self.spec.model_dump(mode="json"),
         }
 
 
@@ -258,9 +304,11 @@ async def ensure_dra_backend(
     await asyncio.gather(
         DeviceClass.upsert(
             kube,
-            name=DRA_DEVICE_CLASS,
-            spec=_device_class_spec(),
-            labels=_DRA_LABELS,
+            intent=DeviceClassManifest(
+                name=DRA_DEVICE_CLASS,
+                spec=_device_class_spec(),
+                labels=_DRA_LABELS,
+            ),
             deadline=deadline,
         ),
         ServiceAccount.upsert(
@@ -445,17 +493,19 @@ async def upsert_device_inventory(
     )
     return await BERTRAND_DEVICE_RESOURCE.upsert(
         kube,
-        name=_device_inventory_name(
-            host_id=spec.host_id,
-            capability_id=spec.capability_id,
-            device_name=spec.device_name,
+        intent=BertrandDeviceManifest(
+            name=_device_inventory_name(
+                host_id=spec.host_id,
+                capability_id=spec.capability_id,
+                device_name=spec.device_name,
+            ),
+            spec=spec,
+            labels={
+                BERTRAND_DEVICE_CAPABILITY_LABEL: _label_value(spec.capability_id),
+                BERTRAND_DEVICE_HOST_LABEL: _label_value(spec.host_id),
+                BERTRAND_DEVICE_NODE_LABEL: _label_value(spec.node_name),
+            },
         ),
-        spec=spec,
-        labels={
-            BERTRAND_DEVICE_CAPABILITY_LABEL: _label_value(spec.capability_id),
-            BERTRAND_DEVICE_HOST_LABEL: _label_value(spec.host_id),
-            BERTRAND_DEVICE_NODE_LABEL: _label_value(spec.node_name),
-        },
         deadline=deadline,
     )
 
@@ -774,16 +824,18 @@ async def create_resource_claim_templates(
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
     for capability_id in capability_ids:
-        template = await ResourceClaimTemplate.create_spec(
+        template = await ResourceClaimTemplate.create(
             kube,
-            namespace=namespace,
-            name=resource_claim_template_name(
-                owner=owner,
-                capability_id=capability_id,
-                container_name=container_name,
+            intent=ResourceClaimTemplateManifest(
+                namespace=namespace,
+                name=resource_claim_template_name(
+                    owner=owner,
+                    capability_id=capability_id,
+                    container_name=container_name,
+                ),
+                spec={"spec": _resource_claim_spec(capability_id)},
+                labels=template_labels,
             ),
-            spec={"spec": _resource_claim_spec(capability_id)},
-            labels=template_labels,
             deadline=deadline,
         )
         created.append(template)
@@ -833,14 +885,16 @@ async def upsert_resource_claim_templates(
     for capability_id in capability_ids:
         template = await ResourceClaimTemplate.upsert(
             kube,
-            namespace=namespace,
-            name=resource_claim_template_name(
-                owner=owner,
-                capability_id=capability_id,
-                container_name=container_name,
+            intent=ResourceClaimTemplateManifest(
+                namespace=namespace,
+                name=resource_claim_template_name(
+                    owner=owner,
+                    capability_id=capability_id,
+                    container_name=container_name,
+                ),
+                spec={"spec": _resource_claim_spec(capability_id)},
+                labels=template_labels,
             ),
-            spec={"spec": _resource_claim_spec(capability_id)},
-            labels=template_labels,
             deadline=deadline,
         )
         rendered.append(template)
@@ -960,9 +1014,11 @@ async def _publish_node_slice(
     )
     await ResourceSlice.upsert(
         kube,
-        name=_resource_slice_name(node_name),
-        spec=_resource_slice_spec(node_name, records),
-        labels={**_DRA_LABELS, BERTRAND_DEVICE_NODE_LABEL: _label_value(node_name)},
+        intent=ResourceSliceManifest(
+            name=_resource_slice_name(node_name),
+            spec=_resource_slice_spec(node_name, records),
+            labels={**_DRA_LABELS, BERTRAND_DEVICE_NODE_LABEL: _label_value(node_name)},
+        ),
         deadline=deadline,
     )
 

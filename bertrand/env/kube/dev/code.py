@@ -25,10 +25,9 @@ from bertrand.env.git import (
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.dev.mailbox import (
     CODE_OPEN_RESOURCE,
+    CodeOpenManifest,
     CodeOpenRecord,
     CodeOpenSpec,
-    code_open_request_labels,
-    code_open_request_name,
     wait_code_open_request,
 )
 from bertrand.env.kube.dev.session import (
@@ -77,9 +76,7 @@ async def send_code_open_request(
     with Kube.internal() as kube:
         record = await CODE_OPEN_RESOURCE.create(
             kube,
-            name=code_open_request_name(spec.session_id, spec.request_id),
-            spec=spec,
-            labels=code_open_request_labels(spec, host_id),
+            intent=CodeOpenManifest(spec=spec, host_id=host_id),
             deadline=request_deadline,
         )
         terminal = await wait_code_open_request(

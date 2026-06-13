@@ -148,7 +148,7 @@ class PodManifest:
     list=kubernetes.client.CoreV1Api.list_namespaced_pod,
     list_all=kubernetes.client.CoreV1Api.list_pod_for_all_namespaces,
     create=kubernetes.client.CoreV1Api.create_namespaced_pod,
-    patch=None,
+    patch=kubernetes.client.CoreV1Api.patch_namespaced_pod,
     delete=kubernetes.client.CoreV1Api.delete_namespaced_pod,
 )
 @dataclass(frozen=True)

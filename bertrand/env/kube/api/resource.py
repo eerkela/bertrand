@@ -803,6 +803,102 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                 )
         return _validate_payload(cls, config, payload)
 
+    async def patch(
+        self,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        labels: Mapping[str, str | None] = EMPTY_MAPPING,
+        annotations: Mapping[str, str | None] = EMPTY_MAPPING,
+    ) -> Self:
+        """Patch this Kubernetes resource's metadata.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : Deadline
+            Maximum request budget in seconds.
+        labels : Mapping[str, str | None], optional
+            Label updates. `None` values delete labels.
+        annotations : Mapping[str, str | None], optional
+            Annotation updates. `None` values delete annotations.
+
+        Returns
+        -------
+        KubeResource
+            Fresh wrapper returned by Kubernetes after the metadata patch.
+
+        Raises
+        ------
+        NotImplementedError
+            If this resource has no configured patch operation.
+        OSError
+            If the resource identity is incomplete or Kubernetes returns malformed
+            data.
+        ValueError
+            If no metadata updates are provided or namespace is invalid for this
+            resource.
+        """
+        config = _config(type(self))
+        patch = config.patch_method
+        if patch is None:
+            msg = f"{config.kind} does not implement patch"
+            raise NotImplementedError(msg)
+        if not labels and not annotations:
+            msg = f"{config.kind} metadata patch cannot be empty"
+            raise ValueError(msg)
+
+        body: dict[str, object] = {"metadata": {}}
+        metadata = cast("dict[str, object]", body["metadata"])
+        if labels:
+            metadata["labels"] = dict(labels)
+        if annotations:
+            metadata["annotations"] = dict(annotations)
+
+        api = config.api(kube.client)
+        name = self.name
+        namespace = self.namespace
+        if config.namespaced:
+            if not namespace or not name:
+                msg = (
+                    f"cannot patch {config.kind} with missing "
+                    "metadata.name/namespace"
+                )
+                raise OSError(msg)
+            label = f"{namespace}/{name}"
+            payload = await kube.run(
+                lambda request_timeout: patch(
+                    api,
+                    name=name,
+                    namespace=namespace,
+                    body=body,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch {config.kind} metadata {label}",
+                missing_ok=False,
+            )
+        else:
+            if namespace:
+                msg = f"{config.kind} is cluster-scoped; cannot patch by namespace"
+                raise ValueError(msg)
+            if not name:
+                msg = f"cannot patch {config.kind} with missing metadata.name"
+                raise OSError(msg)
+            payload = await kube.run(
+                lambda request_timeout: patch(
+                    api,
+                    name=name,
+                    body=body,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to patch {config.kind} metadata {name}",
+                missing_ok=False,
+            )
+        return _validate_payload(type(self), config, payload)
+
     async def refresh(self, kube: Kube, *, deadline: Deadline) -> Self | None:
         """Re-read this resource by its Kubernetes identity.
 

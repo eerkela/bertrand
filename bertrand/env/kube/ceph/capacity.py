@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -288,6 +289,47 @@ class _CephStoragePolicySpec(BaseModel):
         return self
 
 
+@dataclass(frozen=True)
+class CephStorageStateManifest:
+    """Push-side manifest for the singleton CephStorageState resource.
+
+    Parameters
+    ----------
+    spec : _CephStoragePolicySpec
+        Desired Ceph storage policy.
+    """
+
+    spec: _CephStoragePolicySpec
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns CephStorageState."""
+        return BERTRAND_NAMESPACE
+
+    @property
+    def name(self) -> str:
+        """Return the singleton CephStorageState name."""
+        return STORAGE_STATE_NAME
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes CephStorageState manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{CEPH_CAPACITY_GROUP}/{CEPH_CAPACITY_VERSION}",
+            "kind": STORAGE_STATE_KIND,
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+            },
+            "spec": self.spec.model_dump(mode="json"),
+        }
+
+
 class CephStoragePolicyStatus(BaseModel):
     """Observed status emitted by the Ceph capacity controller."""
 
@@ -369,6 +411,45 @@ class CephStorageActionSpec(BaseModel):
             msg = "retire-loop actions require osd_id and cannot set target_bytes"
             raise ValueError(msg)
         return self
+
+
+@dataclass(frozen=True)
+class CephStorageActionManifest:
+    """Push-side manifest for one CephStorageAction resource.
+
+    Parameters
+    ----------
+    name : str
+        Kubernetes action object name.
+    spec : CephStorageActionSpec
+        Desired node-local storage action.
+    """
+
+    name: str
+    spec: CephStorageActionSpec
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns CephStorageAction objects."""
+        return BERTRAND_NAMESPACE
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes CephStorageAction manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{CEPH_CAPACITY_GROUP}/{CEPH_CAPACITY_VERSION}",
+            "kind": STORAGE_ACTION_KIND,
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+            },
+            "spec": self.spec.model_dump(mode="json"),
+        }
 
 
 class _CephStorageActionStatus(BaseModel):
@@ -639,9 +720,7 @@ async def ensure_default_storage_policy(kube: Kube, *, deadline: Deadline) -> No
     """
     await STORAGE_STATE_RESOURCE.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=STORAGE_STATE_NAME,
-        spec=_CephStoragePolicySpec(),
+        intent=CephStorageStateManifest(spec=_CephStoragePolicySpec()),
         deadline=deadline,
     )
 
@@ -906,9 +985,10 @@ async def create_storage_actions(
     for action in actions:
         await STORAGE_ACTION_RESOURCE.create(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=f"{STORAGE_STATE_NAME}-{uuid.uuid4().hex[:12]}",
-            spec=action,
+            intent=CephStorageActionManifest(
+                name=f"{STORAGE_STATE_NAME}-{uuid.uuid4().hex[:12]}",
+                spec=action,
+            ),
             deadline=deadline,
         )
 

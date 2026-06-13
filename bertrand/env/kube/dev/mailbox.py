@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -16,6 +17,8 @@ from bertrand.env.kube.custom_object import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from bertrand.env.kube.api.client import Kube
 
 DEV_GROUP = "dev.bertrand.dev"
@@ -90,6 +93,51 @@ class CodeOpenStatus(BaseModel):
             `True` for `Succeeded`, `Failed`, or `Expired`.
         """
         return self.phase in ("Succeeded", "Failed", "Expired")
+
+
+@dataclass(frozen=True)
+class CodeOpenManifest:
+    """Push-side manifest for a CodeOpenRequest mailbox entry.
+
+    Parameters
+    ----------
+    spec : CodeOpenSpec
+        Validated editor-open request.
+    host_id : str
+        Host UUID submitting the request.
+    """
+
+    spec: CodeOpenSpec
+    host_id: str
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns CodeOpenRequest objects."""
+        return BERTRAND_NAMESPACE
+
+    @property
+    def name(self) -> str:
+        """Return the deterministic CodeOpenRequest name."""
+        return code_open_request_name(self.spec.session_id, self.spec.request_id)
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes CodeOpenRequest manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{DEV_GROUP}/{DEV_VERSION}",
+            "kind": CODE_OPEN_KIND,
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": code_open_request_labels(self.spec, self.host_id),
+            },
+            "spec": self.spec.model_dump(mode="json"),
+        }
 
 
 class CodeOpenRecord(BaseModel):

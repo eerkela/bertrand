@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from bertrand.env.git import EMPTY_MAPPING
 from bertrand.env.kube.custom_object import CustomResource, custom_resource
 
 if TYPE_CHECKING:
@@ -17,6 +19,56 @@ VOLUME_SNAPSHOT_KIND = "VolumeSnapshot"
 VOLUME_SNAPSHOT_PLURAL = "volumesnapshots"
 VOLUME_SNAPSHOT_CLASS_KIND = "VolumeSnapshotClass"
 VOLUME_SNAPSHOT_CLASS_PLURAL = "volumesnapshotclasses"
+
+
+@dataclass(frozen=True)
+class VolumeSnapshotClassManifest:
+    """Push-side manifest for a Kubernetes CSI VolumeSnapshotClass.
+
+    Parameters
+    ----------
+    name : str
+        Kubernetes VolumeSnapshotClass name.
+    driver : str
+        CSI driver name.
+    deletion_policy : str
+        Snapshot deletion policy.
+    parameters : Mapping[str, object]
+        CSI driver parameters.
+    labels : Mapping[str, str]
+        Metadata labels to apply.
+    """
+
+    name: str
+    driver: str
+    deletion_policy: str = "Delete"
+    parameters: Mapping[str, object] = EMPTY_MAPPING
+    labels: Mapping[str, str] = EMPTY_MAPPING
+
+    @property
+    def namespace(self) -> None:
+        """Return `None` because VolumeSnapshotClass is cluster-scoped."""
+        return None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes VolumeSnapshotClass manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": SNAPSHOT_API_VERSION,
+            "kind": VOLUME_SNAPSHOT_CLASS_KIND,
+            "metadata": {
+                "name": self.name,
+                "labels": dict(self.labels),
+            },
+            "driver": self.driver,
+            "deletionPolicy": self.deletion_policy,
+            "parameters": dict(self.parameters),
+        }
 
 
 @custom_resource(
@@ -50,6 +102,57 @@ class VolumeSnapshotClass(CustomResource):
             Trimmed `deletionPolicy` field.
         """
         return str(self.payload.get("deletionPolicy") or "").strip()
+
+
+@dataclass(frozen=True)
+class VolumeSnapshotManifest:
+    """Push-side manifest for a Kubernetes CSI VolumeSnapshot.
+
+    Parameters
+    ----------
+    namespace : str
+        Namespace that owns the VolumeSnapshot.
+    name : str
+        Kubernetes VolumeSnapshot name.
+    snapshot_class_name : str
+        VolumeSnapshotClass used by the snapshot.
+    source_claim : str
+        Source PersistentVolumeClaim name.
+    labels : Mapping[str, str]
+        Metadata labels to apply.
+    annotations : Mapping[str, str]
+        Metadata annotations to apply.
+    """
+
+    namespace: str
+    name: str
+    snapshot_class_name: str
+    source_claim: str
+    labels: Mapping[str, str] = EMPTY_MAPPING
+    annotations: Mapping[str, str] = EMPTY_MAPPING
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes VolumeSnapshot manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": SNAPSHOT_API_VERSION,
+            "kind": VOLUME_SNAPSHOT_KIND,
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": dict(self.labels),
+                "annotations": dict(self.annotations),
+            },
+            "spec": {
+                "volumeSnapshotClassName": self.snapshot_class_name,
+                "source": {"persistentVolumeClaimName": self.source_claim},
+            },
+        }
 
 
 @custom_resource(

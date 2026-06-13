@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.git import (
@@ -61,6 +62,143 @@ HTTP_ROUTE_RESOURCE = CustomObjectResource[CustomObject](
 )
 
 
+@dataclass(frozen=True)
+class GatewayClassManifest:
+    """Push-side manifest for one GatewayClass.
+
+    Parameters
+    ----------
+    name : str
+        GatewayClass name.
+    controller_name : str
+        Gateway controller name that should reconcile the class.
+    labels : Mapping[str, str] | None
+        Metadata labels to apply.
+    """
+
+    name: str
+    controller_name: str
+    labels: Mapping[str, str] | None = None
+
+    @property
+    def namespace(self) -> None:
+        """Return `None` because GatewayClass is cluster-scoped."""
+        return None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes GatewayClass manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{GATEWAY_API_GROUP}/{GATEWAY_API_VERSION}",
+            "kind": "GatewayClass",
+            "metadata": {"name": self.name, "labels": dict(self.labels or {})},
+            "spec": {"controllerName": self.controller_name},
+        }
+
+
+@dataclass(frozen=True)
+class GatewayManifest:
+    """Push-side manifest for one Gateway.
+
+    Parameters
+    ----------
+    namespace : str
+        Namespace that owns the Gateway.
+    name : str
+        Gateway name.
+    gateway_class : str
+        GatewayClass used by the Gateway.
+    listeners : Sequence[Mapping[str, object]]
+        Gateway listener specs.
+    labels : Mapping[str, str] | None
+        Metadata labels to apply.
+    """
+
+    namespace: str
+    name: str
+    gateway_class: str
+    listeners: Sequence[Mapping[str, object]]
+    labels: Mapping[str, str] | None = None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes Gateway manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{GATEWAY_API_GROUP}/{GATEWAY_API_VERSION}",
+            "kind": "Gateway",
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": dict(self.labels or {}),
+            },
+            "spec": {
+                "gatewayClassName": self.gateway_class,
+                "listeners": [dict(listener) for listener in self.listeners],
+            },
+        }
+
+
+@dataclass(frozen=True)
+class HTTPRouteManifest:
+    """Push-side manifest for one HTTPRoute.
+
+    Parameters
+    ----------
+    namespace : str
+        Namespace that owns the HTTPRoute.
+    name : str
+        HTTPRoute name.
+    parent_refs : Sequence[Mapping[str, object]]
+        Gateway parent references.
+    hostnames : Sequence[str]
+        Hostnames matched by the route.
+    rules : Sequence[Mapping[str, object]]
+        HTTPRoute rules.
+    labels : Mapping[str, str] | None
+        Metadata labels to apply.
+    """
+
+    namespace: str
+    name: str
+    parent_refs: Sequence[Mapping[str, object]]
+    hostnames: Sequence[str]
+    rules: Sequence[Mapping[str, object]]
+    labels: Mapping[str, str] | None = None
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes HTTPRoute manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{GATEWAY_API_GROUP}/{GATEWAY_API_VERSION}",
+            "kind": "HTTPRoute",
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": dict(self.labels or {}),
+            },
+            "spec": {
+                "parentRefs": [dict(ref) for ref in self.parent_refs],
+                "hostnames": list(self.hostnames),
+                "rules": [dict(rule) for rule in self.rules],
+            },
+        }
+
+
 async def upsert_gateway_class(
     kube: Kube,
     *,
@@ -91,9 +229,11 @@ async def upsert_gateway_class(
     """
     return await GATEWAY_CLASS_RESOURCE.upsert(
         kube,
-        name=name,
-        spec={"controllerName": controller_name},
-        labels=labels,
+        intent=GatewayClassManifest(
+            name=name,
+            controller_name=controller_name,
+            labels=labels,
+        ),
         deadline=deadline,
     )
 
@@ -134,13 +274,13 @@ async def upsert_gateway(
     """
     return await GATEWAY_RESOURCE.upsert(
         kube,
-        namespace=namespace,
-        name=name,
-        spec={
-            "gatewayClassName": gateway_class,
-            "listeners": [dict(listener) for listener in listeners],
-        },
-        labels=labels,
+        intent=GatewayManifest(
+            namespace=namespace,
+            name=name,
+            gateway_class=gateway_class,
+            listeners=listeners,
+            labels=labels,
+        ),
         deadline=deadline,
     )
 
@@ -184,14 +324,14 @@ async def upsert_http_route(
     """
     return await HTTP_ROUTE_RESOURCE.upsert(
         kube,
-        namespace=namespace,
-        name=name,
-        spec={
-            "parentRefs": [dict(ref) for ref in parent_refs],
-            "hostnames": list(hostnames),
-            "rules": [dict(rule) for rule in rules],
-        },
-        labels=labels,
+        intent=HTTPRouteManifest(
+            namespace=namespace,
+            name=name,
+            parent_refs=parent_refs,
+            hostnames=hostnames,
+            rules=rules,
+            labels=labels,
+        ),
         deadline=deadline,
     )
 

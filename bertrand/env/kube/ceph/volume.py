@@ -56,6 +56,7 @@ from bertrand.env.kube.workload.base import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import PosixPath
 
 REPO_VOLUME_CLAIM_LABEL: str = "BERTRAND_REPO_VOLUME"
@@ -626,6 +627,46 @@ class _RepositoryVolumeSpec(BaseModel):
         }
 
 
+@dataclass(frozen=True)
+class CephRepositoryStateManifest:
+    """Push-side manifest for one CephRepositoryState resource.
+
+    Parameters
+    ----------
+    name : str
+        Kubernetes repository-state object name.
+    spec : _RepositoryVolumeSpec
+        Desired repository volume lifecycle spec.
+    """
+
+    name: str
+    spec: _RepositoryVolumeSpec
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns CephRepositoryState objects."""
+        return BERTRAND_NAMESPACE
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes CephRepositoryState manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{REPOSITORY_VOLUME_GROUP}/{REPOSITORY_VOLUME_VERSION}",
+            "kind": REPOSITORY_STATE_KIND,
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": self.spec.labels,
+            },
+            "spec": self.spec.model_dump(mode="json"),
+        }
+
+
 class CephRepositoryMount(BaseModel):
     """Repository mount lifecycle entry embedded in `CephRepositoryState`."""
 
@@ -1124,10 +1165,7 @@ async def ensure_repository_volume_record(
     )
     return await REPOSITORY_STATE_RESOURCE.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=claim_name,
-        spec=spec,
-        labels=spec.labels,
+        intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
         deadline=deadline,
     )
 
@@ -1224,10 +1262,7 @@ async def mark_repository_volume_ready(
         )
         return await REPOSITORY_STATE_RESOURCE.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=claim_name,
-            spec=spec,
-            labels=spec.labels,
+            intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
             deadline=deadline,
         )
 
@@ -1240,10 +1275,7 @@ async def mark_repository_volume_ready(
     )
     return await REPOSITORY_STATE_RESOURCE.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=claim_name,
-        spec=spec,
-        labels=spec.labels,
+        intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
         deadline=deadline,
     )
 
@@ -1303,10 +1335,7 @@ async def mark_repository_volume_failed(
     )
     return await REPOSITORY_STATE_RESOURCE.upsert(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=claim_name,
-        spec=spec,
-        labels=spec.labels,
+        intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
         deadline=deadline,
     )
 
@@ -1369,10 +1398,7 @@ async def ensure_repository_mount_record(
         )
         state = await REPOSITORY_STATE_RESOURCE.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=claim_name,
-            spec=spec,
-            labels=spec.labels,
+            intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
             deadline=deadline,
         )
     name = repository_mount_name(repo_id, host_id, alias_path)
@@ -1456,10 +1482,7 @@ async def ensure_repository_worktree_record(
         )
         state = await REPOSITORY_STATE_RESOURCE.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=claim_name,
-            spec=spec,
-            labels=spec.labels,
+            intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
             deadline=deadline,
         )
     name = repository_worktree_name(repo_id, worktree_id)
@@ -1543,10 +1566,7 @@ async def retire_repository_mount_record(
         )
         state = await REPOSITORY_STATE_RESOURCE.upsert(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=claim_name,
-            spec=spec,
-            labels=spec.labels,
+            intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
             deadline=deadline,
         )
     state = await REPOSITORY_STATE_RESOURCE.patch_status(
@@ -1879,10 +1899,7 @@ async def gc_repository_volumes(
                 )
                 await REPOSITORY_STATE_RESOURCE.upsert(
                     kube,
-                    namespace=BERTRAND_NAMESPACE,
-                    name=record.name,
-                    spec=spec,
-                    labels=spec.labels,
+                    intent=CephRepositoryStateManifest(name=record.name, spec=spec),
                     deadline=deadline,
                 )
                 continue
@@ -1931,10 +1948,7 @@ async def gc_repository_volumes(
                 )
                 await REPOSITORY_STATE_RESOURCE.upsert(
                     kube,
-                    namespace=BERTRAND_NAMESPACE,
-                    name=record.name,
-                    spec=spec,
-                    labels=spec.labels,
+                    intent=CephRepositoryStateManifest(name=record.name, spec=spec),
                     deadline=deadline,
                 )
                 continue
@@ -1966,10 +1980,7 @@ async def gc_repository_volumes(
             )
             await REPOSITORY_STATE_RESOURCE.upsert(
                 kube,
-                namespace=BERTRAND_NAMESPACE,
-                name=record.name,
-                spec=spec,
-                labels=spec.labels,
+                intent=CephRepositoryStateManifest(name=record.name, spec=spec),
                 deadline=deadline,
             )
             continue

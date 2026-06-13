@@ -827,10 +827,9 @@ async def ensure_image_repository_node_trust(
     await _ensure_image_repository_trust(deadline=deadline)
     await _assert_image_repository_local_route(deadline=deadline)
     node = await Node.local(kube, deadline=deadline)
-    await node.set_label(
+    await node.patch(
         kube=kube,
-        label=CLUSTER_REGISTRY_READY_LABEL,
-        value=CLUSTER_REGISTRY_READY_VALUE,
+        labels={CLUSTER_REGISTRY_READY_LABEL: CLUSTER_REGISTRY_READY_VALUE},
         deadline=deadline,
     )
 

@@ -18,10 +18,10 @@ from bertrand.env.git import (
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.snapshot import (
-    SNAPSHOT_API_VERSION,
-    VOLUME_SNAPSHOT_CLASS_KIND,
     VolumeSnapshot,
     VolumeSnapshotClass,
+    VolumeSnapshotClassManifest,
+    VolumeSnapshotManifest,
 )
 from bertrand.env.kube.volume import (
     PersistentVolumeClaim,
@@ -549,22 +549,17 @@ async def _ensure_snapshot_class(
         _assert_snapshot_class(existing, driver=storage.provisioner)
         return existing
     try:
-        return await VolumeSnapshotClass.create_manifest(
+        return await VolumeSnapshotClass.create(
             kube,
-            manifest={
-                "apiVersion": SNAPSHOT_API_VERSION,
-                "kind": VOLUME_SNAPSHOT_CLASS_KIND,
-                "metadata": {
-                    "name": name,
-                    "labels": {
-                        BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
-                        REPOSITORY_SNAPSHOT_CLASS_LABEL: "v1",
-                    },
+            intent=VolumeSnapshotClassManifest(
+                name=name,
+                driver=storage.provisioner,
+                parameters=_snapshot_class_parameters(storage.parameters),
+                labels={
+                    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+                    REPOSITORY_SNAPSHOT_CLASS_LABEL: "v1",
                 },
-                "driver": storage.provisioner,
-                "deletionPolicy": "Delete",
-                "parameters": _snapshot_class_parameters(storage.parameters),
-            },
+            ),
             deadline=deadline,
         )
     except OSError as err:
@@ -612,22 +607,26 @@ async def _create_snapshot(
         kube,
         deadline=deadline,
     )
-    snapshot = await VolumeSnapshot.create_spec(
+    snapshot = await VolumeSnapshot.create(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=_snapshot_name(repo_id=repo_id, purpose=purpose, build_name=build_name),
-        spec={
-            "volumeSnapshotClassName": snapshot_class.name,
-            "source": {"persistentVolumeClaimName": volume.name},
-        },
-        labels=_snapshot_labels(
-            repo_id=repo_id,
-            purpose=purpose,
-            build_name=build_name,
+        intent=VolumeSnapshotManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=_snapshot_name(
+                repo_id=repo_id,
+                purpose=purpose,
+                build_name=build_name,
+            ),
+            snapshot_class_name=snapshot_class.name,
+            source_claim=volume.name,
+            labels=_snapshot_labels(
+                repo_id=repo_id,
+                purpose=purpose,
+                build_name=build_name,
+            ),
+            annotations={
+                REPOSITORY_SNAPSHOT_SOURCE_CLAIM_ANNOTATION: volume.name,
+            },
         ),
-        annotations={
-            REPOSITORY_SNAPSHOT_SOURCE_CLAIM_ANNOTATION: volume.name,
-        },
         deadline=deadline,
     )
     namespace = snapshot.namespace

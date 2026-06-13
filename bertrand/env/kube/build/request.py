@@ -242,6 +242,48 @@ class BuildKitBuildSpec(BaseModel):
         }
 
 
+@dataclass(frozen=True)
+class BuildKitBuildManifest:
+    """Push-side manifest for a BuildKitBuild request.
+
+    Parameters
+    ----------
+    spec : BuildKitBuildSpec
+        Validated project image build request.
+    """
+
+    spec: BuildKitBuildSpec
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns BuildKitBuild requests."""
+        return BERTRAND_NAMESPACE
+
+    @property
+    def name(self) -> str:
+        """Return the deterministic BuildKitBuild object name."""
+        return _buildkit_build_name(self.spec)
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes BuildKitBuild manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{BUILDKIT_BUILD_GROUP}/{BUILDKIT_BUILD_VERSION}",
+            "kind": BUILDKIT_BUILD_KIND,
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": self.spec.request_labels,
+            },
+            "spec": self.spec.model_dump(mode="json"),
+        }
+
+
 class BuildKitBuildStatus(BaseModel):
     """Read-only status for one durable BuildKit build request.
 
@@ -758,9 +800,7 @@ async def submit_buildkit_build(
     """
     return await BUILDKIT_BUILD_RESOURCE.create(
         kube,
-        name=_buildkit_build_name(spec),
-        spec=spec,
-        labels=spec.request_labels,
+        intent=BuildKitBuildManifest(spec=spec),
         deadline=deadline,
     )
 

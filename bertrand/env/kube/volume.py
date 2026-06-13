@@ -50,7 +50,7 @@ STORAGE_FACTORS: dict[str, Decimal] = {
     read=kubernetes.client.StorageV1Api.read_storage_class,
     list=kubernetes.client.StorageV1Api.list_storage_class,
     create=None,
-    patch=None,
+    patch=kubernetes.client.StorageV1Api.patch_storage_class,
     delete=None,
 )
 @dataclass(frozen=True)
@@ -185,7 +185,7 @@ class PersistentVolumeClaimManifest:
     list=kubernetes.client.CoreV1Api.list_namespaced_persistent_volume_claim,
     list_all=kubernetes.client.CoreV1Api.list_persistent_volume_claim_for_all_namespaces,
     create=kubernetes.client.CoreV1Api.create_namespaced_persistent_volume_claim,
-    patch=None,
+    patch=kubernetes.client.CoreV1Api.patch_namespaced_persistent_volume_claim,
     delete=kubernetes.client.CoreV1Api.delete_namespaced_persistent_volume_claim,
 )
 @dataclass(frozen=True)
@@ -517,7 +517,7 @@ class PersistentVolumeClaim(
     read=kubernetes.client.CoreV1Api.read_persistent_volume,
     list=kubernetes.client.CoreV1Api.list_persistent_volume,
     create=None,
-    patch=None,
+    patch=kubernetes.client.CoreV1Api.patch_persistent_volume,
     delete=None,
 )
 @dataclass(frozen=True)
