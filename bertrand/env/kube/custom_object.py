@@ -23,7 +23,7 @@ from .api.client import Kube
 from .api.resource import (
     RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
     WatchEvent,
-    _resume_watch,
+    watch_collection,
     watch_stream,
 )
 
@@ -408,32 +408,85 @@ class CustomObjectResource[T_co]:
     ) -> AsyncIterator[WatchEvent[T_co]]:
         """Watch custom objects and yield typed events.
 
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : Deadline
+            Maximum watch budget.
+        labels : Mapping[str, str], optional
+            Label filters to merge with descriptor labels for the snapshot and
+            stream requests.
+        namespace : str | None, optional
+            Namespace to watch. Omit for cluster-scoped resources or to watch all
+            namespaces for namespaced resources.
+        emit_initial : bool, optional
+            Whether to yield the starting snapshot as synthetic `ADDED` events.
+        field_selector : str, optional
+            Field selector to apply to the snapshot and stream requests.
+
         Yields
         ------
         WatchEvent[T_co]
             Typed custom-object watch events.
 
+        Notes
+        -----
+        Scope validation, Kubernetes list, stream, timeout, and malformed-payload
+        errors propagate from the underlying snapshot and stream helpers.
         """
         selected = self._namespace_filter(action="watch", namespace=namespace)
         normalized = _normalized_namespaces(selected)
         namespace = None if normalized is None else next(iter(normalized), None)
         labels = self._merged_labels(labels) or EMPTY_MAPPING
         field_selector = field_selector.strip()
+        label_selector = ",".join(f"{key}={value}" for key, value in labels.items())
+        context = self._collection_context("watch", namespace)
+        api = kube_client.CustomObjectsApi(kube.client)
+        api_kwargs: dict[str, object] = {
+            "group": self.group,
+            "version": self.version,
+            "plural": self.plural,
+        }
+        if namespace is None:
+            list_method = api.list_cluster_custom_object
+        else:
+            api_kwargs["namespace"] = namespace
+            list_method = api.list_namespaced_custom_object
 
         async def snapshot(
             attempt_deadline: Deadline,
         ) -> tuple[tuple[WatchEvent[T_co], ...], str]:
-            items, resource_version = await self._snapshot(
-                kube,
-                namespace=namespace,
-                labels=labels,
-                field_selector=field_selector,
+            payload = await kube.run(
+                lambda request_timeout: list_method(
+                    **api_kwargs,
+                    label_selector=label_selector or None,
+                    field_selector=field_selector or None,
+                    _request_timeout=request_timeout,
+                ),
                 deadline=attempt_deadline,
+                context=context,
+                missing_ok=False,
             )
+            items = self._list_items(payload)
+            payload = cast("Mapping[str, object]", payload)
+            metadata = payload.get("metadata", {})
+            if not isinstance(metadata, Mapping):
+                msg = f"malformed Kubernetes {self.kind} list metadata"
+                raise OSError(msg)
+            metadata = cast("Mapping[str, object]", metadata)
+            resource_version = str(metadata.get("resourceVersion") or "").strip()
+            if not resource_version:
+                msg = f"Kubernetes {self.kind} list had no resourceVersion"
+                raise OSError(msg)
             return (
-                self._initial_watch_events(
-                    items,
-                    resource_version=resource_version,
+                tuple(
+                    WatchEvent(
+                        type="ADDED",
+                        object=self._wrap_payload(item.payload),
+                        resource_version=item.resource_version or resource_version,
+                    )
+                    for item in items
                 ),
                 resource_version,
             )
@@ -442,17 +495,22 @@ class CustomObjectResource[T_co]:
             resource_version: str,
             attempt_deadline: Deadline,
         ) -> AsyncIterator[WatchEvent[T_co]]:
-            async for event in self._watch_once(
-                kube,
-                namespace=namespace,
-                labels=labels,
+            async for event in watch_stream(
+                list_method,
                 deadline=attempt_deadline,
+                context=context,
                 resource_version=resource_version,
+                label_selector=label_selector,
                 field_selector=field_selector,
+                api_kwargs=api_kwargs,
             ):
-                yield event
+                yield WatchEvent(
+                    type=event.type,
+                    object=self._wrap_payload(event.object),
+                    resource_version=event.resource_version,
+                )
 
-        async for event in _resume_watch(
+        async for event in watch_collection(
             deadline=deadline,
             snapshot=snapshot,
             stream=stream,
@@ -656,6 +714,16 @@ class CustomObjectResource[T_co]:
     ) -> None:
         """Delete one observed custom object.
 
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        resource : T_co
+            Observed custom object whose Kubernetes metadata supplies the deletion
+            identity.
+        deadline : Deadline
+            Maximum request budget in seconds.
+
         Raises
         ------
         OSError
@@ -726,90 +794,6 @@ class CustomObjectResource[T_co]:
             msg = f"timed out waiting for {label}"
             raise TimeoutError(msg) from err
 
-    async def _watch_once(
-        self,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        namespace: str | None,
-        labels: Mapping[str, str] | None,
-        resource_version: str,
-        field_selector: str,
-    ) -> AsyncIterator[WatchEvent[T_co]]:
-        api = kube_client.CustomObjectsApi(kube.client)
-        api_kwargs: dict[str, object] = {
-            "group": self.group,
-            "version": self.version,
-            "plural": self.plural,
-        }
-        if namespace is None:
-            watch_fn = api.list_cluster_custom_object
-        else:
-            api_kwargs["namespace"] = namespace
-            watch_fn = api.list_namespaced_custom_object
-        label_selector = (
-            ",".join(f"{key}={value}" for key, value in labels.items())
-            if labels
-            else ""
-        )
-        async for event in watch_stream(
-            watch_fn,
-            deadline=deadline,
-            context=self._collection_context("watch", namespace),
-            resource_version=resource_version,
-            label_selector=label_selector,
-            field_selector=field_selector,
-            api_kwargs=api_kwargs,
-        ):
-            yield WatchEvent(
-                type=event.type,
-                object=self._wrap_payload(event.object),
-                resource_version=event.resource_version,
-            )
-
-    async def _snapshot(
-        self,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        labels: Mapping[str, str] | None = None,
-        namespace: str | None = None,
-        field_selector: str = "",
-    ) -> tuple[builtins.list[CustomObject], str]:
-        label_selector = (
-            ",".join(f"{key}={value}" for key, value in labels.items())
-            if labels
-            else ""
-        )
-        payloads = await self._list_payloads(
-            kube,
-            namespaces=(namespace,) if namespace else None,
-            label_selector=label_selector,
-            field_selector=field_selector,
-            deadline=deadline,
-        )
-        payload = payloads[0] if payloads else None
-        if payload is None:
-            msg = f"Kubernetes {self.kind} list returned no payload"
-            raise OSError(msg)
-        if not isinstance(payload, Mapping):
-            msg = f"malformed Kubernetes {self.kind} list payload"
-            raise OSError(msg)
-        snapshot = cast("Mapping[str, object]", payload)
-        return self._list_items(snapshot), self._snapshot_resource_version(snapshot)
-
-    def _snapshot_resource_version(self, payload: Mapping[str, object]) -> str:
-        metadata = payload.get("metadata", {})
-        if not isinstance(metadata, Mapping):
-            msg = f"malformed Kubernetes {self.kind} list metadata"
-            raise OSError(msg)
-        metadata = cast("Mapping[str, object]", metadata)
-        resource_version = str(metadata.get("resourceVersion") or "").strip()
-        if not resource_version:
-            msg = f"Kubernetes {self.kind} list had no resourceVersion"
-            raise OSError(msg)
-        return resource_version
-
     def _list_items(
         self,
         payload: object,
@@ -832,21 +816,6 @@ class CustomObjectResource[T_co]:
             )
             for item in items
         ]
-
-    def _initial_watch_events(
-        self,
-        items: builtins.list[CustomObject],
-        *,
-        resource_version: str,
-    ) -> tuple[WatchEvent[T_co], ...]:
-        return tuple(
-            WatchEvent(
-                type="ADDED",
-                object=self._wrap_payload(item.payload),
-                resource_version=item.resource_version or resource_version,
-            )
-            for item in items
-        )
 
     async def _list_payloads(
         self,
@@ -1439,10 +1408,32 @@ class CustomResource(CustomObject):
     ) -> AsyncIterator[WatchEvent[Self]]:
         """Watch custom objects and yield typed events.
 
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : Deadline
+            Maximum watch budget.
+        labels : Mapping[str, str], optional
+            Label filters to merge with descriptor labels for the snapshot and
+            stream requests.
+        namespace : str | None, optional
+            Namespace to watch. Omit for cluster-scoped resources or to watch all
+            namespaces for namespaced resources.
+        emit_initial : bool, optional
+            Whether to yield the starting snapshot as synthetic `ADDED` events.
+        field_selector : str, optional
+            Field selector to apply to the snapshot and stream requests.
+
         Yields
         ------
         WatchEvent[CustomResource]
             Typed custom-object watch events.
+
+        Notes
+        -----
+        Scope validation, Kubernetes list, stream, timeout, and malformed-payload
+        errors propagate from the underlying custom-object adapter.
         """
         async for event in cls._api().watch(
             kube,
@@ -1599,7 +1590,20 @@ class CustomResource(CustomObject):
         *,
         deadline: Deadline,
     ) -> None:
-        """Delete this custom object."""
+        """Delete this custom object.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : Deadline
+            Maximum request budget in seconds.
+
+        Notes
+        -----
+        Metadata validation and Kubernetes delete errors propagate from the
+        underlying custom-object adapter.
+        """
         await type(self)._api().delete(
             kube,
             resource=self,

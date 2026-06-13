@@ -7,7 +7,7 @@ import math
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, Self, cast
 
 import kubernetes
 from kubernetes import client as kube_client
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 type DeletionPropagationPolicy = Literal["Background", "Foreground", "Orphan"]
-type WatchEventType = Literal["ADDED", "MODIFIED", "DELETED", "BOOKMARK", "ERROR"]
 RESOURCE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 _DELETION_PROPAGATION_POLICIES = frozenset({"Background", "Foreground", "Orphan"})
 
@@ -54,6 +53,302 @@ class _ResourceConfig:
     delete_method: Callable[..., Any] | None
 
 
+class WatchExpiredError(OSError):
+    """Raised when Kubernetes can no longer serve a watch resource version."""
+
+
+@dataclass(frozen=True)
+class WatchEvent[T]:
+    """Typed Kubernetes watch event.
+
+    Parameters
+    ----------
+    type : WatchEvent.Type
+        Normalized Kubernetes watch event type.
+    object : T
+        Wrapped Kubernetes resource object carried by the event.
+    resource_version : str
+        Resource version reported by the event object, or an empty string when
+        unavailable.
+    """
+
+    type Type = Literal["ADDED", "MODIFIED", "DELETED", "BOOKMARK", "ERROR"]
+    Types: ClassVar[Collection[Type]] = frozenset(
+        ("ADDED", "MODIFIED", "DELETED", "BOOKMARK", "ERROR")
+    )
+
+    type: Type
+    object: T
+    resource_version: str
+
+
+_WATCH_END = object()
+
+
+def _watch_mapping(value: object, *, context: str, label: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        msg = f"{context} watch {label} is not a mapping"
+        raise OSError(msg)
+    out: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            msg = f"{context} watch {label} has non-string key {key!r}"
+            raise OSError(msg)
+        out[key] = item
+    return out
+
+
+def _parse_watch_event(payload: object, *, context: str) -> WatchEvent[object]:
+    payload = _watch_mapping(payload, context=context, label="event payload")
+    event_type = payload.get("type")
+    if event_type not in WatchEvent.Types:
+        msg = f"{context} watch returned unknown event type {event_type!r}"
+        raise OSError(msg)
+    event_type = cast("WatchEvent.Type", event_type)
+
+    obj = payload.get("object")
+    raw_object = payload.get("raw_object")
+    if obj is None and raw_object is None:
+        msg = f"{context} watch event is missing object payload"
+        raise OSError(msg)
+    if raw_object is None:
+        if not isinstance(obj, Mapping):
+            msg = f"{context} watch event is missing raw object payload"
+            raise OSError(msg)
+        raw_object = obj
+    if obj is None:
+        obj = raw_object
+
+    raw_object = _watch_mapping(raw_object, context=context, label="raw object")
+    if event_type == "ERROR":
+        raw_code = raw_object.get("code")
+        reason = str(raw_object.get("reason") or "").strip()
+        message = str(raw_object.get("message") or "").strip()
+
+        code: int | None = None
+        if raw_code is not None:
+            try:
+                code = int(str(raw_code).strip())
+            except ValueError:
+                code = None
+
+        detail = message or reason or str(raw_object).strip()
+        if code == 410:
+            msg = f"{context} watch expired: {detail}"
+            raise WatchExpiredError(msg)
+        if detail:
+            msg = f"{context} watch returned an error event: {detail}"
+        else:
+            msg = f"{context} watch returned an error event"
+        raise OSError(msg)
+
+    metadata = raw_object.get("metadata")
+    resource_version = ""
+    if isinstance(metadata, Mapping):
+        metadata = _watch_mapping(metadata, context=context, label="object metadata")
+        resource_version = str(metadata.get("resourceVersion") or "").strip()
+
+    return WatchEvent(
+        type=event_type,
+        object=obj,
+        resource_version=resource_version,
+    )
+
+
+async def watch_collection[T](
+    *,
+    deadline: Deadline,
+    snapshot: Callable[[Deadline], Awaitable[tuple[tuple[WatchEvent[T], ...], str]]],
+    stream: Callable[[str, Deadline], AsyncIterator[WatchEvent[T]]],
+    emit_initial: bool,
+) -> AsyncIterator[WatchEvent[T]]:
+    """Watch a Kubernetes collection from snapshot through resumable streams.
+
+    Parameters
+    ----------
+    deadline : Deadline
+        Maximum watch budget shared by snapshots and stream attempts.
+    snapshot : Callable[[Deadline], Awaitable[tuple[tuple[WatchEvent[T], ...], str]]]
+        Coroutine that lists the collection and returns initial events plus the
+        collection `resourceVersion`.
+    stream : Callable[[str, Deadline], AsyncIterator[WatchEvent[T]]]
+        Async iterator factory that streams events from a snapshot
+        `resourceVersion`.
+    emit_initial : bool
+        Whether to yield the first snapshot as synthetic `ADDED` events before
+        streaming.
+
+    Yields
+    ------
+    WatchEvent[T]
+        Snapshot and stream events from the watched collection.
+
+    Raises
+    ------
+    TimeoutError
+        If a snapshot or stream times out before the shared deadline expires.
+
+    Notes
+    -----
+    `WatchExpiredError` from `stream` is handled by re-snapshotting the collection.
+    Other exceptions from `snapshot` or `stream` propagate to the caller.
+    """
+    emit_snapshot = emit_initial
+    while True:
+        if deadline.remaining <= 0:
+            return
+        events, resource_version = await snapshot(deadline)
+        if emit_snapshot:
+            for event in events:
+                yield event
+            emit_snapshot = False
+        if deadline.remaining <= 0:
+            return
+        try:
+            async for event in stream(resource_version, deadline):
+                yield event
+        except WatchExpiredError:
+            continue
+        except TimeoutError:
+            if deadline.remaining <= 0:
+                return
+            raise
+        else:
+            return
+
+
+async def watch_stream(
+    fn: Callable[..., object],
+    *,
+    deadline: Deadline,
+    context: str,
+    resource_version: str = "",
+    label_selector: str = "",
+    field_selector: str = "",
+    api_kwargs: Mapping[str, object] | None = None,
+) -> AsyncIterator[WatchEvent[object]]:
+    """Stream raw Kubernetes watch events from a list-style API method.
+
+    Parameters
+    ----------
+    fn : Callable[..., object]
+        Kubernetes list-style API method to stream with `Watch().stream()`.
+    deadline : Deadline
+        Maximum stream budget.
+    context : str
+        Human-readable operation context for error messages.
+    resource_version : str, optional
+        Internal Kubernetes `resourceVersion` to stream from.
+    label_selector : str, optional
+        Kubernetes label selector to pass to the stream request.
+    field_selector : str, optional
+        Kubernetes field selector to pass to the stream request.
+    api_kwargs : Mapping[str, object] | None, optional
+        Extra keyword arguments required by the target API method.
+
+    Yields
+    ------
+    WatchEvent[object]
+        Parsed Kubernetes watch events with untyped payload objects.
+
+    Raises
+    ------
+    WatchExpiredError
+        If Kubernetes reports that the requested resource version has expired.
+    TimeoutError
+        If the watch cannot complete before the deadline.
+    OSError
+        If Kubernetes returns malformed watch event payloads.
+    """
+    remaining = deadline.check(f"{context} watch timed out before it could start")
+    kwargs = dict(api_kwargs or {})
+    kwargs.update(
+        {
+            key: value
+            for key, value in {
+                "label_selector": label_selector.strip(),
+                "field_selector": field_selector.strip(),
+                "resource_version": resource_version.strip(),
+            }.items()
+            if value
+        }
+    )
+    if not math.isinf(remaining):
+        kwargs.setdefault("timeout_seconds", max(1, math.ceil(remaining)))
+
+    watcher = kubernetes.watch.Watch()
+    iterator = watcher.stream(fn, **kwargs)
+    try:
+        while True:
+            remaining = deadline.check(
+                f"{context} watch timed out after {deadline.timeout} seconds"
+            )
+            try:
+                payload = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: next(iterator, _WATCH_END)),
+                    timeout=None if math.isinf(remaining) else remaining,
+                )
+                if payload is _WATCH_END:
+                    return
+            except TimeoutError as err:
+                msg = f"{context} watch timed out after {deadline.timeout} seconds"
+                raise TimeoutError(msg) from err
+            except ApiException as err:
+                detail = (err.body or err.reason or str(err)).strip()
+                if err.status == 410:
+                    msg = f"{context} watch expired: {detail}"
+                    raise WatchExpiredError(msg) from err
+                msg = (
+                    f"{context} watch failed with kubernetes API status {err.status}: "
+                    f"{detail}"
+                )
+                raise OSError(msg) from err
+            yield _parse_watch_event(payload, context=context)
+    finally:
+        watcher.stop()
+
+
+def _config(cls: type[KubeResource[Any, Any]]) -> _ResourceConfig:
+    config = cls._resource_config
+    if config is None:
+        msg = f"{cls.__name__} is missing Kubernetes resource configuration"
+        raise NotImplementedError(msg)
+    return config
+
+
+def _validate_payload[ResourceT: KubeResource[Any, Any]](
+    cls: type[ResourceT],
+    config: _ResourceConfig,
+    payload: Any
+) -> ResourceT:
+    if not isinstance(payload, config.payload):
+        msg = f"malformed Kubernetes {config.kind} payload"
+        raise OSError(msg)
+    return cls(_obj=payload)
+
+
+def _validate_list[ResourceT: KubeResource[Any, Any]](
+    cls: type[ResourceT],
+    config: _ResourceConfig,
+    payload: Any,
+) -> builtins.list[ResourceT]:
+    try:
+        raw_items = payload.items
+    except AttributeError as err:
+        msg = f"malformed Kubernetes {config.kind} list payload"
+        raise OSError(msg) from err
+    if not isinstance(raw_items, list):
+        msg = f"malformed Kubernetes {config.kind} list payload"
+        raise OSError(msg)
+    items: builtins.list[ResourceT] = []
+    for item in raw_items:
+        if not isinstance(item, config.payload):
+            msg = f"malformed Kubernetes {config.kind} list item"
+            raise OSError(msg)
+        items.append(cls(_obj=item))
+    return items
+
+
 @dataclass(frozen=True)
 class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
     """Base class for Kubernetes generated-model wrappers.
@@ -66,41 +361,6 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
 
     _obj: PayloadT
     _resource_config: ClassVar[_ResourceConfig | None] = None
-
-    @classmethod
-    def _config(cls) -> _ResourceConfig:
-        config = cls._resource_config
-        if config is None:
-            msg = f"{cls.__name__} is missing Kubernetes resource configuration"
-            raise NotImplementedError(msg)
-        return config
-
-    @classmethod
-    def _validate_payload(cls, payload: Any) -> Self:
-        config = cls._config()
-        if not isinstance(payload, config.payload):
-            msg = f"malformed Kubernetes {config.kind} payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
-
-    @classmethod
-    def _validate_list(cls, payload: Any) -> builtins.list[Self]:
-        config = cls._config()
-        try:
-            raw_items = payload.items
-        except AttributeError as err:
-            msg = f"malformed Kubernetes {config.kind} list payload"
-            raise OSError(msg) from err
-        if not isinstance(raw_items, list):
-            msg = f"malformed Kubernetes {config.kind} list payload"
-            raise OSError(msg)
-        items: builtins.list[Self] = []
-        for item in raw_items:
-            if not isinstance(item, config.payload):
-                msg = f"malformed Kubernetes {config.kind} list item"
-                raise OSError(msg)
-            items.append(cls(_obj=item))
-        return items
 
     @property
     def name(self) -> str:
@@ -228,7 +488,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         ValueError
             If namespace is supplied for a cluster-scoped resource.
         """
-        config = cls._config()
+        config = _config(cls)
         name = name.strip()
         namespace = namespace.strip() if namespace is not None else ""
         if config.namespaced:
@@ -238,7 +498,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             label = f"{namespace}/{name}"
             payload = await kube.run(
                 lambda request_timeout: config.read_method(
-                    cls._config().api(kube.client),
+                    config.api(kube.client),
                     name=name,
                     namespace=namespace,
                     _request_timeout=request_timeout,
@@ -256,7 +516,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                 raise OSError(msg)
             payload = await kube.run(
                 lambda request_timeout: config.read_method(
-                    cls._config().api(kube.client),
+                    config.api(kube.client),
                     name=name,
                     _request_timeout=request_timeout,
                 ),
@@ -266,7 +526,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             )
         if payload is None:
             return None
-        return cls._validate_payload(payload)
+        return _validate_payload(cls, config, payload)
 
     @classmethod
     async def list(
@@ -306,11 +566,11 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         ValueError
             If namespace filters are invalid for the resource scope.
         """
-        config = cls._config()
+        config = _config(cls)
         namespace = namespace.strip() if namespace is not None else ""
         field_selector = field_selector.strip()
         label_selector = ",".join(f"{key}={value}" for key, value in labels.items())
-        api = cls._config().api(kube.client)
+        api = config.api(kube.client)
         if not config.namespaced:
             if namespace or namespaces is not None:
                 msg = f"{config.kind} is cluster-scoped; cannot list by namespace"
@@ -326,7 +586,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                 context=f"failed to list {config.kind} resources",
                 missing_ok=False,
             )
-            return cls._validate_list(payload)
+            return _validate_list(cls, config, payload)
 
         if namespace and namespaces is not None:
             msg = f"{config.kind} list accepts either namespace or namespaces, not both"
@@ -348,7 +608,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                 context=f"failed to list {config.kind} resources across namespaces",
                 missing_ok=False,
             )
-            return cls._validate_list(payload)
+            return _validate_list(cls, config, payload)
 
         normalized = tuple(sorted({item.strip() for item in selected if item.strip()}))
         if not normalized:
@@ -375,7 +635,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         )
         items: builtins.list[Self] = []
         for payload in payloads:
-            items.extend(cls._validate_list(payload))
+            items.extend(_validate_list(cls, config, payload))
         return items
 
     @classmethod
@@ -412,7 +672,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         ValueError
             If namespace is supplied for a cluster-scoped resource.
         """
-        config = cls._config()
+        config = _config(cls)
         create = config.create_method
         patch = config.patch_method
         if create is None or patch is None:
@@ -435,7 +695,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                 raise ValueError(msg)
             label = name
 
-        api = cls._config().api(kube.client)
+        api = config.api(kube.client)
         body = intent.manifest()
         try:
             if config.namespaced:
@@ -489,7 +749,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                     context=f"failed to patch {config.kind} {label}",
                     missing_ok=False,
                 )
-        return cls._validate_payload(payload)
+        return _validate_payload(cls, config, payload)
 
     async def refresh(self, kube: Kube, *, deadline: Deadline) -> Self | None:
         """Re-read this resource by its Kubernetes identity.
@@ -511,7 +771,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         OSError
             If this resource has incomplete Kubernetes metadata.
         """
-        config = type(self)._config()
+        config = _config(type(self))
         name = self.name
         namespace = self.namespace
         if config.namespaced:
@@ -542,6 +802,17 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
     ) -> None:
         """Delete this Kubernetes resource.
 
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : Deadline
+            Maximum request budget in seconds.
+        propagation_policy : DeletionPropagationPolicy | None, optional
+            Kubernetes deletion propagation policy.
+        grace_period_seconds : int | None, optional
+            Optional Kubernetes deletion grace period in seconds.
+
         Raises
         ------
         NotImplementedError
@@ -552,7 +823,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         ValueError
             If namespace or deletion options are invalid for this resource.
         """
-        config = type(self)._config()
+        config = _config(type(self))
         delete = config.delete_method
         if delete is None:
             msg = f"{config.kind} does not implement delete"
@@ -697,6 +968,22 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
     ) -> AsyncIterator[WatchEvent[Self]]:
         """Watch Kubernetes resources with optional selector filters.
 
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : Deadline
+            Maximum watch budget.
+        namespace : str | None, optional
+            Namespace to watch. Omit for cluster-scoped resources or to watch all
+            namespaces for namespaced resources.
+        labels : Mapping[str, str], optional
+            Label filters to apply to the snapshot and stream requests.
+        field_selector : str, optional
+            Field selector to apply to the snapshot and stream requests.
+        emit_initial : bool, optional
+            Whether to yield the starting snapshot as synthetic `ADDED` events.
+
         Yields
         ------
         WatchEvent[KubeResource]
@@ -705,10 +992,17 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
 
         Raises
         ------
+        NotImplementedError
+            If this resource cannot be watched across all namespaces.
         ValueError
             If namespace filters are invalid for the resource scope.
+
+        Notes
+        -----
+        Kubernetes list, stream, timeout, and malformed-payload errors propagate
+        from the underlying snapshot and stream helpers.
         """
-        config = cls._config()
+        config = _config(cls)
         namespace = namespace.strip() if namespace is not None else ""
         field_selector = field_selector.strip()
         label_selector = ",".join(f"{key}={value}" for key, value in labels.items())
@@ -737,25 +1031,30 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             list_method = config.list_method
             context = f"failed to watch {config.kind} resources"
 
-        def list_payload(request_timeout: float | None) -> object:
-            return list_method(
-                api,
-                **api_kwargs,
-                label_selector=label_selector or None,
-                field_selector=field_selector or None,
-                _request_timeout=request_timeout,
-            )
-
         async def snapshot(
             attempt_deadline: Deadline,
         ) -> tuple[tuple[WatchEvent[Self], ...], str]:
             payload = await kube.run(
-                list_payload,
+                lambda request_timeout: list_method(
+                    api,
+                    **api_kwargs,
+                    label_selector=label_selector or None,
+                    field_selector=field_selector or None,
+                    _request_timeout=request_timeout,
+                ),
                 deadline=attempt_deadline,
                 context=context,
                 missing_ok=False,
             )
-            resource_version = _list_resource_version(payload, kind=config.kind)
+            metadata = getattr(payload, "metadata", None)
+            resource_version = (
+                str(getattr(metadata, "resource_version", "") or "").strip()
+                if metadata is not None
+                else ""
+            )
+            if not resource_version:
+                msg = f"Kubernetes {config.kind} list had no resourceVersion"
+                raise OSError(msg)
             return (
                 tuple(
                     WatchEvent(
@@ -763,7 +1062,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                         object=item,
                         resource_version=item.resource_version or resource_version,
                     )
-                    for item in cls._validate_list(payload)
+                    for item in _validate_list(cls, config, payload)
                 ),
                 resource_version,
             )
@@ -785,11 +1084,11 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             ):
                 yield WatchEvent(
                     type=event.type,
-                    object=cls._validate_payload(event.object),
+                    object=_validate_payload(cls, config, event.object),
                     resource_version=event.resource_version,
                 )
 
-        async for event in _resume_watch(
+        async for event in watch_collection(
             deadline=deadline,
             snapshot=snapshot,
             stream=stream,
@@ -909,248 +1208,3 @@ def namespaced_resource[ResourceT: type[KubeResource[Any, Any]]](
         return cls
 
     return decorate
-
-
-# TODO: review and standardize the watch event layer into its final form
-
-
-@dataclass(frozen=True)
-class WatchEvent[T]:
-    """Typed Kubernetes watch event.
-
-    Parameters
-    ----------
-    type : WatchEventType
-        Normalized Kubernetes watch event type.
-    object : T
-        Wrapped Kubernetes resource object carried by the event.
-    resource_version : str
-        Resource version reported by the event object, or an empty string when
-        unavailable.
-    """
-
-    type: WatchEventType
-    object: T
-    resource_version: str
-
-
-class WatchExpiredError(OSError):
-    """Raised when Kubernetes can no longer serve a watch resource version."""
-
-
-_WATCH_END = object()
-
-
-@dataclass(frozen=True)
-class _WatchEnvelope:
-    type: WatchEventType
-    object: object
-    raw_object: Mapping[str, object]
-
-
-def _watch_mapping(value: object, *, context: str, label: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        msg = f"{context} watch {label} is not a mapping"
-        raise OSError(msg)
-    out: dict[str, object] = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            msg = f"{context} watch {label} has non-string key {key!r}"
-            raise OSError(msg)
-        out[key] = item
-    return out
-
-
-def _watch_event_type(value: object, *, context: str) -> WatchEventType:
-    event_type = str(value or "").strip()
-    if event_type == "ADDED":
-        return "ADDED"
-    if event_type == "MODIFIED":
-        return "MODIFIED"
-    if event_type == "DELETED":
-        return "DELETED"
-    if event_type == "BOOKMARK":
-        return "BOOKMARK"
-    if event_type == "ERROR":
-        return "ERROR"
-    msg = f"{context} watch returned unknown event type {event_type!r}"
-    raise OSError(msg)
-
-
-def _watch_envelope(payload: object, *, context: str) -> _WatchEnvelope:
-    payload = _watch_mapping(payload, context=context, label="event payload")
-    event_type = _watch_event_type(payload.get("type"), context=context)
-
-    obj = payload.get("object")
-    raw_object = payload.get("raw_object")
-    if obj is None and raw_object is None:
-        msg = f"{context} watch event is missing object payload"
-        raise OSError(msg)
-    if raw_object is None:
-        if not isinstance(obj, Mapping):
-            msg = f"{context} watch event is missing raw object payload"
-            raise OSError(msg)
-        raw_object = obj
-    if obj is None:
-        obj = raw_object
-    return _WatchEnvelope(
-        type=event_type,
-        object=obj,
-        raw_object=_watch_mapping(raw_object, context=context, label="raw object"),
-    )
-
-
-def _watch_event(payload: object, *, context: str) -> WatchEvent[object]:
-    event = _watch_envelope(payload, context=context)
-    if event.type == "ERROR":
-        raw_code = event.raw_object.get("code")
-        reason = str(event.raw_object.get("reason") or "").strip()
-        message = str(event.raw_object.get("message") or "").strip()
-
-        code: int | None = None
-        if raw_code is not None:
-            try:
-                code = int(str(raw_code).strip())
-            except ValueError:
-                code = None
-
-        detail = message or reason or str(event.raw_object).strip()
-        if code == 410:
-            msg = f"{context} watch expired: {detail}"
-            raise WatchExpiredError(msg)
-        if detail:
-            msg = f"{context} watch returned an error event: {detail}"
-        else:
-            msg = f"{context} watch returned an error event"
-        raise OSError(msg)
-
-    metadata = event.raw_object.get("metadata")
-    resource_version = ""
-    if isinstance(metadata, Mapping):
-        metadata = _watch_mapping(metadata, context=context, label="object metadata")
-        resource_version = str(metadata.get("resourceVersion") or "").strip()
-
-    return WatchEvent(
-        type=event.type,
-        object=event.object,
-        resource_version=resource_version,
-    )
-
-
-def _list_resource_version(payload: object, *, kind: str) -> str:
-    metadata = getattr(payload, "metadata", None)
-    resource_version = (
-        str(getattr(metadata, "resource_version", "") or "").strip()
-        if metadata is not None
-        else ""
-    )
-    if not resource_version:
-        msg = f"Kubernetes {kind} list had no resourceVersion"
-        raise OSError(msg)
-    return resource_version
-
-
-async def _resume_watch[T](
-    *,
-    deadline: Deadline,
-    snapshot: Callable[[Deadline], Awaitable[tuple[tuple[WatchEvent[T], ...], str]]],
-    stream: Callable[[str, Deadline], AsyncIterator[WatchEvent[T]]],
-    emit_initial: bool,
-) -> AsyncIterator[WatchEvent[T]]:
-    emit_snapshot = emit_initial
-    while True:
-        if deadline.remaining <= 0:
-            return
-        events, resource_version = await snapshot(deadline)
-        if emit_snapshot:
-            for event in events:
-                yield event
-            emit_snapshot = False
-        if deadline.remaining <= 0:
-            return
-        try:
-            async for event in stream(resource_version, deadline):
-                yield event
-        except WatchExpiredError:
-            continue
-        except TimeoutError:
-            if deadline.remaining <= 0:
-                return
-            raise
-        else:
-            return
-
-
-async def watch_stream(
-    fn: Callable[..., object],
-    *,
-    deadline: Deadline,
-    context: str,
-    resource_version: str = "",
-    label_selector: str = "",
-    field_selector: str = "",
-    api_kwargs: Mapping[str, object] | None = None,
-) -> AsyncIterator[WatchEvent[object]]:
-    """Stream raw Kubernetes watch events from a list-style API method.
-
-    Yields
-    ------
-    WatchEvent[object]
-        Parsed Kubernetes watch events with untyped payload objects.
-
-    Raises
-    ------
-    WatchExpiredError
-        If Kubernetes reports that the requested resource version has expired.
-    TimeoutError
-        If the watch cannot complete before the deadline.
-    OSError
-        If Kubernetes returns malformed watch event payloads.
-    """
-    remaining = deadline.check(f"{context} watch timed out before it could start")
-    kwargs = dict(api_kwargs or {})
-    kwargs.update(
-        {
-            key: value
-            for key, value in {
-                "label_selector": label_selector.strip(),
-                "field_selector": field_selector.strip(),
-                "resource_version": resource_version.strip(),
-            }.items()
-            if value
-        }
-    )
-    if not math.isinf(remaining):
-        kwargs.setdefault("timeout_seconds", max(1, math.ceil(remaining)))
-
-    watcher = kubernetes.watch.Watch()
-    iterator = watcher.stream(fn, **kwargs)
-    try:
-        while True:
-            remaining = deadline.check(
-                f"{context} watch timed out after {deadline.timeout} seconds"
-            )
-            try:
-                payload = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: next(iterator, _WATCH_END)),
-                    timeout=None if math.isinf(remaining) else remaining,
-                )
-                if payload is _WATCH_END:
-                    return
-            except TimeoutError as err:
-                msg = f"{context} watch timed out after {deadline.timeout} seconds"
-                raise TimeoutError(msg) from err
-            except ApiException as err:
-                detail = (err.body or err.reason or str(err)).strip()
-                if err.status == 410:
-                    msg = f"{context} watch expired: {detail}"
-                    raise WatchExpiredError(msg) from err
-                msg = (
-                    f"{context} watch failed with kubernetes API status {err.status}: "
-                    f"{detail}"
-                )
-                raise OSError(msg) from err
-
-            yield _watch_event(payload, context=context)
-    finally:
-        watcher.stop()
