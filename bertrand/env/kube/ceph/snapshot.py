@@ -18,11 +18,14 @@ from bertrand.env.git import (
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.snapshot import (
+    SNAPSHOT_API_VERSION,
+    VOLUME_SNAPSHOT_CLASS_KIND,
     VolumeSnapshot,
     VolumeSnapshotClass,
 )
 from bertrand.env.kube.volume import (
     PersistentVolumeClaim,
+    PersistentVolumeClaimManifest,
     StorageClass,
 )
 
@@ -81,16 +84,34 @@ async def ensure_repository_snapshot_support(
 
     Raises
     ------
+    ValueError
+        If the storage class preference list is empty.
     OSError
         If CephFS storage or snapshot support is unavailable.
     """
-    storage = await StorageClass.select(
-        kube,
-        deadline=deadline,
-        preferences=CEPHFS_STORAGE_CLASS_PREFERENCES,
-        require_expansion=True,
+    storage_preferences = tuple(
+        name.strip()
+        for name in CEPHFS_STORAGE_CLASS_PREFERENCES
+        if name and name.strip()
     )
-    if not storage.is_cephfs:
+    if not storage_preferences:
+        msg = "storage class preferences cannot be empty"
+        raise ValueError(msg)
+    storage = None
+    for name in storage_preferences:
+        storage = await StorageClass.get(kube, deadline=deadline, name=name)
+        if storage is None:
+            continue
+        if not storage.allow_volume_expansion:
+            msg = f"storage class {name!r} must set allowVolumeExpansion=true"
+            raise OSError(msg)
+        break
+    if storage is None:
+        preferred = ", ".join(repr(name) for name in storage_preferences)
+        msg = f"no preferred StorageClass is available; expected one of {preferred}"
+        raise OSError(msg)
+    provisioner = storage.provisioner.lower()
+    if "cephfs" not in provisioner or "csi.ceph.com" not in provisioner:
         msg = (
             f"storage class {storage.name!r} uses provisioner "
             f"{storage.provisioner!r}, but repository snapshots require CephFS CSI"
@@ -346,6 +367,8 @@ async def prepared_repository_build_source(
     ------
     ValueError
         If `build_name` is empty.
+    OSError
+        If snapshot or restored claim creation fails.
     """
     repo_id = _check_uuid(repo_id)
     build_name = build_name.strip()
@@ -362,21 +385,43 @@ async def prepared_repository_build_source(
             build_name=build_name,
             deadline=deadline,
         )
-        pvc = await PersistentVolumeClaim.create_from_snapshot(
+        snapshot_name = snapshot.name
+        if not snapshot_name:
+            msg = "build source snapshot has no metadata.name"
+            raise OSError(msg)
+        pvc = await PersistentVolumeClaim.create(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=_build_source_claim_name(repo_id=repo_id, build_name=build_name),
-            access_modes=volume.access_modes or ("ReadWriteMany",),
-            storage_class=volume.storage_class_name,
-            storage_request=volume.requested_storage,
-            snapshot_name=snapshot.name,
-            labels=_build_source_labels(repo_id=repo_id, build_name=build_name),
-            annotations={
-                REPOSITORY_BUILD_SOURCE_SNAPSHOT_ANNOTATION: snapshot.name,
-            },
+            intent=PersistentVolumeClaimManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=_build_source_claim_name(repo_id=repo_id, build_name=build_name),
+                access_modes=volume.access_modes or ("ReadWriteMany",),
+                storage_class=volume.storage_class_name,
+                storage_request=volume.requested_storage,
+                labels=_build_source_labels(repo_id=repo_id, build_name=build_name),
+                annotations={
+                    REPOSITORY_BUILD_SOURCE_SNAPSHOT_ANNOTATION: snapshot_name,
+                },
+                data_source={
+                    "apiGroup": "snapshot.storage.k8s.io",
+                    "kind": "VolumeSnapshot",
+                    "name": snapshot_name,
+                },
+            ),
             deadline=deadline,
         )
-        pvc = await pvc.wait_bound(kube, deadline=deadline)
+        bound = await pvc.wait(
+            kube,
+            deadline=deadline,
+            predicate=lambda live: live is None
+            or (live.phase == "Bound" and bool(live.volume_name)),
+        )
+        if bound is None:
+            msg = (
+                f"PVC {BERTRAND_NAMESPACE}/{pvc.name} disappeared while "
+                "waiting to bind"
+            )
+            raise OSError(msg)
+        pvc = bound
         yield pvc.name
     finally:
         await _cleanup_build_source(kube, pvc=pvc, snapshot=snapshot)
@@ -504,15 +549,21 @@ async def _ensure_snapshot_class(
         _assert_snapshot_class(existing, driver=storage.provisioner)
         return existing
     try:
-        return await VolumeSnapshotClass.create(
+        return await VolumeSnapshotClass.create_manifest(
             kube,
-            name=name,
-            driver=storage.provisioner,
-            deletion_policy="Delete",
-            parameters=_snapshot_class_parameters(storage.parameters),
-            labels={
-                BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
-                REPOSITORY_SNAPSHOT_CLASS_LABEL: "v1",
+            manifest={
+                "apiVersion": SNAPSHOT_API_VERSION,
+                "kind": VOLUME_SNAPSHOT_CLASS_KIND,
+                "metadata": {
+                    "name": name,
+                    "labels": {
+                        BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+                        REPOSITORY_SNAPSHOT_CLASS_LABEL: "v1",
+                    },
+                },
+                "driver": storage.provisioner,
+                "deletionPolicy": "Delete",
+                "parameters": _snapshot_class_parameters(storage.parameters),
             },
             deadline=deadline,
         )
@@ -544,17 +595,31 @@ async def _create_snapshot(
         repo_id=repo_id,
         deadline=deadline,
     )
-    await volume.wait_bound(kube, deadline=deadline)
+    bound = await volume.wait(
+        kube,
+        deadline=deadline,
+        predicate=lambda live: live is None
+        or (live.phase == "Bound" and bool(live.volume_name)),
+    )
+    if bound is None:
+        msg = (
+            f"PVC {BERTRAND_NAMESPACE}/{volume.name} disappeared while "
+            "waiting to bind"
+        )
+        raise OSError(msg)
+    volume = bound
     snapshot_class = await ensure_repository_snapshot_support(
         kube,
         deadline=deadline,
     )
-    snapshot = await VolumeSnapshot.create(
+    snapshot = await VolumeSnapshot.create_spec(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=_snapshot_name(repo_id=repo_id, purpose=purpose, build_name=build_name),
-        source_claim=volume.name,
-        snapshot_class=snapshot_class.name,
+        spec={
+            "volumeSnapshotClassName": snapshot_class.name,
+            "source": {"persistentVolumeClaimName": volume.name},
+        },
         labels=_snapshot_labels(
             repo_id=repo_id,
             purpose=purpose,
@@ -565,8 +630,26 @@ async def _create_snapshot(
         },
         deadline=deadline,
     )
-    ready = await snapshot.wait_ready(kube, deadline=deadline)
-    return ready, volume
+    namespace = snapshot.namespace
+    name = snapshot.name
+    if not namespace or not name:
+        msg = "created VolumeSnapshot is missing metadata.name/namespace"
+        raise OSError(msg)
+
+    def ready(live: VolumeSnapshot | None) -> bool:
+        if live is None:
+            msg = f"VolumeSnapshot {namespace}/{name} disappeared before ready"
+            raise OSError(msg)
+        if live.error_message:
+            msg = f"VolumeSnapshot {namespace}/{name} failed: {live.error_message}"
+            raise OSError(msg)
+        return live.ready_to_use
+
+    ready_snapshot = await snapshot.wait(kube, deadline=deadline, predicate=ready)
+    if ready_snapshot is None:
+        msg = f"VolumeSnapshot {namespace}/{name} disappeared before ready"
+        raise OSError(msg)
+    return ready_snapshot, volume
 
 
 async def _repository_volume_claim(

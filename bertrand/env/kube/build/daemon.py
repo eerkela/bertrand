@@ -235,8 +235,28 @@ async def ensure_buildkit_pool(
         ),
         deadline=deadline,
     )
+    target_generation = daemonset.generation
+
+    def fail_disappeared() -> None:
+        msg = "BuildKit DaemonSet disappeared during rollout"
+        raise OSError(msg)
+
     try:
-        await daemonset.wait_rollout(kube, deadline=deadline)
+        rolled_out = await daemonset.wait(
+            kube,
+            deadline=deadline,
+            predicate=lambda live: live is None
+            or (
+                (
+                    target_generation <= 0
+                    or live.observed_generation >= target_generation
+                )
+                and live.updated_number_scheduled >= live.desired_number_scheduled
+                and live.number_available >= max(1, live.desired_number_scheduled)
+            ),
+        )
+        if rolled_out is None:
+            fail_disappeared()
     except (OSError, TimeoutError) as err:
         msg = await _rollout_error(kube, config_hash=config_hash)
         if isinstance(err, TimeoutError):
@@ -284,15 +304,20 @@ async def buildkit_pool_status(
             else ""
         )
         config_current = config_hash is None or installed_hash == config_hash
-        rollout_ready = (
-            inventory.daemonset.rollout_ready(minimum=1)
-            if inventory.daemonset is not None
-            else False
+        rollout_ok = inventory.daemonset is not None and (
+            (inventory.daemonset.generation <= 0)
+            or inventory.daemonset.observed_generation >= inventory.daemonset.generation
+        ) and (
+            inventory.daemonset.updated_number_scheduled
+            >= inventory.daemonset.desired_number_scheduled
+        ) and (
+            inventory.daemonset.number_available
+            >= max(1, inventory.daemonset.desired_number_scheduled)
         )
         failures: list[str] = []
         if inventory.daemonset is None:
             failures.append("BuildKit DaemonSet is missing")
-        if not rollout_ready:
+        if not rollout_ok:
             failures.append("BuildKit DaemonSet rollout is not ready")
         if not config_current:
             failures.append("BuildKit DaemonSet has stale registry config")

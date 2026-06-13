@@ -99,11 +99,20 @@ class CephStorageAgent:
         action_client = STORAGE_ACTION_RESOURCE
         while True:
             try:
+                for action in await action_client.list(
+                    kube,
+                    namespace=BERTRAND_NAMESPACE,
+                    deadline=deadline,
+                ):
+                    if (
+                        action.spec.host_id == self.host_id
+                        and action.status.phase == "Pending"
+                    ):
+                        wake.set()
                 async for event in action_client.watch(
                     kube,
                     namespace=BERTRAND_NAMESPACE,
                     deadline=deadline,
-                    emit_initial=True,
                 ):
                     action = event.object
                     if (

@@ -288,6 +288,8 @@ class CustomObjectResource[T_co]:
         ------
         ValueError
             If this descriptor does not own a CRD.
+        OSError
+            If the CRD disappears before it reports established.
         """
         spec_schema = self._spec_schema()
         if self.singular is None or spec_schema is None:
@@ -309,7 +311,14 @@ class CustomObjectResource[T_co]:
             ),
             deadline=deadline,
         )
-        await crd.wait_established(kube, deadline=deadline)
+        established = await crd.wait(
+            kube,
+            deadline=deadline,
+            predicate=lambda live: live is None or live.is_established,
+        )
+        if established is None:
+            msg = f"CustomResourceDefinition {crd.name!r} disappeared before ready"
+            raise OSError(msg)
 
     async def get(
         self,
@@ -361,10 +370,25 @@ class CustomObjectResource[T_co]:
         deadline: Deadline,
         namespace: str | None = None,
         namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str = "",
+        labels: Mapping[str, str] = EMPTY_MAPPING,
+        field_selector: Collection[str] = (),
     ) -> builtins.list[T_co]:
         """List custom objects with optional namespace and label filtering.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : Deadline
+            Maximum request budget.
+        namespace : str | None, optional
+            Single namespace filter for namespaced resources.
+        namespaces : Collection[str] | None, optional
+            Multiple namespace filters for namespaced resources.
+        labels : Mapping[str, str], optional
+            Label filters to merge with descriptor labels.
+        field_selector : Collection[str], optional
+            Kubernetes field selector fragments to apply to the list request.
 
         Returns
         -------
@@ -382,12 +406,15 @@ class CustomObjectResource[T_co]:
             if selector
             else ""
         )
+        field_selector = ",".join(
+            item.strip() for item in field_selector if item.strip()
+        )
         payloads = await self._list_payloads(
             kube,
             deadline=deadline,
             namespaces=selected,
             label_selector=label_selector,
-            field_selector=field_selector.strip(),
+            field_selector=field_selector,
         )
         out: builtins.list[T_co] = []
         for payload in payloads:
@@ -403,8 +430,7 @@ class CustomObjectResource[T_co]:
         deadline: Deadline,
         labels: Mapping[str, str] = EMPTY_MAPPING,
         namespace: str | None = None,
-        emit_initial: bool = False,
-        field_selector: str = "",
+        field_selector: Collection[str] = (),
     ) -> AsyncIterator[WatchEvent[T_co]]:
         """Watch custom objects and yield typed events.
 
@@ -420,10 +446,9 @@ class CustomObjectResource[T_co]:
         namespace : str | None, optional
             Namespace to watch. Omit for cluster-scoped resources or to watch all
             namespaces for namespaced resources.
-        emit_initial : bool, optional
-            Whether to yield the starting snapshot as synthetic `ADDED` events.
-        field_selector : str, optional
-            Field selector to apply to the snapshot and stream requests.
+        field_selector : Collection[str], optional
+            Kubernetes field selector fragments to apply to the snapshot and stream
+            requests.
 
         Yields
         ------
@@ -439,7 +464,9 @@ class CustomObjectResource[T_co]:
         normalized = _normalized_namespaces(selected)
         namespace = None if normalized is None else next(iter(normalized), None)
         labels = self._merged_labels(labels) or EMPTY_MAPPING
-        field_selector = field_selector.strip()
+        field_selector = ",".join(
+            item.strip() for item in field_selector if item.strip()
+        )
         label_selector = ",".join(f"{key}={value}" for key, value in labels.items())
         context = self._collection_context("watch", namespace)
         api = kube_client.CustomObjectsApi(kube.client)
@@ -456,7 +483,7 @@ class CustomObjectResource[T_co]:
 
         async def snapshot(
             attempt_deadline: Deadline,
-        ) -> tuple[tuple[WatchEvent[T_co], ...], str]:
+        ) -> str:
             payload = await kube.run(
                 lambda request_timeout: list_method(
                     **api_kwargs,
@@ -468,7 +495,9 @@ class CustomObjectResource[T_co]:
                 context=context,
                 missing_ok=False,
             )
-            items = self._list_items(payload)
+            if not isinstance(payload, Mapping):
+                msg = f"malformed Kubernetes {self.kind} list payload"
+                raise OSError(msg)
             payload = cast("Mapping[str, object]", payload)
             metadata = payload.get("metadata", {})
             if not isinstance(metadata, Mapping):
@@ -479,17 +508,7 @@ class CustomObjectResource[T_co]:
             if not resource_version:
                 msg = f"Kubernetes {self.kind} list had no resourceVersion"
                 raise OSError(msg)
-            return (
-                tuple(
-                    WatchEvent(
-                        type="ADDED",
-                        object=self._wrap_payload(item.payload),
-                        resource_version=item.resource_version or resource_version,
-                    )
-                    for item in items
-                ),
-                resource_version,
-            )
+            return resource_version
 
         async def stream(
             resource_version: str,
@@ -514,7 +533,6 @@ class CustomObjectResource[T_co]:
             deadline=deadline,
             snapshot=snapshot,
             stream=stream,
-            emit_initial=emit_initial,
         ):
             yield event
 
@@ -1376,10 +1394,25 @@ class CustomResource(CustomObject):
         deadline: Deadline,
         namespace: str | None = None,
         namespaces: Collection[str] | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str = "",
+        labels: Mapping[str, str] = EMPTY_MAPPING,
+        field_selector: Collection[str] = (),
     ) -> builtins.list[Self]:
         """List custom objects with optional namespace and label filtering.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : Deadline
+            Maximum request budget.
+        namespace : str | None, optional
+            Single namespace filter for namespaced resources.
+        namespaces : Collection[str] | None, optional
+            Multiple namespace filters for namespaced resources.
+        labels : Mapping[str, str], optional
+            Label filters to merge with descriptor labels.
+        field_selector : Collection[str], optional
+            Kubernetes field selector fragments to apply to the list request.
 
         Returns
         -------
@@ -1403,8 +1436,7 @@ class CustomResource(CustomObject):
         deadline: Deadline,
         labels: Mapping[str, str] = EMPTY_MAPPING,
         namespace: str | None = None,
-        emit_initial: bool = False,
-        field_selector: str = "",
+        field_selector: Collection[str] = (),
     ) -> AsyncIterator[WatchEvent[Self]]:
         """Watch custom objects and yield typed events.
 
@@ -1420,10 +1452,9 @@ class CustomResource(CustomObject):
         namespace : str | None, optional
             Namespace to watch. Omit for cluster-scoped resources or to watch all
             namespaces for namespaced resources.
-        emit_initial : bool, optional
-            Whether to yield the starting snapshot as synthetic `ADDED` events.
-        field_selector : str, optional
-            Field selector to apply to the snapshot and stream requests.
+        field_selector : Collection[str], optional
+            Kubernetes field selector fragments to apply to the snapshot and stream
+            requests.
 
         Yields
         ------
@@ -1440,7 +1471,6 @@ class CustomResource(CustomObject):
             deadline=deadline,
             labels=labels,
             namespace=namespace,
-            emit_initial=emit_initial,
             field_selector=field_selector,
         ):
             yield event

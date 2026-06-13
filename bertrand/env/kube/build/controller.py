@@ -408,7 +408,15 @@ async def _maybe_registry_storage_gc(
             name=IMAGE_REPOSITORY_NAME,
             deadline=pass_deadline,
         )
-        if deployment is None or not deployment.rollout_ready(minimum=1):
+        if (
+            deployment is None
+            or (
+                deployment.generation > 0
+                and deployment.observed_generation < deployment.generation
+            )
+            or deployment.updated_replicas < 1
+            or deployment.available_replicas < 1
+        ):
             registry_storage_gc.schedule_after(
                 REGISTRY_STORAGE_GC_NOT_READY_RETRY_SECONDS
             )
@@ -509,6 +517,8 @@ async def ensure_buildkit_build_controller(
     ------
     ValueError
         If the controller image reference is empty.
+    OSError
+        If Kubernetes resources cannot be converged or the rollout fails.
     """
     image = image.strip()
     if not image:
@@ -577,7 +587,20 @@ async def ensure_buildkit_build_controller(
         ),
         deadline=deadline,
     )
-    await deployment.wait_rollout(kube, deadline=deadline)
+    target_generation = deployment.generation
+    rolled_out = await deployment.wait(
+        kube,
+        deadline=deadline,
+        predicate=lambda live: live is None
+        or (
+            (target_generation <= 0 or live.observed_generation >= target_generation)
+            and live.updated_replicas >= 1
+            and live.available_replicas >= 1
+        ),
+    )
+    if rolled_out is None:
+        msg = "BuildKit build controller Deployment disappeared during rollout"
+        raise OSError(msg)
 
 
 async def run_buildkit_build_controller(*, deadline: Deadline = NO_DEADLINE) -> None:

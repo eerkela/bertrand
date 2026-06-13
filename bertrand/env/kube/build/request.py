@@ -39,7 +39,7 @@ from bertrand.env.kube.custom_object import (
     CustomObjectMetadata,
     CustomObjectResource,
 )
-from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.pod import POD_ACTIVE_PHASES, Pod
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -728,7 +728,7 @@ class _ProjectImageGcInventory:
     def live_image_refs(self) -> set[str]:
         refs: set[str] = set()
         for pod in self.pods:
-            if pod.is_active:
+            if not pod.is_terminating and pod.phase in POD_ACTIVE_PHASES:
                 refs.update(pod.image_refs)
         return refs
 

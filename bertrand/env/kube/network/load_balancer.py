@@ -414,9 +414,9 @@ async def metallb_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]
     ready = (
         namespace is not None
         and controller is not None
-        and controller.has_available_replicas()
+        and controller.available_replicas >= 1
         and speaker is not None
-        and speaker.has_available_pods()
+        and speaker.number_available >= 1
         and all(crds.values())
     )
     messages: list[str] = []
@@ -424,9 +424,9 @@ async def metallb_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]
         messages.append("MetalLB namespace is missing")
     elif not managed:
         messages.append("MetalLB namespace exists but is not managed by Bertrand")
-    if controller is None or not controller.has_available_replicas():
+    if controller is None or controller.available_replicas < 1:
         messages.append("MetalLB controller Deployment is not Available")
-    if speaker is None or not speaker.has_available_pods():
+    if speaker is None or speaker.number_available < 1:
         messages.append("MetalLB speaker DaemonSet has no available Pods")
     missing = [name for name, established in crds.items() if not established]
     if missing:
@@ -437,9 +437,9 @@ async def metallb_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]
         "managed": managed,
         "namespace": METALLB_NAMESPACE,
         "controller_ready": (
-            controller is not None and controller.has_available_replicas()
+            controller is not None and controller.available_replicas >= 1
         ),
-        "speaker_ready": speaker is not None and speaker.has_available_pods(),
+        "speaker_ready": speaker is not None and speaker.number_available >= 1,
         "crds": crds,
         "pools": [_pool_status(pool) for pool in pools],
         "l2_advertisements": [_object_summary(item) for item in l2],
@@ -551,7 +551,7 @@ async def _wait_controller_available(kube: Kube, *, deadline: Deadline) -> Deplo
         if deployment is None:
             msg = "MetalLB controller Deployment is not created yet"
             raise TimeoutError(msg)
-        if not deployment.has_available_replicas():
+        if deployment.available_replicas < 1:
             msg = "MetalLB controller Deployment is not Available yet"
             raise TimeoutError(msg)
         return deployment
@@ -578,7 +578,7 @@ async def _wait_speaker_available(kube: Kube, *, deadline: Deadline) -> DaemonSe
         if daemonset is None:
             msg = "MetalLB speaker DaemonSet is not created yet"
             raise TimeoutError(msg)
-        if not daemonset.has_available_pods():
+        if daemonset.number_available < 1:
             msg = "MetalLB speaker DaemonSet has no available Pods yet"
             raise TimeoutError(msg)
         return daemonset

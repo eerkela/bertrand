@@ -41,7 +41,7 @@ from bertrand.env.kube.capability.device import (
 )
 from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
 from bertrand.env.kube.configmap import ConfigMap, ConfigMapManifest
-from bertrand.env.kube.job import Job
+from bertrand.env.kube.job import Job, JobManifest
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -290,83 +290,87 @@ async def _publish_target(
     try:
         job = await Job.create(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=job_name,
-            labels=labels,
-            pod_template=PodTemplateSpec(
-                containers=[
-                    ContainerSpec(
-                        name="buildctl",
-                        image=BUILDKIT_IMAGE,
-                        image_pull_policy="IfNotPresent",
-                        command=["/bin/sh", "-ec"],
-                        args=[
-                            _build_job_script(required_dra_claims=len(dra_claims)),
-                            "buildctl",
-                            *buildctl_args(
-                                spec,
-                                image=image,
-                                context_path=BUILD_JOB_CONTEXT_MOUNT,
-                                dockerfile_path=BUILD_JOB_DOCKERFILE_MOUNT,
-                                secret_paths=secret_paths,
-                                ssh_paths=ssh_paths,
-                                metadata_file=BUILD_JOB_METADATA_FILE,
+            intent=JobManifest(
+                namespace=BERTRAND_NAMESPACE,
+                name=job_name,
+                labels=labels,
+                pod_template=PodTemplateSpec(
+                    containers=[
+                        ContainerSpec(
+                            name="buildctl",
+                            image=BUILDKIT_IMAGE,
+                            image_pull_policy="IfNotPresent",
+                            command=["/bin/sh", "-ec"],
+                            args=[
+                                _build_job_script(
+                                    required_dra_claims=len(dra_claims)
+                                ),
+                                "buildctl",
+                                *buildctl_args(
+                                    spec,
+                                    image=image,
+                                    context_path=BUILD_JOB_CONTEXT_MOUNT,
+                                    dockerfile_path=BUILD_JOB_DOCKERFILE_MOUNT,
+                                    secret_paths=secret_paths,
+                                    ssh_paths=ssh_paths,
+                                    metadata_file=BUILD_JOB_METADATA_FILE,
+                                ),
+                            ],
+                            volume_mounts=[
+                                *source_mounts,
+                                {
+                                    "name": BUILD_JOB_METADATA_VOLUME,
+                                    "mountPath": BUILD_JOB_METADATA_MOUNT,
+                                },
+                                *capability_mounts,
+                                {
+                                    "name": BUILDKIT_SOCKET_VOLUME,
+                                    "mountPath": BUILDKIT_SOCKET_DIR,
+                                },
+                            ],
+                            resources=(
+                                {
+                                    "claims": [
+                                        {
+                                            "name": resource_claim_name(
+                                                owner=job_name,
+                                                capability_id=capability_id,
+                                                container_name="buildctl",
+                                            )
+                                        }
+                                        for capability_id in dra_claims
+                                    ]
+                                }
+                                if dra_claims
+                                else None
                             ),
-                        ],
-                        volume_mounts=[
-                            *source_mounts,
-                            {
-                                "name": BUILD_JOB_METADATA_VOLUME,
-                                "mountPath": BUILD_JOB_METADATA_MOUNT,
-                            },
-                            *capability_mounts,
-                            {
-                                "name": BUILDKIT_SOCKET_VOLUME,
-                                "mountPath": BUILDKIT_SOCKET_DIR,
-                            },
-                        ],
-                        resources=(
-                            {
-                                "claims": [
-                                    {
-                                        "name": resource_claim_name(
-                                            owner=job_name,
-                                            capability_id=capability_id,
-                                            container_name="buildctl",
-                                        )
-                                    }
-                                    for capability_id in dra_claims
-                                ]
-                            }
-                            if dra_claims
-                            else None
+                        )
+                    ],
+                    volumes=[
+                        *source_volumes,
+                        VolumeSpec.empty_dir(BUILD_JOB_METADATA_VOLUME),
+                        *capability_volumes,
+                        VolumeSpec.host_path(
+                            BUILDKIT_SOCKET_VOLUME,
+                            path=BUILDKIT_SOCKET_DIR,
+                            host_path_type="Directory",
                         ),
-                    )
-                ],
-                volumes=[
-                    *source_volumes,
-                    VolumeSpec.empty_dir(BUILD_JOB_METADATA_VOLUME),
-                    *capability_volumes,
-                    VolumeSpec.host_path(
-                        BUILDKIT_SOCKET_VOLUME,
-                        path=BUILDKIT_SOCKET_DIR,
-                        host_path_type="Directory",
+                    ],
+                    resource_claims=tuple(
+                        pod_resource_claim(
+                            owner=job_name,
+                            capability_id=capability_id,
+                            container_name="buildctl",
+                        )
+                        for capability_id in dra_claims
                     ),
-                ],
-                resource_claims=tuple(
-                    pod_resource_claim(
-                        owner=job_name,
-                        capability_id=capability_id,
-                        container_name="buildctl",
-                    )
-                    for capability_id in dra_claims
+                    node_selector=_platform_node_selector(platform),
                 ),
-                node_selector=_platform_node_selector(platform),
+                ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
             ),
-            ttl_seconds_after_finished=BUILD_JOB_TTL_SECONDS,
             deadline=deadline,
         )
-        logs = await job.run_observed(
+        logs = await job.run(
             kube,
             deadline=deadline,
             failure_context=f"BuildKit image build for {image!r} failed",

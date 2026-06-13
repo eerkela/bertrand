@@ -16,7 +16,7 @@ from .api.resource import (
     KubeResource,
     cluster_resource,
 )
-from .pod import Pod
+from .pod import POD_ACTIVE_PHASES, Pod
 
 if TYPE_CHECKING:
     import builtins
@@ -131,7 +131,7 @@ class Node(
         hints.discard("")
 
         for node in nodes:
-            if node.matches_identity(hints):
+            if hints & node.identity_values:
                 if not node.name:
                     msg = "matched local Kubernetes node is missing metadata.name"
                     raise OSError(msg)
@@ -222,22 +222,6 @@ class Node(
         values = {self.name, self.hostname, *self.addresses}
         values.discard("")
         return frozenset(values)
-
-    def matches_identity(self, hints: Collection[str]) -> bool:
-        """Check whether this node matches any host identity hint.
-
-        Parameters
-        ----------
-        hints : Collection[str]
-            Candidate host identity strings such as hostnames or IP addresses.
-
-        Returns
-        -------
-        bool
-            `True` when any non-empty hint matches this node's identity values.
-        """
-        normalized = {hint.strip() for hint in hints if hint and hint.strip()}
-        return bool(normalized & self.identity_values)
 
     @property
     def internal_ips(self) -> tuple[str, ...]:
@@ -671,56 +655,6 @@ class Node(
             ),
         )
 
-    async def pods(
-        self,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        labels: Mapping[str, str] = EMPTY_MAPPING,
-        namespaces: Collection[str] | None = None,
-    ) -> builtins.list[Pod]:
-        """List pods scheduled onto this node across all namespaces.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-        labels : Mapping[str, str], optional
-            Optional pod label selector filters.
-        namespaces : Collection[str] | None, optional
-            Optional namespace filter.  If omitted, query all namespaces.  If
-            provided, names are normalized (trimmed), deduplicated, and queried
-            individually.  An explicitly empty filter resolves to no results.
-
-        Returns
-        -------
-        builtins.list[Pod]
-            Pod wrappers for all matching pods assigned to this node.
-
-        Raises
-        ------
-        OSError
-            If this node has no name, or if the API payload is malformed.
-
-        Notes
-        -----
-        Node-scoped pod selection is intentionally owned by `Node.pods()` so
-        `Pod.list()` can remain namespace/label focused.
-        """
-        node_name = self.name
-        if not node_name:
-            msg = "cannot query pods for Kubernetes node with missing name"
-            raise OSError(msg)
-        return await Pod.list(
-            kube,
-            deadline=deadline,
-            namespaces=namespaces,
-            labels=labels,
-            field_selector=f"spec.nodeName={node_name}",
-        )
-
     async def drain(
         self,
         kube: Kube,
@@ -753,7 +687,7 @@ class Node(
         require explicit force for potentially disruptive cases.
         """
         await self.cordon(kube=kube, deadline=deadline)
-        pods = await self.pods(kube=kube, deadline=deadline)
+        pods = await _node_pods(self, kube=kube, deadline=deadline)
         candidates, blocked = _classify_node_drain_pods(pods, force=force)
         if blocked:
             raise OSError(_node_drain_blocked_message(self, blocked))
@@ -773,7 +707,13 @@ def _classify_node_drain_pods(
     for pod in pods:
         namespace = pod.namespace
         name = pod.name
-        if not namespace or not name or not pod.is_active or pod.is_mirror:
+        if (
+            not namespace
+            or not name
+            or pod.is_terminating
+            or pod.phase not in POD_ACTIVE_PHASES
+            or pod.is_mirror
+        ):
             continue
         if pod.is_daemonset_controlled or (
             namespace in NODE_SYSTEM_NAMESPACES and not force
@@ -856,9 +796,30 @@ async def _wait_node_drain_convergence(
             raise TimeoutError(msg)
         live = {
             (pod.namespace, pod.name)
-            for pod in await node.pods(kube=kube, deadline=deadline)
+            for pod in await _node_pods(node, kube=kube, deadline=deadline)
             if pod.namespace and pod.name
         }
         pending.intersection_update(live)
         if pending:
             await deadline.sleep(NODE_DRAIN_POLL_INTERVAL_SECONDS)
+
+
+async def _node_pods(
+    node: Node,
+    kube: Kube,
+    *,
+    deadline: Deadline,
+    labels: Mapping[str, str] = EMPTY_MAPPING,
+    namespaces: Collection[str] | None = None,
+) -> builtins.list[Pod]:
+    node_name = node.name
+    if not node_name:
+        msg = "cannot query pods for Kubernetes node with missing name"
+        raise OSError(msg)
+    return await Pod.list(
+        kube,
+        deadline=deadline,
+        namespaces=namespaces,
+        labels=labels,
+        field_selector=(f"spec.nodeName={node_name}",),
+    )

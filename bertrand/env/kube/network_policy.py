@@ -155,18 +155,3 @@ class NetworkPolicy(
             for item in spec.policy_types or ()
             if item in _POLICY_TYPES
         )
-
-    def selects(self, selector: Mapping[str, str]) -> bool:
-        """Return whether this NetworkPolicy selects exactly the expected Pods.
-
-        Parameters
-        ----------
-        selector : Mapping[str, str]
-            Expected pod selector labels.
-
-        Returns
-        -------
-        bool
-            Whether the NetworkPolicy pod selector exactly matches `selector`.
-        """
-        return dict(self.pod_selector) == dict(selector)

@@ -88,7 +88,24 @@ async def ensure_ceph_osd_csi_driver(
     service_account: str,
     deadline: Deadline,
 ) -> None:
-    """Converge the Bertrand OSD CSI driver and sidecar workloads."""
+    """Converge the Bertrand OSD CSI driver and sidecar workloads.
+
+    Parameters
+    ----------
+    kube : Kube
+        Active Kubernetes API context.
+    image : str
+        Bertrand control-plane image used by CSI workloads.
+    service_account : str
+        ServiceAccount name used by CSI sidecars.
+    deadline : Deadline
+        Maximum convergence budget in seconds.
+
+    Raises
+    ------
+    OSError
+        If Kubernetes resources cannot be converged or either rollout disappears.
+    """
     driver_manifest = {
         "apiVersion": "storage.k8s.io/v1",
         "kind": "CSIDriver",
@@ -304,10 +321,42 @@ async def ensure_ceph_osd_csi_driver(
         ),
         deadline=deadline,
     )
-    await asyncio.gather(
-        deployment.wait_rollout(kube, deadline=deadline),
-        daemonset.wait_rollout(kube, deadline=deadline),
+    deployment_generation = deployment.generation
+    daemonset_generation = daemonset.generation
+    live_deployment, live_daemonset = await asyncio.gather(
+        deployment.wait(
+            kube,
+            deadline=deadline,
+            predicate=lambda live: live is None
+            or (
+                (
+                    deployment_generation <= 0
+                    or live.observed_generation >= deployment_generation
+                )
+                and live.updated_replicas >= 1
+                and live.available_replicas >= 1
+            ),
+        ),
+        daemonset.wait(
+            kube,
+            deadline=deadline,
+            predicate=lambda live: live is None
+            or (
+                (
+                    daemonset_generation <= 0
+                    or live.observed_generation >= daemonset_generation
+                )
+                and live.updated_number_scheduled >= live.desired_number_scheduled
+                and live.number_available >= max(1, live.desired_number_scheduled)
+            ),
+        ),
     )
+    if live_deployment is None:
+        msg = "Ceph CSI Deployment disappeared during rollout"
+        raise OSError(msg)
+    if live_daemonset is None:
+        msg = "Ceph CSI DaemonSet disappeared during rollout"
+        raise OSError(msg)
 
 
 def _capacity_request(capacity_range: _csi_pb2.CapacityRange) -> int:

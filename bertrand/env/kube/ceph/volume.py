@@ -25,6 +25,7 @@ from bertrand.env.git import (
     BERTRAND_NAMESPACE,
     REPO_ID_LABEL,
     Deadline,
+    until,
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.request import (
@@ -41,7 +42,7 @@ from bertrand.env.kube.custom_object import (
 )
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.job import Job
-from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.pod import POD_ACTIVE_PHASES, POD_TERMINAL_PHASES, Pod
 from bertrand.env.kube.snapshot import VolumeSnapshot
 from bertrand.env.kube.volume import (
     PersistentVolume,
@@ -325,13 +326,29 @@ async def ensure_repository_volume_claim(
         msg = "size request cannot be empty"
         raise ValueError(msg)
     claim_name = repo_volume_claim_name(repo_id)
-    storage = await StorageClass.select(
-        kube=kube,
-        deadline=deadline,
-        preferences=CEPHFS_STORAGE_CLASS_PREFERENCES,
-        require_expansion=True,
+    storage_preferences = tuple(
+        name.strip()
+        for name in CEPHFS_STORAGE_CLASS_PREFERENCES
+        if name and name.strip()
     )
-    if not storage.is_cephfs:
+    if not storage_preferences:
+        msg = "storage class preferences cannot be empty"
+        raise ValueError(msg)
+    storage = None
+    for name in storage_preferences:
+        storage = await StorageClass.get(kube, deadline=deadline, name=name)
+        if storage is None:
+            continue
+        if not storage.allow_volume_expansion:
+            msg = f"storage class {name!r} must set allowVolumeExpansion=true"
+            raise OSError(msg)
+        break
+    if storage is None:
+        preferred = ", ".join(repr(name) for name in storage_preferences)
+        msg = f"no preferred StorageClass is available; expected one of {preferred}"
+        raise OSError(msg)
+    provisioner = storage.provisioner.lower()
+    if "cephfs" not in provisioner or "csi.ceph.com" not in provisioner:
         msg = (
             f"storage class {storage.name!r} uses provisioner "
             f"{storage.provisioner!r}, but Bertrand repository volumes "
@@ -462,7 +479,8 @@ async def delete_repository_volume_claim(
         active = {
             claim_name
             for pod in pods
-            if pod.is_active
+            if not pod.is_terminating
+            and pod.phase in POD_ACTIVE_PHASES
             for claim_name in pod.persistent_volume_claim_names
         }
         active.discard("")
@@ -506,6 +524,8 @@ async def resolve_repository_volume_ceph_path(
     ------
     OSError
         If PVC/PV metadata cannot identify a valid CephFS path.
+    TimeoutError
+        If the bound PersistentVolume does not appear before `deadline`.
     """
     name = pvc.name
     namespace = pvc.namespace
@@ -517,13 +537,38 @@ async def resolve_repository_volume_ceph_path(
             f"cannot resolve Ceph path for PVC {name!r} with missing metadata.namespace"
         )
         raise OSError(msg)
-    pvc = await pvc.wait_bound(kube=kube, deadline=deadline)
-    volume_name = pvc.volume_name
-    volume = await PersistentVolume.wait_present(
-        kube=kube,
+    bound = await pvc.wait(
+        kube,
         deadline=deadline,
-        name=volume_name,
+        predicate=lambda live: live is None
+        or (live.phase == "Bound" and bool(live.volume_name)),
     )
+    if bound is None:
+        msg = f"PVC {namespace}/{name} disappeared while waiting to bind"
+        raise OSError(msg)
+    pvc = bound
+    volume_name = pvc.volume_name
+    if not volume_name:
+        msg = f"PVC {namespace}/{name} is bound without a PersistentVolume name"
+        raise OSError(msg)
+
+    async def present(attempt_deadline: Deadline) -> PersistentVolume:
+        live = await PersistentVolume.get(
+            kube,
+            deadline=attempt_deadline,
+            name=volume_name,
+        )
+        if live is not None:
+            return live
+        msg = f"PersistentVolume {volume_name!r} is not present yet"
+        raise TimeoutError(msg)
+
+    try:
+        volume = await until(present, deadline=deadline, delay=0.5)
+    except TimeoutError as err:
+        msg = f"timed out waiting for PersistentVolume {volume_name!r}"
+        raise TimeoutError(msg) from err
+
     driver = volume.csi_driver
     if not driver:
         msg = (
@@ -996,7 +1041,7 @@ class _RepositoryVolumeGcInventory:
             pod
             for pod in self.pods
             if (
-                not pod.is_terminal
+                pod.phase not in POD_TERMINAL_PHASES
                 and record.claim_name in pod.persistent_volume_claim_names
             )
         ]

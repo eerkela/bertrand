@@ -311,7 +311,23 @@ async def _ensure_workloads(kube: Kube, *, image: str, deadline: Deadline) -> No
         ),
         deadline=deadline,
     )
-    await controller.wait_rollout(kube, deadline=deadline)
+    controller_generation = controller.generation
+    live_controller = await controller.wait(
+        kube,
+        deadline=deadline,
+        predicate=lambda live: live is None
+        or (
+            (
+                controller_generation <= 0
+                or live.observed_generation >= controller_generation
+            )
+            and live.updated_replicas >= 1
+            and live.available_replicas >= 1
+        ),
+    )
+    if live_controller is None:
+        msg = "Ceph storage controller Deployment disappeared during rollout"
+        raise OSError(msg)
 
     agent = await DaemonSet.upsert(
         kube,
@@ -337,7 +353,20 @@ async def _ensure_workloads(kube: Kube, *, image: str, deadline: Deadline) -> No
         ),
         deadline=deadline,
     )
-    await agent.wait_rollout(kube, deadline=deadline)
+    agent_generation = agent.generation
+    live_agent = await agent.wait(
+        kube,
+        deadline=deadline,
+        predicate=lambda live: live is None
+        or (
+            (agent_generation <= 0 or live.observed_generation >= agent_generation)
+            and live.updated_number_scheduled >= live.desired_number_scheduled
+            and live.number_available >= max(1, live.desired_number_scheduled)
+        ),
+    )
+    if live_agent is None:
+        msg = "Ceph storage agent DaemonSet disappeared during rollout"
+        raise OSError(msg)
 
 
 async def ensure_ceph_storage_controller(

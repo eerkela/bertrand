@@ -25,7 +25,7 @@ from bertrand.env.kube.build.repository import (
     image_repository_service_ref,
 )
 from bertrand.env.kube.capability.base import resolve_capability_secret
-from bertrand.env.kube.job import Job
+from bertrand.env.kube.job import Job, JobManifest
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -148,25 +148,27 @@ async def _create_manifest_job(
     )
     return await Job.create(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=_manifest_job_name(),
-        labels={
-            BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
-            MANIFEST_JOB_LABEL: MANIFEST_JOB_LABEL_VALUE,
-        },
-        pod_template=PodTemplateSpec(
-            containers=[
-                ContainerSpec(
-                    name="regctl",
-                    image=MANIFEST_JOB_IMAGE,
-                    image_pull_policy="IfNotPresent",
-                    command=["/bin/sh", "-ec"],
-                    args=[script],
-                    env=_manifest_env(auth_secret),
-                )
-            ],
+        intent=JobManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=_manifest_job_name(),
+            labels={
+                BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+                MANIFEST_JOB_LABEL: MANIFEST_JOB_LABEL_VALUE,
+            },
+            pod_template=PodTemplateSpec(
+                containers=[
+                    ContainerSpec(
+                        name="regctl",
+                        image=MANIFEST_JOB_IMAGE,
+                        image_pull_policy="IfNotPresent",
+                        command=["/bin/sh", "-ec"],
+                        args=[script],
+                        env=_manifest_env(auth_secret),
+                    )
+                ],
+            ),
+            ttl_seconds_after_finished=MANIFEST_JOB_TTL_SECONDS,
         ),
-        ttl_seconds_after_finished=MANIFEST_JOB_TTL_SECONDS,
         deadline=deadline,
     )
 
@@ -179,7 +181,7 @@ async def _run_manifest_job(
     deadline: Deadline,
     job_observer: Callable[[Job], Awaitable[None]] | None,
 ) -> str:
-    return await job.run_observed(
+    return await job.run(
         kube,
         deadline=deadline,
         failure_context=f"image manifest assembly failed for {image!r}",

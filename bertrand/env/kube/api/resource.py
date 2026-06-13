@@ -36,7 +36,7 @@ class _KubeManifest(Protocol):
     def name(self) -> str: ...
     @property
     def namespace(self) -> str | None: ...
-    def manifest(self) -> Mapping[str, object]: ...
+    def manifest(self) -> Mapping[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -85,11 +85,11 @@ class WatchEvent[T]:
 _WATCH_END = object()
 
 
-def _watch_mapping(value: object, *, context: str, label: str) -> Mapping[str, object]:
+def _watch_mapping(value: Any, *, context: str, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         msg = f"{context} watch {label} is not a mapping"
         raise OSError(msg)
-    out: dict[str, object] = {}
+    out: dict[str, Any] = {}
     for key, item in value.items():
         if not isinstance(key, str):
             msg = f"{context} watch {label} has non-string key {key!r}"
@@ -98,7 +98,7 @@ def _watch_mapping(value: object, *, context: str, label: str) -> Mapping[str, o
     return out
 
 
-def _parse_watch_event(payload: object, *, context: str) -> WatchEvent[object]:
+def _parse_watch_event(payload: Any, *, context: str) -> WatchEvent[Any]:
     payload = _watch_mapping(payload, context=context, label="event payload")
     event_type = payload.get("type")
     if event_type not in WatchEvent.Types:
@@ -158,9 +158,8 @@ def _parse_watch_event(payload: object, *, context: str) -> WatchEvent[object]:
 async def watch_collection[T](
     *,
     deadline: Deadline,
-    snapshot: Callable[[Deadline], Awaitable[tuple[tuple[WatchEvent[T], ...], str]]],
+    snapshot: Callable[[Deadline], Awaitable[str]],
     stream: Callable[[str, Deadline], AsyncIterator[WatchEvent[T]]],
-    emit_initial: bool,
 ) -> AsyncIterator[WatchEvent[T]]:
     """Watch a Kubernetes collection from snapshot through resumable streams.
 
@@ -168,20 +167,16 @@ async def watch_collection[T](
     ----------
     deadline : Deadline
         Maximum watch budget shared by snapshots and stream attempts.
-    snapshot : Callable[[Deadline], Awaitable[tuple[tuple[WatchEvent[T], ...], str]]]
-        Coroutine that lists the collection and returns initial events plus the
-        collection `resourceVersion`.
+    snapshot : Callable[[Deadline], Awaitable[str]]
+        Coroutine that lists the collection and returns its `resourceVersion`.
     stream : Callable[[str, Deadline], AsyncIterator[WatchEvent[T]]]
         Async iterator factory that streams events from a snapshot
         `resourceVersion`.
-    emit_initial : bool
-        Whether to yield the first snapshot as synthetic `ADDED` events before
-        streaming.
 
     Yields
     ------
     WatchEvent[T]
-        Snapshot and stream events from the watched collection.
+        Stream events from the watched collection.
 
     Raises
     ------
@@ -193,15 +188,10 @@ async def watch_collection[T](
     `WatchExpiredError` from `stream` is handled by re-snapshotting the collection.
     Other exceptions from `snapshot` or `stream` propagate to the caller.
     """
-    emit_snapshot = emit_initial
     while True:
         if deadline.remaining <= 0:
             return
-        events, resource_version = await snapshot(deadline)
-        if emit_snapshot:
-            for event in events:
-                yield event
-            emit_snapshot = False
+        resource_version = await snapshot(deadline)
         if deadline.remaining <= 0:
             return
         try:
@@ -218,20 +208,20 @@ async def watch_collection[T](
 
 
 async def watch_stream(
-    fn: Callable[..., object],
+    fn: Callable[..., Any],
     *,
     deadline: Deadline,
     context: str,
     resource_version: str = "",
     label_selector: str = "",
     field_selector: str = "",
-    api_kwargs: Mapping[str, object] | None = None,
-) -> AsyncIterator[WatchEvent[object]]:
+    api_kwargs: Mapping[str, Any] | None = None,
+) -> AsyncIterator[WatchEvent[Any]]:
     """Stream raw Kubernetes watch events from a list-style API method.
 
     Parameters
     ----------
-    fn : Callable[..., object]
+    fn : Callable[..., Any]
         Kubernetes list-style API method to stream with `Watch().stream()`.
     deadline : Deadline
         Maximum stream budget.
@@ -243,12 +233,12 @@ async def watch_stream(
         Kubernetes label selector to pass to the stream request.
     field_selector : str, optional
         Kubernetes field selector to pass to the stream request.
-    api_kwargs : Mapping[str, object] | None, optional
+    api_kwargs : Mapping[str, Any] | None, optional
         Extra keyword arguments required by the target API method.
 
     Yields
     ------
-    WatchEvent[object]
+    WatchEvent[Any]
         Parsed Kubernetes watch events with untyped payload objects.
 
     Raises
@@ -537,7 +527,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         namespace: str | None = None,
         namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] = EMPTY_MAPPING,
-        field_selector: str = "",
+        field_selector: Collection[str] = (),
     ) -> builtins.list[Self]:
         """List Kubernetes resources with optional selector filters.
 
@@ -553,8 +543,8 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             Multiple namespace filters for namespaced resources.
         labels : Mapping[str, str], optional
             Exact-match labels to convert into a Kubernetes label selector.
-        field_selector : str, optional
-            Raw Kubernetes field selector.
+        field_selector : Collection[str], optional
+            Kubernetes field selector fragments to apply to the list request.
 
         Returns
         -------
@@ -568,7 +558,9 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         """
         config = _config(cls)
         namespace = namespace.strip() if namespace is not None else ""
-        field_selector = field_selector.strip()
+        field_selector = ",".join(
+            item.strip() for item in field_selector if item.strip()
+        )
         label_selector = ",".join(f"{key}={value}" for key, value in labels.items())
         api = config.api(kube.client)
         if not config.namespaced:
@@ -639,6 +631,89 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         return items
 
     @classmethod
+    async def create(
+        cls,
+        kube: Kube,
+        *,
+        intent: ManifestT,
+        deadline: Deadline,
+    ) -> Self:
+        """Create one Kubernetes resource from desired state.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        intent : ManifestT
+            Desired resource state to render and create.
+        deadline : Deadline
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        KubeResource
+            Wrapped created resource.
+
+        Raises
+        ------
+        NotImplementedError
+            If this resource does not configure a create method.
+        OSError
+            If identity is incomplete, Kubernetes rejects the request, or Kubernetes
+            returns malformed data.
+        ValueError
+            If namespace is supplied for a cluster-scoped resource.
+        """
+        config = _config(cls)
+        create = config.create_method
+        if create is None:
+            msg = f"{config.kind} does not implement create"
+            raise NotImplementedError(msg)
+        name = intent.name.strip()
+        namespace = intent.namespace
+        namespace = namespace.strip() if namespace is not None else ""
+        if not name:
+            msg = f"{config.kind} create requires a non-empty name"
+            raise OSError(msg)
+        if config.namespaced:
+            if not namespace:
+                msg = f"{config.kind} create requires a non-empty namespace"
+                raise OSError(msg)
+            label = f"{namespace}/{name}"
+        else:
+            if namespace:
+                msg = f"{config.kind} is cluster-scoped; cannot create by namespace"
+                raise ValueError(msg)
+            label = name
+
+        api = config.api(kube.client)
+        body = intent.manifest()
+        if config.namespaced:
+            payload = await kube.run(
+                lambda request_timeout: create(
+                    api,
+                    namespace=namespace,
+                    body=body,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create {config.kind} {label}",
+                missing_ok=False,
+            )
+        else:
+            payload = await kube.run(
+                lambda request_timeout: create(
+                    api,
+                    body=body,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create {config.kind} {label}",
+                missing_ok=False,
+            )
+        return _validate_payload(cls, config, payload)
+
+    @classmethod
     async def upsert(
         cls,
         kube: Kube,
@@ -673,9 +748,8 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             If namespace is supplied for a cluster-scoped resource.
         """
         config = _config(cls)
-        create = config.create_method
         patch = config.patch_method
-        if create is None or patch is None:
+        if config.create_method is None or patch is None:
             msg = f"{config.kind} does not implement upsert"
             raise NotImplementedError(msg)
         name = intent.name.strip()
@@ -695,35 +769,13 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                 raise ValueError(msg)
             label = name
 
-        api = config.api(kube.client)
-        body = intent.manifest()
         try:
-            if config.namespaced:
-                payload = await kube.run(
-                    lambda request_timeout: create(
-                        api,
-                        namespace=namespace,
-                        body=body,
-                        _request_timeout=request_timeout,
-                    ),
-                    deadline=deadline,
-                    context=f"failed to create {config.kind} {label}",
-                    missing_ok=False,
-                )
-            else:
-                payload = await kube.run(
-                    lambda request_timeout: create(
-                        api,
-                        body=body,
-                        _request_timeout=request_timeout,
-                    ),
-                    deadline=deadline,
-                    context=f"failed to create {config.kind} {label}",
-                    missing_ok=False,
-                )
+            return await cls.create(kube, intent=intent, deadline=deadline)
         except OSError as err:
             if not isinstance(err, Kube.APIError) or err.status != 409:
                 raise
+            api = config.api(kube.client)
+            body = intent.manifest()
             if config.namespaced:
                 payload = await kube.run(
                     lambda request_timeout: patch(
@@ -963,8 +1015,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         deadline: Deadline,
         namespace: str | None = None,
         labels: Mapping[str, str] = EMPTY_MAPPING,
-        field_selector: str = "",
-        emit_initial: bool = False,
+        field_selector: Collection[str] = (),
     ) -> AsyncIterator[WatchEvent[Self]]:
         """Watch Kubernetes resources with optional selector filters.
 
@@ -979,16 +1030,14 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             namespaces for namespaced resources.
         labels : Mapping[str, str], optional
             Label filters to apply to the snapshot and stream requests.
-        field_selector : str, optional
-            Field selector to apply to the snapshot and stream requests.
-        emit_initial : bool, optional
-            Whether to yield the starting snapshot as synthetic `ADDED` events.
+        field_selector : Collection[str], optional
+            Kubernetes field selector fragments to apply to the snapshot and stream
+            requests.
 
         Yields
         ------
         WatchEvent[KubeResource]
-            Typed resource events. When `emit_initial` is true, the starting list
-            snapshot is emitted first as `ADDED` events.
+            Typed resource events.
 
         Raises
         ------
@@ -1004,10 +1053,12 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         """
         config = _config(cls)
         namespace = namespace.strip() if namespace is not None else ""
-        field_selector = field_selector.strip()
+        field_selector = ",".join(
+            item.strip() for item in field_selector if item.strip()
+        )
         label_selector = ",".join(f"{key}={value}" for key, value in labels.items())
         api = config.api(kube.client)
-        api_kwargs: dict[str, object] = {}
+        api_kwargs: dict[str, Any] = {}
 
         if config.namespaced:
             if namespace:
@@ -1033,7 +1084,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
 
         async def snapshot(
             attempt_deadline: Deadline,
-        ) -> tuple[tuple[WatchEvent[Self], ...], str]:
+        ) -> str:
             payload = await kube.run(
                 lambda request_timeout: list_method(
                     api,
@@ -1055,27 +1106,14 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             if not resource_version:
                 msg = f"Kubernetes {config.kind} list had no resourceVersion"
                 raise OSError(msg)
-            return (
-                tuple(
-                    WatchEvent(
-                        type="ADDED",
-                        object=item,
-                        resource_version=item.resource_version or resource_version,
-                    )
-                    for item in _validate_list(cls, config, payload)
-                ),
-                resource_version,
-            )
+            return resource_version
 
         async def stream(
             resource_version: str,
             attempt_deadline: Deadline,
         ) -> AsyncIterator[WatchEvent[Self]]:
-            def watch_payload(**kwargs: object) -> object:
-                return list_method(api, **api_kwargs, **kwargs)
-
             async for event in watch_stream(
-                watch_payload,
+                lambda **kwargs: list_method(api, **api_kwargs, **kwargs),
                 deadline=attempt_deadline,
                 context=context,
                 resource_version=resource_version,
@@ -1092,7 +1130,6 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             deadline=deadline,
             snapshot=snapshot,
             stream=stream,
-            emit_initial=emit_initial,
         ):
             yield event
 

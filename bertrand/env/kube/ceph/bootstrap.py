@@ -231,7 +231,7 @@ async def _wait_deployment(
         if deployment is None:
             msg = f"Deployment {namespace}/{name} is not created yet"
             raise TimeoutError(msg)
-        if not deployment.has_available_replicas():
+        if deployment.available_replicas < 1:
             msg = f"Deployment {namespace}/{name} is not Available yet"
             raise TimeoutError(msg)
         return deployment

@@ -243,6 +243,9 @@ async def ensure_dra_backend(
     ------
     ValueError
         If `image` is empty.
+    OSError
+        If Kubernetes resources cannot be converged or the DaemonSet disappears
+        during rollout.
     """
     image = image.strip()
     if not image:
@@ -327,7 +330,20 @@ async def ensure_dra_backend(
         ),
         deadline=deadline,
     )
-    await daemonset.wait_rollout(kube, deadline=deadline)
+    target_generation = daemonset.generation
+    live = await daemonset.wait(
+        kube,
+        deadline=deadline,
+        predicate=lambda live: live is None
+        or (
+            (target_generation <= 0 or live.observed_generation >= target_generation)
+            and live.updated_number_scheduled >= live.desired_number_scheduled
+            and live.number_available >= max(1, live.desired_number_scheduled)
+        ),
+    )
+    if live is None:
+        msg = "DRA provider DaemonSet disappeared during rollout"
+        raise OSError(msg)
 
 
 async def list_device_inventory(

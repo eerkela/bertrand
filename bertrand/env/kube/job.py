@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, Never, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import kubernetes
-
-from bertrand.env.git import Deadline, until
 
 from .api.resource import (
     KubeResource,
@@ -26,10 +25,11 @@ if TYPE_CHECKING:
     )
     from datetime import datetime
 
+    from bertrand.env.git import Deadline
+
     from .api.client import Kube
     from .api.manifest import PodTemplateSpec
 
-JOB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 type JobCompletionMode = Literal["NonIndexed", "Indexed"]
 
 
@@ -75,6 +75,33 @@ def _pod_diagnostics(pods: Sequence[Pod]) -> str:
     for pod in sorted(pods, key=lambda item: (item.namespace, item.name)):
         lines.extend(pod.status_diagnostics)
     return "\n".join(lines)
+
+
+async def _job_pods(
+    job: Job,
+    kube: Kube,
+    *,
+    deadline: Deadline,
+) -> builtins.list[Pod]:
+    namespace = job.namespace
+    name = job.name
+    if not namespace or not name:
+        msg = "cannot list Job pods with missing metadata.name/namespace"
+        raise OSError(msg)
+    pods = await Pod.list(
+        kube,
+        namespaces=(namespace,),
+        labels={"batch.kubernetes.io/job-name": name},
+        deadline=deadline,
+    )
+    if pods:
+        return pods
+    return await Pod.list(
+        kube,
+        namespaces=(namespace,),
+        labels={"job-name": name},
+        deadline=deadline,
+    )
 
 
 def _validate_job_execution(
@@ -205,13 +232,13 @@ class JobManifest:
     read=kubernetes.client.BatchV1Api.read_namespaced_job,
     list=kubernetes.client.BatchV1Api.list_namespaced_job,
     list_all=kubernetes.client.BatchV1Api.list_job_for_all_namespaces,
-    create=None,
+    create=kubernetes.client.BatchV1Api.create_namespaced_job,
     patch=None,
     delete=kubernetes.client.BatchV1Api.delete_namespaced_job,
 )
 @dataclass(frozen=True)
 class Job(
-    KubeResource[kubernetes.client.V1Job, Never],
+    KubeResource[kubernetes.client.V1Job, JobManifest],
 ):
     """General-purpose wrapper around one Kubernetes Job object.
 
@@ -223,104 +250,11 @@ class Job(
     Notes
     -----
     Jobs are one-off execution records. The public API intentionally exposes
-    `create()` instead of `upsert()` because Job pod templates are effectively
-    immutable once submitted.
+    inherited `create()` instead of `upsert()` because Job pod templates are
+    effectively immutable once submitted.
     """
 
     _obj: kubernetes.client.V1Job
-
-    @classmethod
-    async def create(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str],
-        pod_template: PodTemplateSpec,
-        deadline: Deadline,
-        backoff_limit: int = 0,
-        ttl_seconds_after_finished: int | None = 3600,
-        annotations: Mapping[str, str] | None = None,
-        active_deadline_seconds: int | None = None,
-        parallelism: int | None = None,
-        completions: int | None = None,
-        completion_mode: JobCompletionMode | None = None,
-    ) -> Job:
-        """Create one Kubernetes Job from intent-level fields.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Job.
-        name : str
-            Job name to create.
-        labels : Mapping[str, str]
-            Labels to apply to the Job and pod template.
-        pod_template : PodTemplateSpec
-            Pod template to render into the Job.
-        deadline : Deadline
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        backoff_limit : int, optional
-            Kubernetes Job retry limit.
-        ttl_seconds_after_finished : int | None, optional
-            Optional TTL controller retention period for finished Jobs.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to `metadata.annotations`.
-        active_deadline_seconds : int | None, optional
-            Optional maximum Job runtime in seconds.
-        parallelism : int | None, optional
-            Optional maximum number of Pods the Job may run at once.
-        completions : int | None, optional
-            Optional number of successful Pod completions required.
-        completion_mode : {"NonIndexed", "Indexed"} | None, optional
-            Optional Kubernetes Job completion tracking mode.
-
-        Returns
-        -------
-        Job
-            Wrapped created Job.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
-        """
-        namespace = namespace.strip()
-        name = name.strip()
-        if not namespace or not name:
-            msg = "Job create requires non-empty namespace and name"
-            raise OSError(msg)
-        manifest = JobManifest(
-            namespace=namespace,
-            name=name,
-            labels=labels,
-            pod_template=pod_template,
-            annotations=annotations,
-            backoff_limit=backoff_limit,
-            ttl_seconds_after_finished=ttl_seconds_after_finished,
-            active_deadline_seconds=active_deadline_seconds,
-            parallelism=parallelism,
-            completions=completions,
-            completion_mode=completion_mode,
-        ).manifest()
-        api = kubernetes.client.BatchV1Api(kube.client)
-        payload = await kube.run(
-            lambda request_timeout: api.create_namespaced_job(
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            deadline=deadline,
-            context=f"failed to create Job {namespace}/{name}",
-            missing_ok=False,
-        )
-        if not isinstance(payload, kubernetes.client.V1Job):
-            msg = "malformed Kubernetes Job payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @property
     def active(self) -> int:
@@ -427,318 +361,7 @@ class Job(
                 return condition.message or condition.reason or "Job failed"
         return None
 
-    @property
-    def failed_condition(self) -> str | None:
-        """Return the terminal failure message.
-
-        Returns
-        -------
-        str | None
-            Failure condition message or reason, if the Job has failed.
-        """
-        return self.failure_message
-
-    async def pods(self, kube: Kube, *, deadline: Deadline) -> builtins.list[Pod]:
-        """List Pods owned by this Job.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        list[Pod]
-            Pods selected by Kubernetes' standard Job ownership labels.
-
-        Raises
-        ------
-        OSError
-            If this Job has incomplete Kubernetes metadata.
-        """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot list Job pods with missing metadata.name/namespace"
-            raise OSError(msg)
-        pods = await Pod.list(
-            kube,
-            namespaces=(namespace,),
-            labels={"batch.kubernetes.io/job-name": name},
-            deadline=deadline,
-        )
-        if pods:
-            return pods
-        return await Pod.list(
-            kube,
-            namespaces=(namespace,),
-            labels={"job-name": name},
-            deadline=deadline,
-        )
-
-    async def wait_complete(self, kube: Kube, *, deadline: Deadline) -> Job:
-        """Wait until this Job succeeds or fails.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum wait time in seconds. Must be positive.
-
-        Returns
-        -------
-        Job
-            Fresh wrapper whose status reports at least one succeeded pod.
-
-        Raises
-        ------
-        TimeoutError
-            If the Job does not complete before `timeout`.
-        OSError
-            If this Job has incomplete Kubernetes metadata or fails.
-        """
-        namespace = self.namespace
-        name = self.name
-        if not namespace or not name:
-            msg = "cannot wait for Job completion with missing metadata.name/namespace"
-            raise OSError(msg)
-        current: Job = self
-
-        async def complete(attempt_deadline: Deadline) -> Job:
-            nonlocal current
-            if current.succeeded > 0:
-                return current
-            failed_condition = current.failed_condition
-            if failed_condition is not None:
-                msg = f"Job {namespace}/{name} failed: {failed_condition}"
-                raise OSError(msg)
-            refreshed = await current.refresh(kube, deadline=attempt_deadline)
-            if refreshed is None:
-                msg = f"Job {namespace}/{name} disappeared while waiting for completion"
-                raise OSError(msg)
-            current = refreshed
-            if current.succeeded > 0:
-                return current
-            failed_condition = current.failed_condition
-            if failed_condition is not None:
-                msg = f"Job {namespace}/{name} failed: {failed_condition}"
-                raise OSError(msg)
-            msg = f"Job {namespace}/{name} is not complete yet"
-            raise TimeoutError(msg)
-
-        try:
-            return await until(
-                complete,
-                deadline=deadline,
-                delay=JOB_WAIT_POLL_INTERVAL_SECONDS,
-            )
-        except TimeoutError as err:
-            msg = f"timed out waiting for Job {namespace}/{name} completion"
-            raise TimeoutError(msg) from err
-
-    async def logs(
-        self,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        tail_lines: int,
-        failure_label: str,
-        include_headers: bool = False,
-    ) -> str:
-        """Collect logs from pods owned by this Job.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum diagnostic budget in seconds.
-        tail_lines : int
-            Number of log lines to request from each pod.
-        failure_label : str
-            Human-readable label for diagnostic failures.
-        include_headers : bool, optional
-            Whether to prefix each pod's log chunk with `namespace/name`.
-
-        Returns
-        -------
-        str
-            Collected pod logs, or a diagnostic placeholder if logs cannot be read.
-        """
-        if deadline.remaining <= 0:
-            return ""
-        try:
-            pods = await self.pods(kube, deadline=deadline)
-            return await _pod_logs(
-                kube,
-                pods,
-                deadline=deadline,
-                tail_lines=tail_lines,
-                include_headers=include_headers,
-            )
-        except (OSError, TimeoutError, ValueError) as err:
-            return f"<failed to read {failure_label}: {err}>"
-
-    async def pod_diagnostics(
-        self,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        failure_label: str,
-    ) -> str:
-        """Collect status diagnostics from pods owned by this Job.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum diagnostic budget in seconds.
-        failure_label : str
-            Human-readable label for diagnostic failures.
-
-        Returns
-        -------
-        str
-            Newline-separated pod status diagnostics, or a diagnostic placeholder if
-            pod status cannot be read.
-        """
-        if deadline.remaining <= 0:
-            return ""
-        try:
-            pods = await self.pods(kube, deadline=deadline)
-            return _pod_diagnostics(pods)
-        except (OSError, TimeoutError, ValueError) as err:
-            return f"<failed to read {failure_label}: {err}>"
-
-    # TODO: I don't like `delete_quietly`, `wait_complete_with_diagnostics`, and  # noqa: FIX002
-    # `run_observed` as names.  Can you think of better ones, or ideally ways to
-    # eliminate these methods entirely and/or replace them with a more intuitive and
-    # composable API?
-
-    async def delete_quietly(
-        self,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        wait: bool = False,
-    ) -> None:
-        """Delete this Job, ignoring cleanup failures.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum cleanup budget in seconds.
-        wait : bool, optional
-            Whether to wait for the Job to disappear after deletion.
-        """
-        if deadline.remaining <= 0:
-            return
-        try:
-            await self.delete(
-                kube,
-                deadline=deadline,
-                propagation_policy="Foreground",
-            )
-            if wait:
-                await self.wait(
-                    kube,
-                    deadline=deadline,
-                    predicate=lambda live: live is None,
-                )
-        except (OSError, TimeoutError):
-            return
-
-    async def wait_complete_with_diagnostics(
-        self,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        failure_context: str,
-        log_heading: str,
-        log_failure_label: str,
-        tail_lines: int,
-        diagnostic_deadline: Deadline,
-        cleanup_deadline: Deadline,
-        include_log_headers: bool = False,
-    ) -> Job:
-        """Wait for this Job and enrich failures with logs and cleanup.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum completion budget in seconds.
-        failure_context : str
-            Failure message prefix used if the Job fails or times out.
-        log_heading : str
-            Heading inserted before collected diagnostic logs.
-        log_failure_label : str
-            Label used when diagnostic log collection itself fails.
-        tail_lines : int
-            Number of pod log lines to collect on failure.
-        diagnostic_deadline : Deadline
-            Maximum budget for failure log collection.
-        cleanup_deadline : Deadline
-            Maximum budget for failed Job cleanup.
-        include_log_headers : bool, optional
-            Whether diagnostic logs should include pod headers.
-
-        Returns
-        -------
-        Job
-            Refreshed Job wrapper that completed successfully.
-
-        Raises
-        ------
-        TimeoutError
-            If the Job does not complete before `timeout`.
-        OSError
-            If the Job fails or disappears while waiting.
-        """
-        try:
-            return await self.wait_complete(kube, deadline=deadline)
-        except (OSError, TimeoutError) as err:
-            logs = ""
-            diagnostics = ""
-            if diagnostic_deadline.remaining > 0:
-                try:
-                    pods = await self.pods(kube, deadline=diagnostic_deadline)
-                    diagnostics = _pod_diagnostics(pods)
-                    try:
-                        logs = await _pod_logs(
-                            kube,
-                            pods,
-                            deadline=diagnostic_deadline,
-                            tail_lines=tail_lines,
-                            include_headers=include_log_headers,
-                        )
-                    except (OSError, TimeoutError, ValueError) as log_err:
-                        logs = f"<failed to read {log_failure_label}: {log_err}>"
-                except (OSError, TimeoutError, ValueError) as diagnostic_err:
-                    logs = f"<failed to read {log_failure_label}: {diagnostic_err}>"
-                    diagnostics = (
-                        f"<failed to read Job pod status diagnostics: {diagnostic_err}>"
-                    )
-            await self.delete_quietly(kube, deadline=cleanup_deadline)
-            msg = f"{failure_context}: {err}"
-            diagnostics = diagnostics.strip()
-            if diagnostics:
-                msg = f"{msg}\n\nPod status:\n{diagnostics}"
-            logs = logs.strip()
-            if logs:
-                msg = f"{msg}\n\n{log_heading}:\n{logs}"
-            if isinstance(err, TimeoutError):
-                raise TimeoutError(msg) from err
-            raise OSError(msg) from err
-
-    async def run_observed(
+    async def run(
         self,
         kube: Kube,
         *,
@@ -785,32 +408,92 @@ class Job(
         Raises
         ------
         TimeoutError
-            If the Job does not complete before `timeout`.
+            If the Job does not complete before `deadline`.
         OSError
             If the Job fails or disappears while waiting.
         """
         if observer is not None:
             await observer(self)
+        namespace = self.namespace
+        name = self.name
+        if not namespace or not name:
+            msg = "cannot run Job with missing metadata.name/namespace"
+            raise OSError(msg)
+
+        def complete(live: Job | None) -> bool:
+            if live is None:
+                msg = f"Job {namespace}/{name} disappeared while waiting for completion"
+                raise OSError(msg)
+            failure = live.failure_message
+            if failure is not None:
+                msg = f"Job {namespace}/{name} failed: {failure}"
+                raise OSError(msg)
+            return live.succeeded > 0
+
         try:
-            await self.wait_complete_with_diagnostics(
+            await self.wait(
                 kube,
                 deadline=deadline,
-                failure_context=failure_context,
-                log_heading=log_heading,
-                log_failure_label=log_failure_label,
-                tail_lines=tail_lines,
-                diagnostic_deadline=diagnostic_deadline,
-                cleanup_deadline=cleanup_deadline,
-                include_log_headers=include_log_headers,
+                predicate=complete,
+                check_current=True,
             )
-        except TimeoutError:
-            raise
-        except OSError as err:
-            raise OSError(str(err)) from err
-        return await self.logs(
-            kube,
-            deadline=deadline,
-            tail_lines=tail_lines,
-            failure_label=log_failure_label,
-            include_headers=include_log_headers,
-        )
+        except (OSError, TimeoutError) as err:
+            if isinstance(err, TimeoutError):
+                msg = f"timed out waiting for Job {namespace}/{name} completion"
+                err = TimeoutError(msg)
+            logs = ""
+            diagnostics = ""
+            if diagnostic_deadline.remaining > 0:
+                try:
+                    pods = await _job_pods(
+                        self,
+                        kube,
+                        deadline=diagnostic_deadline,
+                    )
+                    diagnostics = _pod_diagnostics(pods)
+                    try:
+                        logs = await _pod_logs(
+                            kube,
+                            pods,
+                            deadline=diagnostic_deadline,
+                            tail_lines=tail_lines,
+                            include_headers=include_log_headers,
+                        )
+                    except (OSError, TimeoutError, ValueError) as log_err:
+                        logs = f"<failed to read {log_failure_label}: {log_err}>"
+                except (OSError, TimeoutError, ValueError) as diagnostic_err:
+                    logs = f"<failed to read {log_failure_label}: {diagnostic_err}>"
+                    diagnostics = (
+                        f"<failed to read Job pod status diagnostics: {diagnostic_err}>"
+                    )
+            if cleanup_deadline.remaining > 0:
+                with contextlib.suppress(OSError, TimeoutError):
+                    await self.delete(
+                        kube,
+                        deadline=cleanup_deadline,
+                        propagation_policy="Foreground",
+                    )
+            msg = f"{failure_context}: {err}"
+            diagnostics = diagnostics.strip()
+            if diagnostics:
+                msg = f"{msg}\n\nPod status:\n{diagnostics}"
+            logs = logs.strip()
+            if logs:
+                msg = f"{msg}\n\n{log_heading}:\n{logs}"
+            if isinstance(err, TimeoutError):
+                raise TimeoutError(msg) from err
+            raise OSError(msg) from err
+
+        if deadline.remaining <= 0:
+            return ""
+        try:
+            pods = await _job_pods(self, kube, deadline=deadline)
+            return await _pod_logs(
+                kube,
+                deadline=deadline,
+                pods=pods,
+                tail_lines=tail_lines,
+                include_headers=include_log_headers,
+            )
+        except (OSError, TimeoutError, ValueError) as err:
+            return f"<failed to read {log_failure_label}: {err}>"

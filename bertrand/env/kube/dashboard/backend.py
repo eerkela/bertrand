@@ -74,6 +74,12 @@ async def ensure_dashboard_backend(kube: Kube, *, deadline: Deadline) -> Deploym
     -------
     Deployment
         Available Headlamp Deployment.
+
+    Raises
+    ------
+    OSError
+        If required resources are absent or the Deployment disappears while waiting
+        for available replicas.
     """
     await _assert_existing_resources(kube, deadline=deadline)
 
@@ -167,11 +173,16 @@ async def ensure_dashboard_backend(kube: Kube, *, deadline: Deadline) -> Deploym
             deadline=deadline,
         ),
     )
-    return await deployment.wait_available(
+    live = await deployment.wait(
         kube,
-        minimum=_WAIT_MINIMUM_REPLICAS,
         deadline=deadline,
+        predicate=lambda live: live is None
+        or live.available_replicas >= _WAIT_MINIMUM_REPLICAS,
     )
+    if live is None:
+        msg = "dashboard backend Deployment disappeared while waiting for replicas"
+        raise OSError(msg)
+    return live
 
 
 async def delete_dashboard_backend(kube: Kube, *, deadline: Deadline) -> None:

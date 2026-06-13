@@ -14,7 +14,7 @@ from bertrand.env.kube.cronjob import (
     CronJobManifest,
 )
 from bertrand.env.kube.deployment import Deployment, DeploymentManifest
-from bertrand.env.kube.job import Job, JobCompletionMode
+from bertrand.env.kube.job import Job, JobCompletionMode, JobManifest
 from bertrand.env.kube.network.workload import (
     delete_workload_http_routes,
     delete_workload_network_policy,
@@ -25,7 +25,7 @@ from bertrand.env.kube.network.workload import (
     prepare_workload_http_routes,
     prune_workload_http_routes,
 )
-from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.pod import POD_TERMINAL_PHASES, Pod
 from bertrand.env.kube.workload.base import WorkloadIdentity, WorkloadPod
 
 if TYPE_CHECKING:
@@ -400,22 +400,28 @@ async def _create_generated_workload_job(
     )
     return await Job.create(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=_job_run_name(workload.identity),
-        labels=workload.labels,
-        pod_template=workload.pod_template(
-            primary_args=primary_args,
-            interactive=interactive,
-            stdin_once=interactive,
+        intent=JobManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=_job_run_name(workload.identity),
+            labels=workload.labels,
+            pod_template=workload.pod_template(
+                primary_args=primary_args,
+                interactive=interactive,
+                stdin_once=interactive,
+            ),
+            backoff_limit=execution.retries if execution is not None else 0,
+            ttl_seconds_after_finished=(
+                execution.ttl if execution is not None else None
+            ),
+            active_deadline_seconds=(
+                execution.timeout if execution is not None else None
+            ),
+            parallelism=execution.parallelism if execution is not None else 1,
+            completions=execution.completions if execution is not None else None,
+            completion_mode=_COMPLETION_MODE[
+                execution.completion if execution is not None else "all"
+            ],
         ),
-        backoff_limit=execution.retries if execution is not None else 0,
-        ttl_seconds_after_finished=execution.ttl if execution is not None else None,
-        active_deadline_seconds=execution.timeout if execution is not None else None,
-        parallelism=execution.parallelism if execution is not None else 1,
-        completions=execution.completions if execution is not None else None,
-        completion_mode=_COMPLETION_MODE[
-            execution.completion if execution is not None else "all"
-        ],
         deadline=deadline,
     )
 
@@ -853,7 +859,7 @@ async def _active_workload_pods(
         labels=identity.managed_selector,
         deadline=deadline,
     )
-    active = tuple(pod for pod in pods if not pod.is_terminal)
+    active = tuple(pod for pod in pods if pod.phase not in POD_TERMINAL_PHASES)
     for pod in active:
         _assert_managed(pod, identity=identity, kind="Pod")
     return active

@@ -21,7 +21,7 @@ from bertrand.env.kube.ceph.capacity import (
     CephStorageOSD,
     storage_osd_resource_names,
 )
-from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.pod import POD_ACTIVE_PHASES, Pod
 from bertrand.env.kube.volume import PersistentVolumeClaim
 
 if TYPE_CHECKING:
@@ -276,7 +276,8 @@ async def wait_osd_workloads_gone(
         active = [
             pod.name
             for pod in pods
-            if pod.is_active
+            if not pod.is_terminating
+            and pod.phase in POD_ACTIVE_PHASES
             and (
                 pod.labels.get("ceph.rook.io/DeviceSet") == record.device_set_name
                 or pod.labels.get("ceph.rook.io/pvc") in claim_names

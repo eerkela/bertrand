@@ -15,9 +15,6 @@ from .api.resource import (
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-    from bertrand.env.git import Deadline
-    from bertrand.env.kube.api.client import Kube
-
 
 @dataclass(frozen=True)
 class CustomResourceDefinitionManifest:
@@ -141,36 +138,3 @@ class CustomResourceDefinition(
             if condition.type == "Established" and condition.status == "True":
                 return True
         return False
-
-    async def wait_established(
-        self, kube: Kube, *, deadline: Deadline
-    ) -> CustomResourceDefinition:
-        """Wait until this CRD reports `Established=True`.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum wait budget in seconds. If infinite, wait indefinitely.
-
-        Returns
-        -------
-        CustomResourceDefinition
-            Refreshed CRD wrapper that reports `Established=True`.
-
-        Raises
-        ------
-        OSError
-            If the CRD disappears before it is established.
-        """
-        live = await self.wait(
-            kube,
-            deadline=deadline,
-            predicate=lambda live: live is None or live.is_established,
-            check_current=True,
-        )
-        if live is None:
-            msg = "CustomResourceDefinition disappeared while waiting to establish"
-            raise OSError(msg)
-        return live

@@ -16,7 +16,7 @@ from bertrand.env.kube.dev.mailbox import (
     DEV_GROUP,
     code_open_host_labels,
 )
-from bertrand.env.kube.pod import Pod
+from bertrand.env.kube.pod import POD_TERMINAL_PHASES, Pod, PodManifest
 from bertrand.env.kube.rbac import (
     ClusterRole,
     ClusterRoleBinding,
@@ -225,10 +225,12 @@ async def create_project_dev_session(
     )
     pod = await Pod.create(
         kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=name,
-        labels=labels,
-        pod_template=template,
+        intent=PodManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=name,
+            labels=labels,
+            pod_template=template,
+        ),
         deadline=deadline,
     )
     return pod, workload.primary_container
@@ -276,7 +278,7 @@ async def wait_dev_session_running(
         if live is None:
             msg = f"dev session Pod {pod.name!r} disappeared before running"
             raise OSError(msg)
-        if live.is_terminal:
+        if live.phase in POD_TERMINAL_PHASES:
             details = "\n".join(live.status_diagnostics)
             msg = f"dev session Pod {pod.name!r} exited before it was attachable"
             if details:

@@ -44,7 +44,7 @@ from bertrand.env.kube.build.refs import (
 )
 from bertrand.env.kube.configmap import ConfigMap, ConfigMapManifest
 from bertrand.env.kube.deployment import Deployment, DeploymentManifest
-from bertrand.env.kube.job import Job
+from bertrand.env.kube.job import Job, JobManifest
 from bertrand.env.kube.network.profile import NetworkProfile
 from bertrand.env.kube.node import Node
 from bertrand.env.kube.service import Service, ServiceManifest, ServicePortView
@@ -970,14 +970,19 @@ async def image_repository_status(
             protocol="TCP",
             node_port=IMAGE_REPOSITORY_NODE_PORT,
         )
+        actual_ports = service.ports if service is not None else ()
         service_ready = (
-            service.matches(
-                service_type="NodePort",
-                selector=IMAGE_REPOSITORY_SELECTOR,
-                ports=(expected_port,),
+            service is not None
+            and service.type == "NodePort"
+            and dict(service.selector) == dict(IMAGE_REPOSITORY_SELECTOR)
+            and any(
+                port.name == expected_port.name
+                and port.port == expected_port.port
+                and port.target_port == expected_port.target_port
+                and port.protocol == expected_port.protocol
+                and port.node_port == expected_port.node_port
+                for port in actual_ports
             )
-            if service is not None
-            else False
         )
 
         available_replicas = (
@@ -992,8 +997,14 @@ async def image_repository_status(
             f"available={available_replicas}; updated={updated_replicas}; "
             f"observed={observed_generation}; generation={generation}"
         )
-        rollout_ready = (
-            deployment.rollout_ready(minimum=1) if deployment is not None else False
+        rollout_ok = (
+            deployment is not None
+            and (
+                deployment.generation <= 0
+                or deployment.observed_generation >= deployment.generation
+            )
+            and deployment.updated_replicas >= 1
+            and deployment.available_replicas >= 1
         )
 
         pvc_managed = (
@@ -1018,9 +1029,10 @@ async def image_repository_status(
         storage_ready = (
             pvc is not None
             and pvc_managed
-            and pvc.is_bound
+            and pvc.phase == "Bound"
+            and bool(pvc.volume_name)
             and bool(storage_class)
-            and pvc.has_access_mode("ReadWriteMany")
+            and "ReadWriteMany" in pvc.access_modes
         )
 
         desired_buildkit_hash = _config_hash(desired_buildkit_config)
@@ -1055,7 +1067,7 @@ async def image_repository_status(
         failures: list[str] = []
         if not service_ready:
             failures.append("image registry Service is missing or has the wrong shape")
-        if not rollout_ready:
+        if not rollout_ok:
             failures.append("image registry Deployment rollout is not ready")
         if not storage_ready:
             failures.append("image registry storage is not bound and ready")
@@ -1093,19 +1105,37 @@ async def ensure_image_repository(
 
     Raises
     ------
+    ValueError
+        If the storage class preference list is empty.
     OSError
         If Kubernetes create/patch/read operations fail or storage prerequisites are
         not present.
     """
     from bertrand.env.kube.ceph.volume import CEPHFS_STORAGE_CLASS_PREFERENCES
 
-    storage = await StorageClass.select(
-        kube=kube,
-        deadline=deadline,
-        preferences=CEPHFS_STORAGE_CLASS_PREFERENCES,
-        require_expansion=True,
+    storage_preferences = tuple(
+        name.strip()
+        for name in CEPHFS_STORAGE_CLASS_PREFERENCES
+        if name and name.strip()
     )
-    if not storage.is_cephfs:
+    if not storage_preferences:
+        msg = "storage class preferences cannot be empty"
+        raise ValueError(msg)
+    storage = None
+    for name in storage_preferences:
+        storage = await StorageClass.get(kube, deadline=deadline, name=name)
+        if storage is None:
+            continue
+        if not storage.allow_volume_expansion:
+            msg = f"storage class {name!r} must set allowVolumeExpansion=true"
+            raise OSError(msg)
+        break
+    if storage is None:
+        preferred = ", ".join(repr(name) for name in storage_preferences)
+        msg = f"no preferred StorageClass is available; expected one of {preferred}"
+        raise OSError(msg)
+    provisioner = storage.provisioner.lower()
+    if "cephfs" not in provisioner or "csi.ceph.com" not in provisioner:
         msg = (
             f"storage class {storage.name!r} uses provisioner "
             f"{storage.provisioner!r}, but Bertrand registry storage requires "
@@ -1136,7 +1166,18 @@ async def ensure_image_repository(
             "ReadWriteMany"
         )
         raise OSError(msg)
-    await pvc.wait_bound(kube, deadline=deadline)
+    bound = await pvc.wait(
+        kube,
+        deadline=deadline,
+        predicate=lambda live: live is None
+        or (live.phase == "Bound" and bool(live.volume_name)),
+    )
+    if bound is None:
+        msg = (
+            f"PVC {BERTRAND_NAMESPACE}/{IMAGE_REPOSITORY_NAME} disappeared while "
+            "waiting to bind"
+        )
+        raise OSError(msg)
 
     async def upsert_buildkit_config() -> None:
         data = await current_buildkit_config_data(kube, deadline=deadline)
@@ -1252,33 +1293,37 @@ async def garbage_collect_image_repository_storage(
             )
             job = await Job.create(
                 kube,
-                namespace=BERTRAND_NAMESPACE,
-                name=f"{IMAGE_REPOSITORY_NAME}-gc-{uuid.uuid4().hex[:8]}",
-                labels={
-                    **IMAGE_REPOSITORY_LABELS,
-                    IMAGE_REPOSITORY_GC_JOB_LABEL: IMAGE_REPOSITORY_GC_JOB_LABEL_VALUE,
-                },
-                pod_template=PodTemplateSpec(
-                    containers=[
-                        ContainerSpec(
-                            name="registry-gc",
-                            image=IMAGE_REPOSITORY_IMAGE,
-                            image_pull_policy="IfNotPresent",
-                            command=["registry"],
-                            args=[
-                                "garbage-collect",
-                                "--quiet",
-                                IMAGE_REPOSITORY_CONFIG_FILE,
-                            ],
-                            volume_mounts=_volume_mounts(),
-                        )
-                    ],
-                    volumes=_volumes(),
+                intent=JobManifest(
+                    namespace=BERTRAND_NAMESPACE,
+                    name=f"{IMAGE_REPOSITORY_NAME}-gc-{uuid.uuid4().hex[:8]}",
+                    labels={
+                        **IMAGE_REPOSITORY_LABELS,
+                        IMAGE_REPOSITORY_GC_JOB_LABEL: (
+                            IMAGE_REPOSITORY_GC_JOB_LABEL_VALUE
+                        ),
+                    },
+                    pod_template=PodTemplateSpec(
+                        containers=[
+                            ContainerSpec(
+                                name="registry-gc",
+                                image=IMAGE_REPOSITORY_IMAGE,
+                                image_pull_policy="IfNotPresent",
+                                command=["registry"],
+                                args=[
+                                    "garbage-collect",
+                                    "--quiet",
+                                    IMAGE_REPOSITORY_CONFIG_FILE,
+                                ],
+                                volume_mounts=_volume_mounts(),
+                            )
+                        ],
+                        volumes=_volumes(),
+                    ),
+                    ttl_seconds_after_finished=IMAGE_REPOSITORY_GC_TTL_SECONDS,
                 ),
-                ttl_seconds_after_finished=IMAGE_REPOSITORY_GC_TTL_SECONDS,
                 deadline=deadline,
             )
-            await job.run_observed(
+            await job.run(
                 kube,
                 deadline=deadline,
                 failure_context="image registry storage garbage collection failed",
@@ -1389,7 +1434,20 @@ async def _rollout_registry_config(
         ),
         deadline=deadline,
     )
-    await deployment.wait_rollout(kube, deadline=deadline)
+    target_generation = deployment.generation
+    rolled_out = await deployment.wait(
+        kube,
+        deadline=deadline,
+        predicate=lambda live: live is None
+        or (
+            (target_generation <= 0 or live.observed_generation >= target_generation)
+            and live.updated_replicas >= 1
+            and live.available_replicas >= 1
+        ),
+    )
+    if rolled_out is None:
+        msg = "image repository Deployment disappeared while waiting for rollout"
+        raise OSError(msg)
 
 
 def _volume_mounts() -> tuple[Mapping[str, object], ...]:

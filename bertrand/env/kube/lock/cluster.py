@@ -21,7 +21,7 @@ from bertrand.env.git import (
     Deadline,
 )
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.lease import Lease
+from bertrand.env.kube.lease import Lease, LeaseManifest, LeaseReplacementManifest
 
 CLUSTER_LOCK_DURATION_SECONDS = 30
 CLUSTER_LOCK_RENEW_SECONDS = 10
@@ -214,14 +214,16 @@ class ClusterLock:
         try:
             await Lease.create(
                 self.kube,
-                namespace=self.namespace,
-                name=self.name,
-                holder_identity=self._holder,
-                lease_duration_seconds=self.lease_duration,
+                intent=LeaseManifest(
+                    namespace=self.namespace,
+                    name=self.name,
+                    holder_identity=self._holder,
+                    lease_duration_seconds=self.lease_duration,
+                    renew_time=now,
+                    labels=self._labels(),
+                    annotations=self._annotations(),
+                ),
                 deadline=deadline,
-                renew_time=now,
-                labels=self._labels(),
-                annotations=self._annotations(),
             )
         except OSError as err:
             if isinstance(err, Kube.APIError) and err.status == 409:
@@ -240,15 +242,17 @@ class ClusterLock:
         try:
             await Lease.replace(
                 self.kube,
-                namespace=self.namespace,
-                name=self.name,
-                holder_identity=holder_identity,
-                lease_duration_seconds=self.lease_duration,
-                resource_version=lease.resource_version,
+                intent=LeaseReplacementManifest(
+                    namespace=self.namespace,
+                    name=self.name,
+                    holder_identity=holder_identity,
+                    lease_duration_seconds=self.lease_duration,
+                    resource_version=lease.resource_version,
+                    renew_time=now,
+                    labels=self._labels(),
+                    annotations=self._annotations(),
+                ),
                 deadline=deadline,
-                renew_time=now,
-                labels=self._labels(),
-                annotations=self._annotations(),
             )
         except OSError as err:
             if isinstance(err, Kube.APIError) and err.status in (404, 409):

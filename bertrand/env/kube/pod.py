@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Never
+from typing import TYPE_CHECKING, Any
 
 import kubernetes
 from kubernetes.stream import stream as kubernetes_stream
@@ -147,13 +147,13 @@ class PodManifest:
     read=kubernetes.client.CoreV1Api.read_namespaced_pod,
     list=kubernetes.client.CoreV1Api.list_namespaced_pod,
     list_all=kubernetes.client.CoreV1Api.list_pod_for_all_namespaces,
-    create=None,
+    create=kubernetes.client.CoreV1Api.create_namespaced_pod,
     patch=None,
     delete=kubernetes.client.CoreV1Api.delete_namespaced_pod,
 )
 @dataclass(frozen=True)
 class Pod(
-    KubeResource[kubernetes.client.V1Pod, Never],
+    KubeResource[kubernetes.client.V1Pod, PodManifest],
 ):
     """General-purpose wrapper around one Kubernetes Pod object.
 
@@ -164,75 +164,6 @@ class Pod(
     """
 
     _obj: kubernetes.client.V1Pod
-
-    @classmethod
-    async def create(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        labels: Mapping[str, str],
-        pod_template: PodTemplateSpec,
-        deadline: Deadline,
-        annotations: Mapping[str, str] | None = None,
-    ) -> Pod:
-        """Create one Kubernetes Pod from intent-level fields.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Pod.
-        name : str
-            Pod name to create.
-        labels : Mapping[str, str]
-            Labels to apply to the Pod metadata.
-        pod_template : PodTemplateSpec
-            Pod template to render into the Pod.
-        deadline : Deadline
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to the Pod metadata.
-
-        Returns
-        -------
-        Pod
-            Wrapped created Pod.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns malformed data or the API call fails.
-        """
-        namespace = namespace.strip()
-        name = name.strip()
-        if not namespace or not name:
-            msg = "Pod create requires non-empty namespace and name"
-            raise OSError(msg)
-        manifest = PodManifest(
-            namespace=namespace,
-            name=name,
-            labels=labels,
-            pod_template=pod_template,
-            annotations=annotations,
-        ).manifest()
-        api = kubernetes.client.CoreV1Api(kube.client)
-        payload = await kube.run(
-            lambda request_timeout: api.create_namespaced_pod(
-                namespace=namespace,
-                body=manifest,
-                _request_timeout=request_timeout,
-            ),
-            deadline=deadline,
-            context=f"failed to create Pod {namespace}/{name}",
-            missing_ok=False,
-        )
-        if not isinstance(payload, kubernetes.client.V1Pod):
-            msg = "malformed Kubernetes Pod payload"
-            raise OSError(msg)
-        return cls(_obj=payload)
 
     @property
     def phase(self) -> str:
@@ -281,7 +212,7 @@ class Pod(
             `True` when the Pod is active and has a Ready condition with status
             `True`.
         """
-        if not self.is_active:
+        if self.is_terminating or self.phase not in POD_ACTIVE_PHASES:
             return False
         status = self._obj.status
         for condition in (status.conditions or []) if status is not None else []:
@@ -301,29 +232,6 @@ class Pod(
         """
         metadata = self._obj.metadata
         return bool(metadata.deletion_timestamp) if metadata is not None else False
-
-    @property
-    def is_active(self) -> bool:
-        """Return whether the Pod is active.
-
-        Returns
-        -------
-        bool
-            `True` when the pod is not terminating and phase is one of
-            `Pending|Running|Unknown`.
-        """
-        return not self.is_terminating and self.phase in POD_ACTIVE_PHASES
-
-    @property
-    def is_terminal(self) -> bool:
-        """Return whether the Pod is terminal.
-
-        Returns
-        -------
-        bool
-            `True` when pod phase is `Succeeded` or `Failed`.
-        """
-        return self.phase in POD_TERMINAL_PHASES
 
     def container_running(self, name: str) -> bool:
         """Return whether a regular container is currently running.
@@ -651,36 +559,6 @@ class Pod(
             deadline=deadline,
             context=f"failed to attach to pod {namespace}/{name} container {container}",
         )
-
-    async def wait_terminal(self, kube: Kube, *, deadline: Deadline) -> Pod:
-        """Wait until this pod reaches a terminal phase.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        deadline : Deadline
-            Maximum runtime budget in seconds.  If infinite, wait indefinitely.
-
-        Returns
-        -------
-        Pod
-            Latest pod wrapper once phase converges to `Succeeded` or `Failed`.
-
-        Raises
-        ------
-        OSError
-            If the Pod disappears before reaching a terminal phase.
-        """
-        live = await self.wait(
-            kube,
-            deadline=deadline,
-            predicate=lambda live: live is None or live.is_terminal,
-        )
-        if live is None:
-            msg = "Pod disappeared while waiting for a terminal phase"
-            raise OSError(msg)
-        return live
 
     async def evict(
         self,

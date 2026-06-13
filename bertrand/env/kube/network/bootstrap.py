@@ -122,7 +122,7 @@ async def _wait_envoy_gateway_available(
                 f"{ENVOY_GATEWAY_DEPLOYMENT} is not created yet"
             )
             raise TimeoutError(msg)
-        if not deployment.has_available_replicas():
+        if deployment.available_replicas < 1:
             msg = (
                 f"Envoy Gateway Deployment {ENVOY_GATEWAY_NAMESPACE}/"
                 f"{ENVOY_GATEWAY_DEPLOYMENT} is not Available yet"

@@ -183,108 +183,12 @@ class Lease(
     _obj: kube_client.V1Lease
 
     @classmethod
-    async def create(
-        cls,
-        kube: Kube,
-        *,
-        namespace: str,
-        name: str,
-        holder_identity: str,
-        lease_duration_seconds: int,
-        deadline: Deadline,
-        acquire_time: datetime | None = None,
-        renew_time: datetime | None = None,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
-    ) -> Lease:
-        """Create one Kubernetes Lease.
-
-        Parameters
-        ----------
-        kube : Kube
-            Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Lease.
-        name : str
-            Lease name to create.
-        holder_identity : str
-            Identity string for the current lease holder.
-        lease_duration_seconds : int
-            Lease duration in seconds.
-        deadline : Deadline
-            Maximum request budget in seconds. If infinite, wait indefinitely.
-        acquire_time : datetime | None, optional
-            Time when the lease was first acquired.
-        renew_time : datetime | None, optional
-            Time when the lease was last renewed.
-        labels : Mapping[str, str] | None, optional
-            Labels to apply to `metadata.labels`.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to `metadata.annotations`.
-
-        Returns
-        -------
-        Lease
-            Wrapped created Lease.
-
-        Raises
-        ------
-        OSError
-            If required identity fields are empty, duration is invalid, or Kubernetes
-            create fails or returns malformed data.
-        """
-        namespace = namespace.strip()
-        name = name.strip()
-        holder_identity = holder_identity.strip()
-        if not namespace or not name or not holder_identity:
-            msg = "Lease create requires non-empty namespace, name, and holder identity"
-            raise OSError(msg)
-        if lease_duration_seconds <= 0:
-            msg = "Lease duration must be positive"
-            raise OSError(msg)
-
-        api = kube_client.CoordinationV1Api(kube.client)
-        created = await kube.run(
-            lambda request_timeout: api.create_namespaced_lease(
-                namespace=namespace,
-                body=LeaseManifest(
-                    namespace=namespace,
-                    name=name,
-                    holder_identity=holder_identity,
-                    lease_duration_seconds=lease_duration_seconds,
-                    acquire_time=acquire_time,
-                    renew_time=renew_time,
-                    labels=labels,
-                    annotations=annotations,
-                ).manifest(),
-                _request_timeout=request_timeout,
-            ),
-            deadline=deadline,
-            context=f"failed to create Lease {namespace}/{name}",
-            missing_ok=False,
-        )
-        if not isinstance(created, kube_client.V1Lease):
-            msg = (
-                f"malformed Kubernetes Lease payload while creating {namespace}/{name}"
-            )
-            raise OSError(msg)
-        return cls(_obj=created)
-
-    @classmethod
     async def replace(
         cls,
         kube: Kube,
         *,
-        namespace: str,
-        name: str,
-        holder_identity: str | None,
-        lease_duration_seconds: int,
-        resource_version: str,
+        intent: LeaseReplacementManifest,
         deadline: Deadline,
-        acquire_time: datetime | None = None,
-        renew_time: datetime | None = None,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
     ) -> Lease:
         """Replace one Kubernetes Lease with a resource-version guard.
 
@@ -292,27 +196,10 @@ class Lease(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the Lease.
-        name : str
-            Lease name to replace.
-        holder_identity : str | None
-            Identity string for the current lease holder. If `None`, the holder field
-            is omitted.
-        lease_duration_seconds : int
-            Lease duration in seconds.
-        resource_version : str
-            Kubernetes resource version required for optimistic concurrency.
+        intent : LeaseReplacementManifest
+            Desired replacement state, including the required resource version.
         deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
-        acquire_time : datetime | None, optional
-            Time when the lease was first acquired.
-        renew_time : datetime | None, optional
-            Time when the lease was last renewed.
-        labels : Mapping[str, str] | None, optional
-            Labels to apply to `metadata.labels`.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to `metadata.annotations`.
 
         Returns
         -------
@@ -325,38 +212,17 @@ class Lease(
             If required identity fields are empty, duration is invalid, or Kubernetes
             replace fails or returns malformed data.
         """
-        namespace = namespace.strip()
-        name = name.strip()
-        resource_version = resource_version.strip()
-        holder = holder_identity.strip() if holder_identity is not None else None
-        if holder == "":
-            msg = "Lease holder identity must be non-empty when provided"
+        namespace = intent.namespace.strip()
+        name = intent.name.strip()
+        if not namespace or not name:
+            msg = "Lease replace requires non-empty namespace and name"
             raise OSError(msg)
-        if not namespace or not name or not resource_version:
-            msg = (
-                "Lease replace requires non-empty namespace, name, and resource version"
-            )
-            raise OSError(msg)
-        if lease_duration_seconds <= 0:
-            msg = "Lease duration must be positive"
-            raise OSError(msg)
-
         api = kube_client.CoordinationV1Api(kube.client)
         replaced = await kube.run(
             lambda request_timeout: api.replace_namespaced_lease(
                 name=name,
                 namespace=namespace,
-                body=LeaseReplacementManifest(
-                    namespace=namespace,
-                    name=name,
-                    holder_identity=holder,
-                    lease_duration_seconds=lease_duration_seconds,
-                    acquire_time=acquire_time,
-                    renew_time=renew_time,
-                    labels=labels,
-                    annotations=annotations,
-                    resource_version=resource_version,
-                ).manifest(),
+                body=intent.manifest(),
                 _request_timeout=request_timeout,
             ),
             deadline=deadline,
