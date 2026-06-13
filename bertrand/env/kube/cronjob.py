@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal
 
 import kubernetes
 
 from .api.resource import (
     KubeResource,
-    WatchEvent,
-    _watch,
     namespaced_resource,
 )
 from .job import JobCompletionMode, _job_spec_manifest, _validate_job_execution
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import Mapping
     from datetime import datetime
 
     from bertrand.env.git import Deadline
@@ -156,61 +154,6 @@ class CronJob(
     """
 
     _obj: kubernetes.client.V1CronJob
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str = "",
-        resource_version: str = "",
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch CronJobs.
-
-        Yields
-        ------
-        WatchEvent[CronJob]
-            CronJob watch events.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns a malformed CronJob watch payload.
-        """
-        namespace = namespace.strip() if namespace is not None else ""
-        api = kubernetes.client.BatchV1Api(kube.client)
-        if namespace:
-            watch_fn = api.list_namespaced_cron_job
-            api_kwargs = {"namespace": namespace}
-            context = f"failed to watch CronJobs in namespace {namespace!r}"
-        else:
-            watch_fn = api.list_cron_job_for_all_namespaces
-            api_kwargs = {}
-            context = "failed to watch CronJobs across all namespaces"
-        async for event in _watch(
-            watch_fn,
-            deadline=deadline,
-            context=context,
-            resource_version=resource_version,
-            label_selector=(
-                ",".join(f"{key}={value}" for key, value in labels.items())
-                if labels
-                else ""
-            ),
-            field_selector=field_selector,
-            api_kwargs=api_kwargs,
-        ):
-            if not isinstance(event.object, kubernetes.client.V1CronJob):
-                msg = "malformed Kubernetes CronJob watch payload"
-                raise OSError(msg)
-            yield WatchEvent(
-                type=event.type,
-                object=cls(_obj=event.object),
-                resource_version=event.resource_version,
-            )
 
     @property
     def active(self) -> int:

@@ -248,48 +248,36 @@ async def delete_dashboard_backend(kube: Kube, *, deadline: Deadline) -> None:
     if deployment is not None:
         await deployment.delete(
             kube,
-            namespace=deployment.namespace,
-            name=deployment.name,
             deadline=deadline,
         )
     if service is not None:
         await service.delete(
             kube,
-            namespace=service.namespace,
-            name=service.name,
             deadline=deadline,
         )
     if role_binding is not None:
-        await RoleBinding.delete(
+        await role_binding.delete(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DASHBOARD_NAME,
             deadline=deadline,
         )
     if role is not None:
-        await Role.delete(
+        await role.delete(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=DASHBOARD_NAME,
             deadline=deadline,
         )
     if service_account is not None:
         await service_account.delete(
             kube,
-            namespace=service_account.namespace,
-            name=service_account.name,
             deadline=deadline,
         )
     if cluster_role_binding is not None:
-        await ClusterRoleBinding.delete(
+        await cluster_role_binding.delete(
             kube,
-            name=DASHBOARD_NAME,
             deadline=deadline,
         )
     if cluster_role is not None:
-        await ClusterRole.delete(
+        await cluster_role.delete(
             kube,
-            name=DASHBOARD_NAME,
             deadline=deadline,
         )
 

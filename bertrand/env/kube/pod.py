@@ -4,21 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Never
 
 import kubernetes
 from kubernetes.stream import stream as kubernetes_stream
 
 from .api.resource import (
     KubeResource,
-    WatchEvent,
-    _watch,
     namespaced_resource,
 )
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import AsyncIterator, Collection, Mapping
+    from collections.abc import Collection, Mapping
 
     from bertrand.env.git import Deadline
 
@@ -155,7 +153,7 @@ class PodManifest:
 )
 @dataclass(frozen=True)
 class Pod(
-    KubeResource[kubernetes.client.V1Pod, PodManifest],
+    KubeResource[kubernetes.client.V1Pod, Never],
 ):
     """General-purpose wrapper around one Kubernetes Pod object.
 
@@ -166,61 +164,6 @@ class Pod(
     """
 
     _obj: kubernetes.client.V1Pod
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str = "",
-        resource_version: str = "",
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Pods.
-
-        Yields
-        ------
-        WatchEvent[Pod]
-            Pod watch events.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns a malformed Pod watch payload.
-        """
-        namespace = namespace.strip() if namespace is not None else ""
-        api = kubernetes.client.CoreV1Api(kube.client)
-        if namespace:
-            watch_fn = api.list_namespaced_pod
-            api_kwargs = {"namespace": namespace}
-            context = f"failed to watch Pods in namespace {namespace!r}"
-        else:
-            watch_fn = api.list_pod_for_all_namespaces
-            api_kwargs = {}
-            context = "failed to watch Pods across all namespaces"
-        async for event in _watch(
-            watch_fn,
-            deadline=deadline,
-            context=context,
-            resource_version=resource_version,
-            label_selector=(
-                ",".join(f"{key}={value}" for key, value in labels.items())
-                if labels
-                else ""
-            ),
-            field_selector=field_selector,
-            api_kwargs=api_kwargs,
-        ):
-            if not isinstance(event.object, kubernetes.client.V1Pod):
-                msg = "malformed Kubernetes Pod watch payload"
-                raise OSError(msg)
-            yield WatchEvent(
-                type=event.type,
-                object=cls(_obj=event.object),
-                resource_version=event.resource_version,
-            )
 
     @classmethod
     async def create(

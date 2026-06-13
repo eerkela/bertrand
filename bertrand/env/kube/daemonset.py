@@ -4,19 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 
 import kubernetes
 
 from .api.resource import (
     KubeResource,
-    WatchEvent,
-    _watch,
     namespaced_resource,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import Mapping
 
     from bertrand.env.git import Deadline
 
@@ -82,61 +80,6 @@ class DaemonSet(
     """General-purpose wrapper around one Kubernetes DaemonSet object."""
 
     _obj: kubernetes.client.V1DaemonSet
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str = "",
-        resource_version: str = "",
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch DaemonSets.
-
-        Yields
-        ------
-        WatchEvent[DaemonSet]
-            DaemonSet watch events.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns a malformed DaemonSet watch payload.
-        """
-        namespace = namespace.strip() if namespace is not None else ""
-        api = kubernetes.client.AppsV1Api(kube.client)
-        if namespace:
-            watch_fn = api.list_namespaced_daemon_set
-            api_kwargs = {"namespace": namespace}
-            context = f"failed to watch DaemonSets in namespace {namespace!r}"
-        else:
-            watch_fn = api.list_daemon_set_for_all_namespaces
-            api_kwargs = {}
-            context = "failed to watch DaemonSets across all namespaces"
-        async for event in _watch(
-            watch_fn,
-            deadline=deadline,
-            context=context,
-            resource_version=resource_version,
-            label_selector=(
-                ",".join(f"{key}={value}" for key, value in labels.items())
-                if labels
-                else ""
-            ),
-            field_selector=field_selector,
-            api_kwargs=api_kwargs,
-        ):
-            if not isinstance(event.object, kubernetes.client.V1DaemonSet):
-                msg = "malformed Kubernetes DaemonSet watch payload"
-                raise OSError(msg)
-            yield WatchEvent(
-                type=event.type,
-                object=cls(_obj=event.object),
-                resource_version=event.resource_version,
-            )
 
     @property
     def generation(self) -> int:

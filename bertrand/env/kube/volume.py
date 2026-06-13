@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import PosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Never, Self
 
 import kubernetes
 
@@ -15,7 +15,6 @@ from bertrand.env.git import Deadline, until
 
 from .api.client import Kube
 from .api.resource import (
-    KubeManifest,
     KubeResource,
     cluster_resource,
     namespaced_resource,
@@ -57,7 +56,7 @@ STORAGE_FACTORS: dict[str, Decimal] = {
 )
 @dataclass(frozen=True)
 class StorageClass(
-    KubeResource[kubernetes.client.V1StorageClass, KubeManifest],
+    KubeResource[kubernetes.client.V1StorageClass, Never],
 ):
     """General-purpose wrapper around one Kubernetes StorageClass object.
 
@@ -327,14 +326,8 @@ class PersistentVolumeClaim(
         cls,
         kube: Kube,
         *,
-        namespace: str,
-        name: str,
-        access_modes: Collection[str],
-        storage_class: str,
-        storage_request: str,
+        intent: PersistentVolumeClaimManifest,
         deadline: Deadline,
-        labels: Mapping[str, str] | None = None,
-        annotations: Mapping[str, str] | None = None,
     ) -> PersistentVolumeClaim:
         """Create a PVC if missing and converge its requested storage size.
 
@@ -342,23 +335,11 @@ class PersistentVolumeClaim(
         ----------
         kube : Kube
             Active Kubernetes API context.
-        namespace : str
-            Namespace that owns the claim.
-        name : str
-            Claim name to create or update.
-        access_modes : Collection[str]
-            Required claim access modes, for example `"ReadWriteOnce"`.
-        storage_class : str
-            Required StorageClass name.
-        storage_request : str
-            Desired storage quantity. Existing claims grow upward but are not shrunk.
+        intent : PersistentVolumeClaimManifest
+            Desired claim state. Snapshot data sources are not supported by this
+            convergence API.
         deadline : Deadline
             Maximum request budget in seconds. If infinite, wait indefinitely.
-        labels : Mapping[str, str] | None, optional
-            Labels to apply to `metadata.labels` and validate on existing claims.
-        annotations : Mapping[str, str] | None, optional
-            Annotations to apply to `metadata.annotations` and validate on existing
-            claims.
 
         Returns
         -------
@@ -370,13 +351,16 @@ class PersistentVolumeClaim(
         OSError
             If Kubernetes returns malformed data or the API call fails.
         """
+        if intent.data_source is not None:
+            msg = "PVC upsert does not support data sources"
+            raise OSError(msg)
         namespace, name, modes, storage_class, storage_request = _normalize_pvc_fields(
             operation="PVC upsert",
-            namespace=namespace,
-            name=name,
-            access_modes=access_modes,
-            storage_class=storage_class,
-            storage_request=storage_request,
+            namespace=intent.namespace,
+            name=intent.name,
+            access_modes=intent.access_modes,
+            storage_class=intent.storage_class,
+            storage_request=intent.storage_request,
         )
         manifest = PersistentVolumeClaimManifest(
             namespace=namespace,
@@ -384,8 +368,8 @@ class PersistentVolumeClaim(
             access_modes=modes,
             storage_class=storage_class,
             storage_request=storage_request,
-            labels=labels,
-            annotations=annotations,
+            labels=intent.labels,
+            annotations=intent.annotations,
         ).manifest()
 
         try:
@@ -412,8 +396,8 @@ class PersistentVolumeClaim(
         live._assert_upsert_compatible(
             storage_class=storage_class,
             access_modes=modes,
-            labels=labels,
-            annotations=annotations,
+            labels=intent.labels,
+            annotations=intent.annotations,
         )
         return await live._grow(
             storage_request,
@@ -798,7 +782,7 @@ class PersistentVolumeClaim(
 )
 @dataclass(frozen=True)
 class PersistentVolume(
-    KubeResource[kubernetes.client.V1PersistentVolume, KubeManifest],
+    KubeResource[kubernetes.client.V1PersistentVolume, Never],
 ):
     """General-purpose wrapper around one Kubernetes PersistentVolume object.
 

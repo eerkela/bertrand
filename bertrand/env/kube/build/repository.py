@@ -50,6 +50,7 @@ from bertrand.env.kube.node import Node
 from bertrand.env.kube.service import Service, ServiceManifest, ServicePortView
 from bertrand.env.kube.volume import (
     PersistentVolumeClaim,
+    PersistentVolumeClaimManifest,
     StorageClass,
 )
 
@@ -1113,12 +1114,14 @@ async def ensure_image_repository(
         raise OSError(msg)
     pvc = await PersistentVolumeClaim.upsert(
         kube=kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=IMAGE_REPOSITORY_NAME,
-        access_modes=("ReadWriteMany",),
-        storage_class=storage.name,
-        storage_request=IMAGE_REPOSITORY_SIZE,
-        labels=IMAGE_REPOSITORY_LABELS,
+        intent=PersistentVolumeClaimManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=IMAGE_REPOSITORY_NAME,
+            access_modes=("ReadWriteMany",),
+            storage_class=storage.name,
+            storage_request=IMAGE_REPOSITORY_SIZE,
+            labels=IMAGE_REPOSITORY_LABELS,
+        ),
         deadline=deadline,
     )
     if pvc.storage_class_name != storage.name:

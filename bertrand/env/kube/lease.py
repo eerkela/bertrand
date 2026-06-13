@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 
 from kubernetes import client as kube_client
 
 from .api.resource import (
     KubeResource,
-    WatchEvent,
-    _watch,
     namespaced_resource,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import Mapping
     from datetime import datetime
 
     from bertrand.env.git import Deadline
@@ -183,61 +181,6 @@ class Lease(
     """
 
     _obj: kube_client.V1Lease
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str = "",
-        resource_version: str = "",
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Leases.
-
-        Yields
-        ------
-        WatchEvent[Lease]
-            Lease watch events.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns a malformed Lease watch payload.
-        """
-        namespace = namespace.strip() if namespace is not None else ""
-        api = kube_client.CoordinationV1Api(kube.client)
-        if namespace:
-            watch_fn = api.list_namespaced_lease
-            api_kwargs = {"namespace": namespace}
-            context = f"failed to watch Leases in namespace {namespace!r}"
-        else:
-            watch_fn = api.list_lease_for_all_namespaces
-            api_kwargs = {}
-            context = "failed to watch Leases across all namespaces"
-        async for event in _watch(
-            watch_fn,
-            deadline=deadline,
-            context=context,
-            resource_version=resource_version,
-            label_selector=(
-                ",".join(f"{key}={value}" for key, value in labels.items())
-                if labels
-                else ""
-            ),
-            field_selector=field_selector,
-            api_kwargs=api_kwargs,
-        ):
-            if not isinstance(event.object, kube_client.V1Lease):
-                msg = "malformed Kubernetes Lease watch payload"
-                raise OSError(msg)
-            yield WatchEvent(
-                type=event.type,
-                object=cls(_obj=event.object),
-                resource_version=event.resource_version,
-            )
 
     @classmethod
     async def create(

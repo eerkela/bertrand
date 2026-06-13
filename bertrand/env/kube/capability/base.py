@@ -424,8 +424,6 @@ async def delete_capabilities_for_scope(
         capability_ref_from_secret(secret, expected=ref)
         await secret.delete(
             kube,
-            namespace=secret.namespace,
-            name=secret.name,
             deadline=deadline,
         )
 

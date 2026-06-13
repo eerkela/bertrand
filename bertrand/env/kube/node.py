@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import platform
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal, Never
 
 import kubernetes
 
@@ -13,17 +13,14 @@ from bertrand.env.git import EMPTY_MAPPING
 
 from .api.client import Kube
 from .api.resource import (
-    KubeManifest,
     KubeResource,
-    WatchEvent,
-    _watch,
     cluster_resource,
 )
 from .pod import Pod
 
 if TYPE_CHECKING:
     import builtins
-    from collections.abc import AsyncIterator, Collection, Mapping
+    from collections.abc import Collection, Mapping
 
     from bertrand.env.git import Deadline
 
@@ -81,7 +78,7 @@ class TaintView:
 )
 @dataclass(frozen=True)
 class Node(
-    KubeResource[kubernetes.client.V1Node, KubeManifest],
+    KubeResource[kubernetes.client.V1Node, Never],
 ):
     """General-purpose wrapper around one Kubernetes Node object.
 
@@ -98,57 +95,6 @@ class Node(
     """
 
     _obj: kubernetes.client.V1Node
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str = "",
-        resource_version: str = "",
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Nodes.
-
-        Yields
-        ------
-        WatchEvent[Node]
-            Node watch events.
-
-        Raises
-        ------
-        ValueError
-            If a namespace filter is supplied for this cluster-scoped resource.
-        OSError
-            If Kubernetes returns a malformed Node watch payload.
-        """
-        namespace = namespace.strip() if namespace is not None else ""
-        if namespace:
-            msg = "Node is cluster-scoped; cannot watch by namespace"
-            raise ValueError(msg)
-        api = kubernetes.client.CoreV1Api(kube.client)
-        async for event in _watch(
-            api.list_node,
-            deadline=deadline,
-            context="failed to watch Nodes",
-            resource_version=resource_version,
-            label_selector=(
-                ",".join(f"{key}={value}" for key, value in labels.items())
-                if labels
-                else ""
-            ),
-            field_selector=field_selector,
-        ):
-            if not isinstance(event.object, kubernetes.client.V1Node):
-                msg = "malformed Kubernetes Node watch payload"
-                raise OSError(msg)
-            yield WatchEvent(
-                type=event.type,
-                object=cls(_obj=event.object),
-                resource_version=event.resource_version,
-            )
 
     @classmethod
     async def local(cls, kube: Kube, *, deadline: Deadline) -> Node:

@@ -322,8 +322,6 @@ async def delete_dev_backend_state(
     for pod in pods:
         await pod.delete(
             kube,
-            namespace=pod.namespace,
-            name=pod.name,
             deadline=deadline,
             grace_period_seconds=1,
         )
@@ -340,7 +338,7 @@ async def delete_dev_backend_state(
     for request in requests:
         await CODE_OPEN_RESOURCE.delete(
             kube,
-            name=request.name,
+            resource=request,
             deadline=deadline,
         )
 

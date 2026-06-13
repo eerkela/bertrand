@@ -508,7 +508,7 @@ async def delete_device_inventory(
         return False
     await BERTRAND_DEVICE_RESOURCE.delete(
         kube,
-        name=name,
+        resource=record,
         deadline=deadline,
     )
     return True
@@ -544,7 +544,7 @@ async def delete_device_inventory_for_host(
     for record in records:
         await BERTRAND_DEVICE_RESOURCE.delete(
             kube,
-            name=record.name,
+            resource=record,
             deadline=deadline,
         )
     return tuple(records)
@@ -726,7 +726,7 @@ async def create_resource_claim_templates(
     container_name: str | None = None,
     labels: Mapping[str, str],
     deadline: Deadline,
-) -> tuple[CustomObject, ...]:
+) -> tuple[ResourceClaimTemplate, ...]:
     """Create ResourceClaimTemplates for a pod or Job.
 
     Parameters
@@ -748,13 +748,13 @@ async def create_resource_claim_templates(
 
     Returns
     -------
-    tuple[CustomObject, ...]
+    tuple[ResourceClaimTemplate, ...]
         Created templates.
     """
     capability_ids = tuple(sorted(_check_kube_name(item) for item in capability_ids))
     if not capability_ids:
         return ()
-    created: list[CustomObject] = []
+    created: list[ResourceClaimTemplate] = []
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
     for capability_id in capability_ids:

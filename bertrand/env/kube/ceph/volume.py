@@ -46,6 +46,7 @@ from bertrand.env.kube.snapshot import VolumeSnapshot
 from bertrand.env.kube.volume import (
     PersistentVolume,
     PersistentVolumeClaim,
+    PersistentVolumeClaimManifest,
     StorageClass,
 )
 from bertrand.env.kube.workload.base import (
@@ -340,16 +341,18 @@ async def ensure_repository_volume_claim(
     storage_class = storage.name
     pvc = await PersistentVolumeClaim.upsert(
         kube=kube,
-        namespace=BERTRAND_NAMESPACE,
-        name=claim_name,
-        access_modes=("ReadWriteMany",),
-        storage_class=storage_class,
-        storage_request=size_request,
-        labels={
-            BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
-            REPO_VOLUME_CLAIM_LABEL: BERTRAND_LABEL_MANAGED,
-            REPO_ID_LABEL: repo_id,
-        },
+        intent=PersistentVolumeClaimManifest(
+            namespace=BERTRAND_NAMESPACE,
+            name=claim_name,
+            access_modes=("ReadWriteMany",),
+            storage_class=storage_class,
+            storage_request=size_request,
+            labels={
+                BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+                REPO_VOLUME_CLAIM_LABEL: BERTRAND_LABEL_MANAGED,
+                REPO_ID_LABEL: repo_id,
+            },
+        ),
         deadline=deadline,
     )
     _assert_managed_repository_volume_claim(
@@ -473,8 +476,6 @@ async def delete_repository_volume_claim(
 
     await pvc.delete(
         kube,
-        namespace=pvc.namespace,
-        name=pvc.name,
         deadline=deadline,
     )
 
@@ -1614,8 +1615,6 @@ async def delete_repository_snapshot_artifacts(
     for pvc in sorted(pvcs, key=lambda item: item.name):
         await pvc.delete(
             kube,
-            namespace=pvc.namespace,
-            name=pvc.name,
             deadline=deadline,
         )
         await pvc.wait(
@@ -1637,8 +1636,6 @@ async def delete_repository_snapshot_artifacts(
     for snapshot in sorted(snapshots, key=lambda item: item.name):
         await snapshot.delete(
             kube,
-            namespace=snapshot.namespace,
-            name=snapshot.name,
             deadline=deadline,
         )
 
@@ -1710,8 +1707,7 @@ async def delete_all_repository_volumes(
         )
         await REPOSITORY_STATE_RESOURCE.delete(
             kube,
-            namespace=BERTRAND_NAMESPACE,
-            name=record.name,
+            resource=record,
             deadline=deadline,
         )
         deleted.append(record)
@@ -1912,8 +1908,7 @@ async def gc_repository_volumes(
             )
             await REPOSITORY_STATE_RESOURCE.delete(
                 kube,
-                namespace=BERTRAND_NAMESPACE,
-                name=record.name,
+                resource=record,
                 deadline=deadline,
             )
         except (OSError, TimeoutError, ValueError) as err:

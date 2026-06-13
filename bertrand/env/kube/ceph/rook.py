@@ -213,8 +213,6 @@ async def delete_osd_claims(
     for claim in claims:
         await claim.delete(
             kube,
-            namespace=claim.namespace,
-            name=claim.name,
             deadline=deadline,
         )
 

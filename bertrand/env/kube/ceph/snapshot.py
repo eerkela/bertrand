@@ -201,8 +201,6 @@ async def maintain_repository_snapshots(
             continue
         await snapshot.delete(
             kube,
-            namespace=snapshot.namespace,
-            name=snapshot.name,
             deadline=deadline,
         )
         deleted_names.add(snapshot.name)
@@ -450,8 +448,6 @@ async def cleanup_orphaned_build_sources(
             continue
         await pvc.delete(
             kube,
-            namespace=pvc.namespace,
-            name=pvc.name,
             deadline=deadline,
         )
         deleted += 1
@@ -475,8 +471,6 @@ async def cleanup_orphaned_build_sources(
             continue
         await snapshot.delete(
             kube,
-            namespace=snapshot.namespace,
-            name=snapshot.name,
             deadline=deadline,
         )
         deleted += 1
@@ -602,8 +596,6 @@ async def _cleanup_build_source(
         with suppress(OSError, TimeoutError, ValueError):
             await pvc.delete(
                 kube,
-                namespace=pvc.namespace,
-                name=pvc.name,
                 deadline=deadline,
             )
             await pvc.wait(
@@ -615,8 +607,6 @@ async def _cleanup_build_source(
         with suppress(OSError, TimeoutError, ValueError):
             await snapshot.delete(
                 kube,
-                namespace=snapshot.namespace,
-                name=snapshot.name,
                 deadline=deadline,
             )
 

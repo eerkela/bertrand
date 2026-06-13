@@ -115,8 +115,6 @@ async def delete_workload_service(
     if service is not None:
         await service.delete(
             kube,
-            namespace=service.namespace,
-            name=service.name,
             deadline=deadline,
         )
 
@@ -220,8 +218,6 @@ async def delete_workload_network_policy(
     if network_policy is not None:
         await network_policy.delete(
             kube,
-            namespace=network_policy.namespace,
-            name=network_policy.name,
             deadline=deadline,
         )
 
@@ -404,8 +400,7 @@ async def prune_workload_http_routes(
         _assert_managed(stale, identity=identity, kind="HTTPRoute")
         await HTTP_ROUTE_RESOURCE.delete(
             kube,
-            namespace=stale.namespace,
-            name=stale.name,
+            resource=stale,
             deadline=deadline,
         )
 
@@ -441,8 +436,7 @@ async def delete_workload_http_routes(
         _assert_managed(route, identity=identity, kind="HTTPRoute")
         await HTTP_ROUTE_RESOURCE.delete(
             kube,
-            namespace=route.namespace,
-            name=route.name,
+            resource=route,
             deadline=deadline,
         )
 

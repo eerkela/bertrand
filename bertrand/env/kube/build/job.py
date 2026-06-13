@@ -41,7 +41,6 @@ from bertrand.env.kube.capability.device import (
 )
 from bertrand.env.kube.ceph.snapshot import prepared_repository_build_source
 from bertrand.env.kube.configmap import ConfigMap, ConfigMapManifest
-from bertrand.env.kube.dra import ResourceClaimTemplate
 from bertrand.env.kube.job import Job
 
 if TYPE_CHECKING:
@@ -392,10 +391,8 @@ async def _publish_target(
             if remaining <= 0:
                 continue
             try:
-                await ResourceClaimTemplate.delete(
+                await template.delete(
                     kube,
-                    namespace=template.namespace,
-                    name=template.name,
                     deadline=Deadline(
                         min(BUILD_JOB_CLEANUP_TIMEOUT_SECONDS, remaining)
                     ),
@@ -630,8 +627,6 @@ async def _delete_config_map(
         if config is not None:
             await config.delete(
                 kube,
-                namespace=config.namespace,
-                name=config.name,
                 deadline=deadline,
             )
     except (OSError, TimeoutError):

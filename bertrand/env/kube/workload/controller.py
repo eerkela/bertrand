@@ -795,8 +795,6 @@ async def _delete_active_execution(
     for job in jobs:
         await job.delete(
             kube,
-            namespace=job.namespace,
-            name=job.name,
             deadline=deadline,
             propagation_policy="Foreground",
             grace_period_seconds=grace_period_seconds,
@@ -809,8 +807,6 @@ async def _delete_active_execution(
     for pod in pods:
         await pod.delete(
             kube,
-            namespace=pod.namespace,
-            name=pod.name,
             deadline=deadline,
             grace_period_seconds=grace_period_seconds,
         )
@@ -912,8 +908,6 @@ async def _delete_deployment(
         return False
     await deployment.delete(
         kube,
-        namespace=deployment.namespace,
-        name=deployment.name,
         deadline=deadline,
         propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,
@@ -940,8 +934,6 @@ async def _delete_cronjob(
         return False
     await cronjob.delete(
         kube,
-        namespace=cronjob.namespace,
-        name=cronjob.name,
         deadline=deadline,
         propagation_policy=propagation_policy,
         grace_period_seconds=grace_period_seconds,

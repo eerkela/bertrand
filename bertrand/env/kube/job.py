@@ -4,17 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal, Never, Self
 
 import kubernetes
 
 from bertrand.env.git import Deadline, until
 
 from .api.resource import (
-    KubeManifest,
     KubeResource,
-    WatchEvent,
-    _watch,
     namespaced_resource,
 )
 from .pod import Pod
@@ -22,7 +19,6 @@ from .pod import Pod
 if TYPE_CHECKING:
     import builtins
     from collections.abc import (
-        AsyncIterator,
         Awaitable,
         Callable,
         Mapping,
@@ -215,7 +211,7 @@ class JobManifest:
 )
 @dataclass(frozen=True)
 class Job(
-    KubeResource[kubernetes.client.V1Job, KubeManifest],
+    KubeResource[kubernetes.client.V1Job, Never],
 ):
     """General-purpose wrapper around one Kubernetes Job object.
 
@@ -232,61 +228,6 @@ class Job(
     """
 
     _obj: kubernetes.client.V1Job
-
-    @classmethod
-    async def watch(
-        cls,
-        kube: Kube,
-        *,
-        deadline: Deadline,
-        namespace: str | None = None,
-        labels: Mapping[str, str] | None = None,
-        field_selector: str = "",
-        resource_version: str = "",
-    ) -> AsyncIterator[WatchEvent[Self]]:
-        """Watch Jobs.
-
-        Yields
-        ------
-        WatchEvent[Job]
-            Job watch events.
-
-        Raises
-        ------
-        OSError
-            If Kubernetes returns a malformed Job watch payload.
-        """
-        namespace = namespace.strip() if namespace is not None else ""
-        api = kubernetes.client.BatchV1Api(kube.client)
-        if namespace:
-            watch_fn = api.list_namespaced_job
-            api_kwargs = {"namespace": namespace}
-            context = f"failed to watch Jobs in namespace {namespace!r}"
-        else:
-            watch_fn = api.list_job_for_all_namespaces
-            api_kwargs = {}
-            context = "failed to watch Jobs across all namespaces"
-        async for event in _watch(
-            watch_fn,
-            deadline=deadline,
-            context=context,
-            resource_version=resource_version,
-            label_selector=(
-                ",".join(f"{key}={value}" for key, value in labels.items())
-                if labels
-                else ""
-            ),
-            field_selector=field_selector,
-            api_kwargs=api_kwargs,
-        ):
-            if not isinstance(event.object, kubernetes.client.V1Job):
-                msg = "malformed Kubernetes Job watch payload"
-                raise OSError(msg)
-            yield WatchEvent(
-                type=event.type,
-                object=cls(_obj=event.object),
-                resource_version=event.resource_version,
-            )
 
     @classmethod
     async def create(
@@ -701,8 +642,6 @@ class Job(
         try:
             await self.delete(
                 kube,
-                namespace=self.namespace,
-                name=self.name,
                 deadline=deadline,
                 propagation_policy="Foreground",
             )

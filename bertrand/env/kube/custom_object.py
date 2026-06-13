@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
 from kubernetes import client as kube_client
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bertrand.env.git import Deadline, until
+from bertrand.env.git import EMPTY_MAPPING, Deadline, until
 from bertrand.env.kube.crd import (
     CustomResourceDefinition,
     CustomResourceDefinitionManifest,
@@ -23,8 +23,8 @@ from .api.client import Kube
 from .api.resource import (
     RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
     WatchEvent,
-    WatchExpiredError,
-    _watch,
+    _resume_watch,
+    watch_stream,
 )
 
 if TYPE_CHECKING:
@@ -401,9 +401,8 @@ class CustomObjectResource[T_co]:
         kube: Kube,
         *,
         deadline: Deadline,
-        labels: Mapping[str, str] | None = None,
+        labels: Mapping[str, str] = EMPTY_MAPPING,
         namespace: str | None = None,
-        resource_version: str = "",
         emit_initial: bool = False,
         field_selector: str = "",
     ) -> AsyncIterator[WatchEvent[T_co]]:
@@ -418,49 +417,48 @@ class CustomObjectResource[T_co]:
         selected = self._namespace_filter(action="watch", namespace=namespace)
         normalized = _normalized_namespaces(selected)
         namespace = None if normalized is None else next(iter(normalized), None)
-        labels = self._merged_labels(labels)
+        labels = self._merged_labels(labels) or EMPTY_MAPPING
         field_selector = field_selector.strip()
-        current_version = resource_version.strip()
-        can_emit_initial = emit_initial and not current_version
-        while True:
-            remaining = deadline.remaining
-            if remaining <= 0:
-                return
-            if not current_version:
-                items, current_version = await self._snapshot(
-                    kube,
-                    namespace=namespace,
-                    labels=labels,
-                    field_selector=field_selector,
-                    deadline=deadline,
-                )
-                if can_emit_initial:
-                    for event in self._initial_watch_events(
-                        items,
-                        resource_version=current_version,
-                    ):
-                        yield event
-                    can_emit_initial = False
 
-            remaining = deadline.remaining
-            if remaining <= 0:
-                return
-            try:
-                async for event in self._watch_once(
-                    kube,
-                    namespace=namespace,
-                    labels=labels,
-                    deadline=deadline,
-                    resource_version=current_version,
-                    field_selector=field_selector,
-                ):
-                    if event.resource_version:
-                        current_version = event.resource_version
-                    yield event
-            except WatchExpiredError:
-                current_version = ""
-            else:
-                return
+        async def snapshot(
+            attempt_deadline: Deadline,
+        ) -> tuple[tuple[WatchEvent[T_co], ...], str]:
+            items, resource_version = await self._snapshot(
+                kube,
+                namespace=namespace,
+                labels=labels,
+                field_selector=field_selector,
+                deadline=attempt_deadline,
+            )
+            return (
+                self._initial_watch_events(
+                    items,
+                    resource_version=resource_version,
+                ),
+                resource_version,
+            )
+
+        async def stream(
+            resource_version: str,
+            attempt_deadline: Deadline,
+        ) -> AsyncIterator[WatchEvent[T_co]]:
+            async for event in self._watch_once(
+                kube,
+                namespace=namespace,
+                labels=labels,
+                deadline=attempt_deadline,
+                resource_version=resource_version,
+                field_selector=field_selector,
+            ):
+                yield event
+
+        async for event in _resume_watch(
+            deadline=deadline,
+            snapshot=snapshot,
+            stream=stream,
+            emit_initial=emit_initial,
+        ):
+            yield event
 
     async def create(
         self,
@@ -653,12 +651,30 @@ class CustomObjectResource[T_co]:
         self,
         kube: Kube,
         *,
-        name: str,
+        resource: T_co,
         deadline: Deadline,
-        namespace: str | None = None,
     ) -> None:
-        """Delete one custom object by name."""
-        namespace = self._object_namespace(namespace, action="delete")
+        """Delete one observed custom object.
+
+        Raises
+        ------
+        OSError
+            If the object has incomplete Kubernetes metadata.
+        """
+        name = str(getattr(resource, "name", "") or "").strip()
+        namespace = str(getattr(resource, "namespace", "") or "").strip() or None
+        if self.scope == "cluster":
+            if not name:
+                msg = f"cannot delete {self.kind} with missing metadata.name"
+                raise OSError(msg)
+            namespace = None
+        else:
+            if not namespace or not name:
+                msg = (
+                    f"cannot delete {self.kind} with missing "
+                    "metadata.name/namespace"
+                )
+                raise OSError(msg)
         label = self._object_label(name=name, namespace=namespace)
         await self._run_custom(
             kube,
@@ -736,7 +752,7 @@ class CustomObjectResource[T_co]:
             if labels
             else ""
         )
-        async for event in _watch(
+        async for event in watch_stream(
             watch_fn,
             deadline=deadline,
             context=self._collection_context("watch", namespace),
@@ -1416,9 +1432,8 @@ class CustomResource(CustomObject):
         kube: Kube,
         *,
         deadline: Deadline,
-        labels: Mapping[str, str] | None = None,
+        labels: Mapping[str, str] = EMPTY_MAPPING,
         namespace: str | None = None,
-        resource_version: str = "",
         emit_initial: bool = False,
         field_selector: str = "",
     ) -> AsyncIterator[WatchEvent[Self]]:
@@ -1434,7 +1449,6 @@ class CustomResource(CustomObject):
             deadline=deadline,
             labels=labels,
             namespace=namespace,
-            resource_version=resource_version,
             emit_initial=emit_initial,
             field_selector=field_selector,
         ):
@@ -1579,21 +1593,17 @@ class CustomResource(CustomObject):
             namespace=namespace,
         )
 
-    @classmethod
     async def delete(
-        cls,
+        self,
         kube: Kube,
         *,
-        name: str,
         deadline: Deadline,
-        namespace: str | None = None,
     ) -> None:
-        """Delete one custom object by name."""
-        await cls._api().delete(
+        """Delete this custom object."""
+        await type(self)._api().delete(
             kube,
-            name=name,
+            resource=self,
             deadline=deadline,
-            namespace=namespace,
         )
 
     async def refresh(self, kube: Kube, *, deadline: Deadline) -> Self | None:
