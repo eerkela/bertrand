@@ -26,11 +26,6 @@ RESOURCE_WAIT_POLL_INTERVAL_SECONDS = 0.5
 _DELETION_PROPAGATION_POLICIES = frozenset({"Background", "Foreground", "Orphan"})
 
 
-class _HasObjectMeta(Protocol):
-    @property
-    def metadata(self) -> kube_client.V1ObjectMeta | None: ...
-
-
 class _KubeManifest(Protocol):
     @property
     def name(self) -> str: ...
@@ -39,18 +34,102 @@ class _KubeManifest(Protocol):
     def manifest(self) -> Mapping[str, Any]: ...
 
 
-@dataclass(frozen=True)
-class _ResourceConfig:
-    kind: str
-    namespaced: bool
-    api: type[Any]
-    payload: type[Any]
-    read_method: Callable[..., Any]
-    list_method: Callable[..., Any]
-    list_all_method: Callable[..., Any] | None
-    create_method: Callable[..., Any] | None
-    patch_method: Callable[..., Any] | None
-    delete_method: Callable[..., Any] | None
+class _HasObjectMeta(Protocol):
+    @property
+    def metadata(self) -> kube_client.V1ObjectMeta | None: ...
+
+
+class _ListMeta(Protocol):
+    @property
+    def resource_version(self) -> str | None: ...
+
+
+class _HasListMeta(Protocol):
+    @property
+    def metadata(self) -> _ListMeta | None: ...
+
+
+class _KubeListPayload[PayloadT](_HasListMeta, Protocol):
+    @property
+    def items(self) -> list[PayloadT]: ...
+
+
+class _ResourceAPI[PayloadT](Protocol):
+    @property
+    def kind(self) -> str: ...
+    @property
+    def namespaced(self) -> bool: ...
+    @property
+    def can_create(self) -> bool: ...
+    @property
+    def can_patch(self) -> bool: ...
+    @property
+    def can_delete(self) -> bool: ...
+
+    def items(
+        self,
+        payload: _KubeListPayload[PayloadT],
+    ) -> builtins.list[PayloadT]: ...
+    def list_resource_version(self, payload: _KubeListPayload[PayloadT]) -> str: ...
+    def name(self, payload: PayloadT) -> str: ...
+    def namespace(self, payload: PayloadT) -> str: ...
+    def labels(self, payload: PayloadT) -> Mapping[str, str]: ...
+    def annotations(self, payload: PayloadT) -> Mapping[str, str]: ...
+    def resource_version(self, payload: PayloadT) -> str: ...
+    def uid(self, payload: PayloadT) -> str: ...
+    def created_at(self, payload: PayloadT) -> datetime | None: ...
+    async def read(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        namespace: str | None,
+        deadline: Deadline,
+    ) -> PayloadT | None: ...
+    async def list(
+        self,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None,
+        namespaces: Collection[str] | None,
+        label_selector: str,
+        field_selector: str,
+    ) -> builtins.list[_KubeListPayload[PayloadT]]: ...
+    async def create(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        namespace: str | None,
+        body: Mapping[str, Any],
+        deadline: Deadline,
+    ) -> PayloadT: ...
+    async def patch(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        namespace: str | None,
+        body: Mapping[str, object],
+        deadline: Deadline,
+        context: str,
+    ) -> PayloadT: ...
+    async def delete(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        namespace: str | None,
+        body: kube_client.V1DeleteOptions | None,
+        deadline: Deadline,
+    ) -> object | None: ...
+    def watch_method(
+        self,
+        kube: Kube,
+        *,
+        namespace: str | None,
+    ) -> tuple[Callable[..., Any], dict[str, Any], str]: ...
 
 
 class WatchExpiredError(OSError):
@@ -298,59 +377,663 @@ async def watch_stream(
         watcher.stop()
 
 
-def _config(cls: type[KubeResource[Any, Any]]) -> _ResourceConfig:
-    config = cls._resource_config
-    if config is None:
+def _api[PayloadT](cls: type[KubeResource[PayloadT, Any]]) -> _ResourceAPI[PayloadT]:
+    api = cls._resource_api
+    if api is None:
         msg = f"{cls.__name__} is missing Kubernetes resource configuration"
         raise NotImplementedError(msg)
-    return config
-
-
-def _validate_payload[ResourceT: KubeResource[Any, Any]](
-    cls: type[ResourceT],
-    config: _ResourceConfig,
-    payload: Any
-) -> ResourceT:
-    if not isinstance(payload, config.payload):
-        msg = f"malformed Kubernetes {config.kind} payload"
-        raise OSError(msg)
-    return cls(_obj=payload)
-
-
-def _validate_list[ResourceT: KubeResource[Any, Any]](
-    cls: type[ResourceT],
-    config: _ResourceConfig,
-    payload: Any,
-) -> builtins.list[ResourceT]:
-    try:
-        raw_items = payload.items
-    except AttributeError as err:
-        msg = f"malformed Kubernetes {config.kind} list payload"
-        raise OSError(msg) from err
-    if not isinstance(raw_items, list):
-        msg = f"malformed Kubernetes {config.kind} list payload"
-        raise OSError(msg)
-    items: builtins.list[ResourceT] = []
-    for item in raw_items:
-        if not isinstance(item, config.payload):
-            msg = f"malformed Kubernetes {config.kind} list item"
-            raise OSError(msg)
-        items.append(cls(_obj=item))
-    return items
+    return cast("_ResourceAPI[PayloadT]", api)
 
 
 @dataclass(frozen=True)
-class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
+class _BuiltinResourceAPI[PayloadT: _HasObjectMeta]:
+    kind: str
+    namespaced: bool
+    api: type[Any]
+    payload: type[PayloadT]
+    read_method: Callable[..., Any]
+    list_method: Callable[..., Any]
+    list_all_method: Callable[..., Any] | None
+    create_method: Callable[..., Any] | None
+    patch_method: Callable[..., Any] | None
+    delete_method: Callable[..., Any] | None
+
+    @property
+    def can_create(self) -> bool:
+        """Return whether this binding supports generic create."""
+        return self.create_method is not None
+
+    @property
+    def can_patch(self) -> bool:
+        """Return whether this binding supports generic patch."""
+        return self.patch_method is not None
+
+    @property
+    def can_delete(self) -> bool:
+        """Return whether this binding supports generic delete."""
+        return self.delete_method is not None
+
+    def _identity(
+        self,
+        *,
+        name: str,
+        namespace: str | None,
+        action: str,
+    ) -> tuple[str, str, str]:
+        name = name.strip()
+        namespace = namespace.strip() if namespace is not None else ""
+        if self.namespaced:
+            if not namespace or not name:
+                msg = f"{self.kind} {action} requires non-empty namespace and name"
+                raise OSError(msg)
+            return namespace, name, f"{namespace}/{name}"
+        if namespace:
+            msg = f"{self.kind} is cluster-scoped; cannot {action} by namespace"
+            raise ValueError(msg)
+        if not name:
+            msg = f"{self.kind} {action} requires a non-empty name"
+            raise OSError(msg)
+        return "", name, name
+
+    def items(
+        self,
+        payload: _KubeListPayload[PayloadT],
+    ) -> builtins.list[PayloadT]:
+        """Return items from one Kubernetes generated-model list payload.
+
+        Parameters
+        ----------
+        payload : _KubeListPayload[PayloadT]
+            Kubernetes list payload to read.
+
+        Returns
+        -------
+        list[PayloadT]
+            Kubernetes generated-model payload items.
+        """
+        return payload.items
+
+    def list_resource_version(self, payload: _KubeListPayload[PayloadT]) -> str:
+        """Return a generated-model list payload's resource version.
+
+        Parameters
+        ----------
+        payload : _KubeListPayload[PayloadT]
+            Kubernetes list payload returned by a generated API method.
+
+        Returns
+        -------
+        str
+            Trimmed list `metadata.resourceVersion`.
+
+        Raises
+        ------
+        OSError
+            If Kubernetes omits the list resource version.
+        """
+        metadata = payload.metadata
+        resource_version = (
+            str(metadata.resource_version or "").strip() if metadata is not None else ""
+        )
+        if not resource_version:
+            msg = f"Kubernetes {self.kind} list had no resourceVersion"
+            raise OSError(msg)
+        return resource_version
+
+    def name(self, payload: PayloadT) -> str:
+        """Return a generated-model payload's metadata name.
+
+        Returns
+        -------
+        str
+            Trimmed `metadata.name`, or an empty string when unavailable.
+        """
+        metadata = payload.metadata
+        return (metadata.name or "").strip() if metadata is not None else ""
+
+    def namespace(self, payload: PayloadT) -> str:
+        """Return a generated-model payload's metadata namespace.
+
+        Returns
+        -------
+        str
+            Trimmed `metadata.namespace`, or an empty string when unavailable.
+        """
+        metadata = payload.metadata
+        return (metadata.namespace or "").strip() if metadata is not None else ""
+
+    def labels(self, payload: PayloadT) -> Mapping[str, str]:
+        """Return a generated-model payload's metadata labels.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only `metadata.labels`, or an empty mapping when unavailable.
+        """
+        metadata = payload.metadata
+        if metadata is None or metadata.labels is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.labels)
+
+    def annotations(self, payload: PayloadT) -> Mapping[str, str]:
+        """Return a generated-model payload's metadata annotations.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Read-only `metadata.annotations`, or an empty mapping when unavailable.
+        """
+        metadata = payload.metadata
+        if metadata is None or metadata.annotations is None:
+            return MappingProxyType({})
+        return MappingProxyType(metadata.annotations)
+
+    def resource_version(self, payload: PayloadT) -> str:
+        """Return a generated-model payload's metadata resource version.
+
+        Returns
+        -------
+        str
+            Trimmed `metadata.resourceVersion`, or an empty string when unavailable.
+        """
+        metadata = payload.metadata
+        return (metadata.resource_version or "").strip() if metadata is not None else ""
+
+    def uid(self, payload: PayloadT) -> str:
+        """Return a generated-model payload's metadata UID.
+
+        Returns
+        -------
+        str
+            Trimmed `metadata.uid`, or an empty string when unavailable.
+        """
+        metadata = payload.metadata
+        return (metadata.uid or "").strip() if metadata is not None else ""
+
+    def created_at(self, payload: PayloadT) -> datetime | None:
+        """Return a generated-model payload's creation timestamp.
+
+        Returns
+        -------
+        datetime | None
+            Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
+        """
+        metadata = payload.metadata
+        return metadata.creation_timestamp if metadata is not None else None
+
+    async def read(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        namespace: str | None,
+        deadline: Deadline,
+    ) -> PayloadT | None:
+        """Read one Kubernetes generated-model resource by name.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Kubernetes object name.
+        namespace : str | None
+            Namespace for namespaced resources.
+        deadline : Deadline
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        PayloadT | None
+            Kubernetes generated-model payload, or `None` when missing.
+        """
+        namespace, name, label = self._identity(
+            name=name,
+            namespace=namespace,
+            action="get",
+        )
+        api = self.api(kube.client)
+        if self.namespaced:
+            return cast(
+                "PayloadT | None",
+                await kube.run(
+                    lambda request_timeout: self.read_method(
+                        api,
+                        name=name,
+                        namespace=namespace,
+                        _request_timeout=request_timeout,
+                    ),
+                    deadline=deadline,
+                    context=f"failed to read {self.kind} {label}",
+                    missing_ok=True,
+                ),
+            )
+        return cast(
+            "PayloadT | None",
+            await kube.run(
+                lambda request_timeout: self.read_method(
+                    api,
+                    name=name,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to read {self.kind} {label}",
+                missing_ok=True,
+            ),
+        )
+
+    async def list(
+        self,
+        kube: Kube,
+        *,
+        deadline: Deadline,
+        namespace: str | None,
+        namespaces: Collection[str] | None,
+        label_selector: str,
+        field_selector: str,
+    ) -> builtins.list[_KubeListPayload[PayloadT]]:
+        """List Kubernetes generated-model resources.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        deadline : Deadline
+            Maximum request budget in seconds.
+        namespace : str | None
+            Single namespace filter.
+        namespaces : Collection[str] | None
+            Multiple namespace filters.
+        label_selector : str
+            Rendered Kubernetes label selector.
+        field_selector : str
+            Rendered Kubernetes field selector.
+
+        Returns
+        -------
+        list[_KubeListPayload[PayloadT]]
+            Kubernetes generated-model list payloads.
+
+        Raises
+        ------
+        ValueError
+            If namespace filters are invalid for the resource scope.
+        """
+        api = self.api(kube.client)
+        namespace = namespace.strip() if namespace is not None else ""
+        if not self.namespaced:
+            if namespace or namespaces is not None:
+                msg = f"{self.kind} is cluster-scoped; cannot list by namespace"
+                raise ValueError(msg)
+            return [
+                cast(
+                    "_KubeListPayload[PayloadT]",
+                    await kube.run(
+                        lambda request_timeout: self.list_method(
+                            api,
+                            label_selector=label_selector or None,
+                            field_selector=field_selector or None,
+                            _request_timeout=request_timeout,
+                        ),
+                        deadline=deadline,
+                        context=f"failed to list {self.kind} resources",
+                        missing_ok=False,
+                    ),
+                )
+            ]
+
+        if namespace and namespaces is not None:
+            msg = f"{self.kind} list accepts either namespace or namespaces, not both"
+            raise ValueError(msg)
+        selected = (namespace,) if namespace else namespaces
+        if selected is None:
+            list_all = self.list_all_method
+            if list_all is None:
+                msg = f"{self.kind} cannot be listed across all namespaces"
+                raise NotImplementedError(msg)
+            return [
+                cast(
+                    "_KubeListPayload[PayloadT]",
+                    await kube.run(
+                        lambda request_timeout: list_all(
+                            api,
+                            label_selector=label_selector or None,
+                            field_selector=field_selector or None,
+                            _request_timeout=request_timeout,
+                        ),
+                        deadline=deadline,
+                        context=(
+                            f"failed to list {self.kind} resources across namespaces"
+                        ),
+                        missing_ok=False,
+                    ),
+                )
+            ]
+
+        normalized = tuple(sorted({item.strip() for item in selected if item.strip()}))
+        if not normalized:
+            return []
+        payloads = await asyncio.gather(
+            *(
+                kube.run(
+                    lambda request_timeout, namespace=namespace: self.list_method(
+                        api,
+                        namespace=namespace,
+                        label_selector=label_selector or None,
+                        field_selector=field_selector or None,
+                        _request_timeout=request_timeout,
+                    ),
+                    deadline=deadline,
+                    context=(
+                        f"failed to list {self.kind} resources in namespace "
+                        f"{namespace!r}"
+                    ),
+                    missing_ok=False,
+                )
+                for namespace in normalized
+            )
+        )
+        return [cast("_KubeListPayload[PayloadT]", payload) for payload in payloads]
+
+    async def create(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        namespace: str | None,
+        body: Mapping[str, Any],
+        deadline: Deadline,
+    ) -> PayloadT:
+        """Create one Kubernetes generated-model resource.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Kubernetes object name.
+        namespace : str | None
+            Namespace for namespaced resources.
+        body : Mapping[str, Any]
+            Kubernetes manifest body.
+        deadline : Deadline
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        PayloadT
+            Kubernetes generated-model payload.
+
+        Raises
+        ------
+        NotImplementedError
+            If this binding has no create method.
+        """
+        create = self.create_method
+        if create is None:
+            msg = f"{self.kind} does not implement create"
+            raise NotImplementedError(msg)
+        namespace, _, label = self._identity(
+            name=name,
+            namespace=namespace,
+            action="create",
+        )
+        api = self.api(kube.client)
+        if self.namespaced:
+            return cast(
+                "PayloadT",
+                await kube.run(
+                    lambda request_timeout: create(
+                        api,
+                        namespace=namespace,
+                        body=body,
+                        _request_timeout=request_timeout,
+                    ),
+                    deadline=deadline,
+                    context=f"failed to create {self.kind} {label}",
+                    missing_ok=False,
+                ),
+            )
+        return cast(
+            "PayloadT",
+            await kube.run(
+                lambda request_timeout: create(
+                    api,
+                    body=body,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to create {self.kind} {label}",
+                missing_ok=False,
+            ),
+        )
+
+    async def patch(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        namespace: str | None,
+        body: Mapping[str, object],
+        deadline: Deadline,
+        context: str,
+    ) -> PayloadT:
+        """Patch one Kubernetes generated-model resource.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Kubernetes object name.
+        namespace : str | None
+            Namespace for namespaced resources.
+        body : Mapping[str, object]
+            Kubernetes patch body.
+        deadline : Deadline
+            Maximum request budget in seconds.
+        context : str
+            Error context for the Kubernetes request.
+
+        Returns
+        -------
+        PayloadT
+            Kubernetes generated-model payload.
+
+        Raises
+        ------
+        NotImplementedError
+            If this binding has no patch method.
+        """
+        patch = self.patch_method
+        if patch is None:
+            msg = f"{self.kind} does not implement patch"
+            raise NotImplementedError(msg)
+        namespace, name, _ = self._identity(
+            name=name,
+            namespace=namespace,
+            action="patch",
+        )
+        api = self.api(kube.client)
+        if self.namespaced:
+            return cast(
+                "PayloadT",
+                await kube.run(
+                    lambda request_timeout: patch(
+                        api,
+                        name=name,
+                        namespace=namespace,
+                        body=body,
+                        _request_timeout=request_timeout,
+                    ),
+                    deadline=deadline,
+                    context=context,
+                    missing_ok=False,
+                ),
+            )
+        return cast(
+            "PayloadT",
+            await kube.run(
+                lambda request_timeout: patch(
+                    api,
+                    name=name,
+                    body=body,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=context,
+                missing_ok=False,
+            ),
+        )
+
+    async def delete(
+        self,
+        kube: Kube,
+        *,
+        name: str,
+        namespace: str | None,
+        body: kube_client.V1DeleteOptions | None,
+        deadline: Deadline,
+    ) -> object | None:
+        """Delete one Kubernetes generated-model resource.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        name : str
+            Kubernetes object name.
+        namespace : str | None
+            Namespace for namespaced resources.
+        body : kubernetes.client.V1DeleteOptions | None
+            Kubernetes deletion options.
+        deadline : Deadline
+            Maximum request budget in seconds.
+
+        Returns
+        -------
+        object | None
+            Raw Kubernetes delete response.
+
+        Raises
+        ------
+        NotImplementedError
+            If this binding has no delete method.
+        """
+        delete = self.delete_method
+        if delete is None:
+            msg = f"{self.kind} does not implement delete"
+            raise NotImplementedError(msg)
+        namespace, name, label = self._identity(
+            name=name,
+            namespace=namespace,
+            action="delete",
+        )
+        api = self.api(kube.client)
+        if self.namespaced:
+            return await kube.run(
+                lambda request_timeout: delete(
+                    api,
+                    name=name,
+                    namespace=namespace,
+                    body=body,
+                    _request_timeout=request_timeout,
+                ),
+                deadline=deadline,
+                context=f"failed to delete {self.kind} {label}",
+                missing_ok=True,
+            )
+        return await kube.run(
+            lambda request_timeout: delete(
+                api,
+                name=name,
+                body=body,
+                _request_timeout=request_timeout,
+            ),
+            deadline=deadline,
+            context=f"failed to delete {self.kind} {label}",
+            missing_ok=True,
+        )
+
+    def watch_method(
+        self,
+        kube: Kube,
+        *,
+        namespace: str | None,
+    ) -> tuple[Callable[..., Any], dict[str, Any], str]:
+        """Return the list-style method used for watch snapshots and streams.
+
+        Parameters
+        ----------
+        kube : Kube
+            Active Kubernetes API context.
+        namespace : str | None
+            Namespace to watch.
+
+        Returns
+        -------
+        tuple[Callable[..., Any], dict[str, Any], str]
+            List method, keyword arguments, and error context.
+
+        Raises
+        ------
+        NotImplementedError
+            If this binding cannot watch across all namespaces.
+        ValueError
+            If namespace is invalid for this resource scope.
+        """
+        namespace = namespace.strip() if namespace is not None else ""
+        api = self.api(kube.client)
+        if self.namespaced:
+            if namespace:
+                return (
+                    lambda **kwargs: self.list_method(api, **kwargs),
+                    {"namespace": namespace},
+                    (
+                        f"failed to watch {self.kind} resources in namespace "
+                        f"{namespace!r}"
+                    ),
+                )
+            list_all = self.list_all_method
+            if list_all is None:
+                msg = f"{self.kind} cannot be watched across all namespaces"
+                raise NotImplementedError(msg)
+            return (
+                lambda **kwargs: list_all(api, **kwargs),
+                {},
+                f"failed to watch {self.kind} resources across namespaces",
+            )
+        if namespace:
+            msg = f"{self.kind} is cluster-scoped; cannot watch by namespace"
+            raise ValueError(msg)
+        return (
+            lambda **kwargs: self.list_method(api, **kwargs),
+            {},
+            f"failed to watch {self.kind} resources",
+        )
+
+
+@dataclass(frozen=True)
+class KubeResource[PayloadT, ManifestT: _KubeManifest]:
     """Base class for Kubernetes generated-model wrappers.
 
     Attributes
     ----------
     _obj : PayloadT
         Typed Kubernetes client model returned by the cluster API.
+    _resource_api : ClassVar[_ResourceAPI[PayloadT] | None]
+        Abstract backend API for this resource type, shared by all instances.  These
+        are constructed and assigned to each type via one of the `cluster_resource`,
+        `namespaced_resource`, or `custom_resource` class decorators, respectively.
     """
 
+    # NOTE: unfortunately, PEP 526 prevents us from annotating
+    # `_resource_api: _ResourceAPI[PayloadT]` because `ClassVar[]` cannot contain
+    # unresolved type variables.  Therefore, we have to erase the payload type and
+    # recover it with a runtime cast in the `_api()` helper function, which recovers
+    # full type information as a workaround.
+    _resource_api: ClassVar[_ResourceAPI[Any] | None] = None
     _obj: PayloadT
-    _resource_config: ClassVar[_ResourceConfig | None] = None
 
     @property
     def name(self) -> str:
@@ -361,8 +1044,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         str
             Trimmed `metadata.name`, or an empty string when unavailable.
         """
-        metadata = self._obj.metadata
-        return (metadata.name or "").strip() if metadata is not None else ""
+        return _api(type(self)).name(self._obj)
 
     @property
     def namespace(self) -> str:
@@ -373,8 +1055,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         str
             Trimmed `metadata.namespace`, or an empty string when unavailable.
         """
-        metadata = self._obj.metadata
-        return (metadata.namespace or "").strip() if metadata is not None else ""
+        return _api(type(self)).namespace(self._obj)
 
     @property
     def labels(self) -> Mapping[str, str]:
@@ -386,10 +1067,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             Live read-only view of `metadata.labels`, or an empty mapping when
             unavailable.
         """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.labels is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.labels)
+        return _api(type(self)).labels(self._obj)
 
     @property
     def annotations(self) -> Mapping[str, str]:
@@ -401,10 +1079,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             Live read-only view of `metadata.annotations`, or an empty mapping when
             unavailable.
         """
-        metadata = self._obj.metadata
-        if metadata is None or metadata.annotations is None:
-            return MappingProxyType({})
-        return MappingProxyType(metadata.annotations)
+        return _api(type(self)).annotations(self._obj)
 
     @property
     def resource_version(self) -> str:
@@ -416,8 +1091,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             Kubernetes `metadata.resourceVersion`, or an empty string when
             unavailable.
         """
-        metadata = self._obj.metadata
-        return (metadata.resource_version or "").strip() if metadata is not None else ""
+        return _api(type(self)).resource_version(self._obj)
 
     @property
     def uid(self) -> str:
@@ -428,8 +1102,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         str
             Kubernetes `metadata.uid`, or an empty string when unavailable.
         """
-        metadata = self._obj.metadata
-        return (metadata.uid or "").strip() if metadata is not None else ""
+        return _api(type(self)).uid(self._obj)
 
     @property
     def created_at(self) -> datetime | None:
@@ -440,8 +1113,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         datetime | None
             Kubernetes `metadata.creationTimestamp`, or `None` when unavailable.
         """
-        metadata = self._obj.metadata
-        return metadata.creation_timestamp if metadata is not None else None
+        return _api(type(self)).created_at(self._obj)
 
     @classmethod
     async def get(
@@ -470,53 +1142,17 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         KubeResource | None
             Wrapped resource, or `None` when absent.
 
-        Raises
-        ------
-        OSError
-            If the resource identity is incomplete or Kubernetes returns malformed
-            data.
-        ValueError
-            If namespace is supplied for a cluster-scoped resource.
         """
-        config = _config(cls)
-        name = name.strip()
-        namespace = namespace.strip() if namespace is not None else ""
-        if config.namespaced:
-            if not namespace or not name:
-                msg = f"{config.kind} get requires non-empty namespace and name"
-                raise OSError(msg)
-            label = f"{namespace}/{name}"
-            payload = await kube.run(
-                lambda request_timeout: config.read_method(
-                    config.api(kube.client),
-                    name=name,
-                    namespace=namespace,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to read {config.kind} {label}",
-                missing_ok=True,
-            )
-        else:
-            if namespace:
-                msg = f"{config.kind} is cluster-scoped; cannot get by namespace"
-                raise ValueError(msg)
-            if not name:
-                msg = f"{config.kind} get requires a non-empty name"
-                raise OSError(msg)
-            payload = await kube.run(
-                lambda request_timeout: config.read_method(
-                    config.api(kube.client),
-                    name=name,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to read {config.kind} {name}",
-                missing_ok=True,
-            )
+        api = _api(cls)
+        payload = await api.read(
+            kube,
+            name=name,
+            namespace=namespace,
+            deadline=deadline,
+        )
         if payload is None:
             return None
-        return _validate_payload(cls, config, payload)
+        return cls(payload)
 
     @classmethod
     async def list(
@@ -551,83 +1187,23 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         list[KubeResource]
             Wrapped resources matching the filters.
 
-        Raises
-        ------
-        ValueError
-            If namespace filters are invalid for the resource scope.
         """
-        config = _config(cls)
-        namespace = namespace.strip() if namespace is not None else ""
         field_selector = ",".join(
             item.strip() for item in field_selector if item.strip()
         )
         label_selector = ",".join(f"{key}={value}" for key, value in labels.items())
-        api = config.api(kube.client)
-        if not config.namespaced:
-            if namespace or namespaces is not None:
-                msg = f"{config.kind} is cluster-scoped; cannot list by namespace"
-                raise ValueError(msg)
-            payload = await kube.run(
-                lambda request_timeout: config.list_method(
-                    api,
-                    label_selector=label_selector or None,
-                    field_selector=field_selector or None,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to list {config.kind} resources",
-                missing_ok=False,
-            )
-            return _validate_list(cls, config, payload)
-
-        if namespace and namespaces is not None:
-            msg = f"{config.kind} list accepts either namespace or namespaces, not both"
-            raise ValueError(msg)
-        selected = (namespace,) if namespace else namespaces
-        if selected is None:
-            list_all = config.list_all_method
-            if list_all is None:
-                msg = f"{config.kind} cannot be listed across all namespaces"
-                raise NotImplementedError(msg)
-            payload = await kube.run(
-                lambda request_timeout: list_all(
-                    api,
-                    label_selector=label_selector or None,
-                    field_selector=field_selector or None,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to list {config.kind} resources across namespaces",
-                missing_ok=False,
-            )
-            return _validate_list(cls, config, payload)
-
-        normalized = tuple(sorted({item.strip() for item in selected if item.strip()}))
-        if not normalized:
-            return []
-        payloads = await asyncio.gather(
-            *(
-                kube.run(
-                    lambda request_timeout, namespace=namespace: config.list_method(
-                        api,
-                        namespace=namespace,
-                        label_selector=label_selector or None,
-                        field_selector=field_selector or None,
-                        _request_timeout=request_timeout,
-                    ),
-                    deadline=deadline,
-                    context=(
-                        f"failed to list {config.kind} resources in namespace "
-                        f"{namespace!r}"
-                    ),
-                    missing_ok=False,
-                )
-                for namespace in normalized
-            )
+        api = _api(cls)
+        payloads = await api.list(
+            kube,
+            deadline=deadline,
+            namespace=namespace,
+            namespaces=namespaces,
+            label_selector=label_selector,
+            field_selector=field_selector,
         )
         items: builtins.list[Self] = []
         for payload in payloads:
-            items.extend(_validate_list(cls, config, payload))
+            items.extend(cls(item) for item in api.items(payload))
         return items
 
     @classmethod
@@ -658,60 +1234,22 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         ------
         NotImplementedError
             If this resource does not configure a create method.
-        OSError
-            If identity is incomplete, Kubernetes rejects the request, or Kubernetes
-            returns malformed data.
-        ValueError
-            If namespace is supplied for a cluster-scoped resource.
         """
-        config = _config(cls)
-        create = config.create_method
-        if create is None:
-            msg = f"{config.kind} does not implement create"
+        api = _api(cls)
+        if not api.can_create:
+            msg = f"{api.kind} does not implement create"
             raise NotImplementedError(msg)
         name = intent.name.strip()
         namespace = intent.namespace
-        namespace = namespace.strip() if namespace is not None else ""
-        if not name:
-            msg = f"{config.kind} create requires a non-empty name"
-            raise OSError(msg)
-        if config.namespaced:
-            if not namespace:
-                msg = f"{config.kind} create requires a non-empty namespace"
-                raise OSError(msg)
-            label = f"{namespace}/{name}"
-        else:
-            if namespace:
-                msg = f"{config.kind} is cluster-scoped; cannot create by namespace"
-                raise ValueError(msg)
-            label = name
-
-        api = config.api(kube.client)
         body = intent.manifest()
-        if config.namespaced:
-            payload = await kube.run(
-                lambda request_timeout: create(
-                    api,
-                    namespace=namespace,
-                    body=body,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to create {config.kind} {label}",
-                missing_ok=False,
-            )
-        else:
-            payload = await kube.run(
-                lambda request_timeout: create(
-                    api,
-                    body=body,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to create {config.kind} {label}",
-                missing_ok=False,
-            )
-        return _validate_payload(cls, config, payload)
+        payload = await api.create(
+            kube,
+            name=name,
+            namespace=namespace,
+            body=body,
+            deadline=deadline,
+        )
+        return cls(payload)
 
     @classmethod
     async def upsert(
@@ -747,25 +1285,24 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         ValueError
             If namespace is supplied for a cluster-scoped resource.
         """
-        config = _config(cls)
-        patch = config.patch_method
-        if config.create_method is None or patch is None:
-            msg = f"{config.kind} does not implement upsert"
+        api = _api(cls)
+        if not api.can_create or not api.can_patch:
+            msg = f"{api.kind} does not implement upsert"
             raise NotImplementedError(msg)
         name = intent.name.strip()
         namespace = intent.namespace
         namespace = namespace.strip() if namespace is not None else ""
         if not name:
-            msg = f"{config.kind} upsert requires a non-empty name"
+            msg = f"{api.kind} upsert requires a non-empty name"
             raise OSError(msg)
-        if config.namespaced:
+        if api.namespaced:
             if not namespace:
-                msg = f"{config.kind} upsert requires a non-empty namespace"
+                msg = f"{api.kind} upsert requires a non-empty namespace"
                 raise OSError(msg)
             label = f"{namespace}/{name}"
         else:
             if namespace:
-                msg = f"{config.kind} is cluster-scoped; cannot upsert by namespace"
+                msg = f"{api.kind} is cluster-scoped; cannot upsert by namespace"
                 raise ValueError(msg)
             label = name
 
@@ -774,34 +1311,16 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         except OSError as err:
             if not isinstance(err, Kube.APIError) or err.status != 409:
                 raise
-            api = config.api(kube.client)
             body = intent.manifest()
-            if config.namespaced:
-                payload = await kube.run(
-                    lambda request_timeout: patch(
-                        api,
-                        name=name,
-                        namespace=namespace,
-                        body=body,
-                        _request_timeout=request_timeout,
-                    ),
-                    deadline=deadline,
-                    context=f"failed to patch {config.kind} {label}",
-                    missing_ok=False,
-                )
-            else:
-                payload = await kube.run(
-                    lambda request_timeout: patch(
-                        api,
-                        name=name,
-                        body=body,
-                        _request_timeout=request_timeout,
-                    ),
-                    deadline=deadline,
-                    context=f"failed to patch {config.kind} {label}",
-                    missing_ok=False,
-                )
-        return _validate_payload(cls, config, payload)
+            payload = await api.patch(
+                kube,
+                name=name,
+                namespace=namespace,
+                body=body,
+                deadline=deadline,
+                context=f"failed to patch {api.kind} {label}",
+            )
+        return cls(payload)
 
     async def patch(
         self,
@@ -840,13 +1359,12 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             If no metadata updates are provided or namespace is invalid for this
             resource.
         """
-        config = _config(type(self))
-        patch = config.patch_method
-        if patch is None:
-            msg = f"{config.kind} does not implement patch"
+        api = _api(type(self))
+        if not api.can_patch:
+            msg = f"{api.kind} does not implement patch"
             raise NotImplementedError(msg)
         if not labels and not annotations:
-            msg = f"{config.kind} metadata patch cannot be empty"
+            msg = f"{api.kind} metadata patch cannot be empty"
             raise ValueError(msg)
 
         body: dict[str, object] = {"metadata": {}}
@@ -856,48 +1374,30 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         if annotations:
             metadata["annotations"] = dict(annotations)
 
-        api = config.api(kube.client)
         name = self.name
         namespace = self.namespace
-        if config.namespaced:
+        if api.namespaced:
             if not namespace or not name:
-                msg = (
-                    f"cannot patch {config.kind} with missing "
-                    "metadata.name/namespace"
-                )
+                msg = f"cannot patch {api.kind} with missing metadata.name/namespace"
                 raise OSError(msg)
             label = f"{namespace}/{name}"
-            payload = await kube.run(
-                lambda request_timeout: patch(
-                    api,
-                    name=name,
-                    namespace=namespace,
-                    body=body,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to patch {config.kind} metadata {label}",
-                missing_ok=False,
-            )
         else:
             if namespace:
-                msg = f"{config.kind} is cluster-scoped; cannot patch by namespace"
+                msg = f"{api.kind} is cluster-scoped; cannot patch by namespace"
                 raise ValueError(msg)
             if not name:
-                msg = f"cannot patch {config.kind} with missing metadata.name"
+                msg = f"cannot patch {api.kind} with missing metadata.name"
                 raise OSError(msg)
-            payload = await kube.run(
-                lambda request_timeout: patch(
-                    api,
-                    name=name,
-                    body=body,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to patch {config.kind} metadata {name}",
-                missing_ok=False,
-            )
-        return _validate_payload(type(self), config, payload)
+            label = name
+        payload = await api.patch(
+            kube,
+            name=name,
+            namespace=namespace,
+            body=body,
+            deadline=deadline,
+            context=f"failed to patch {api.kind} metadata {label}",
+        )
+        return type(self)(payload)
 
     async def refresh(self, kube: Kube, *, deadline: Deadline) -> Self | None:
         """Re-read this resource by its Kubernetes identity.
@@ -919,10 +1419,10 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         OSError
             If this resource has incomplete Kubernetes metadata.
         """
-        config = _config(type(self))
+        api = _api(type(self))
         name = self.name
         namespace = self.namespace
-        if config.namespaced:
+        if api.namespaced:
             if not namespace or not name:
                 msg = (
                     f"cannot refresh {type(self).__name__} with missing "
@@ -971,10 +1471,9 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         ValueError
             If namespace or deletion options are invalid for this resource.
         """
-        config = _config(type(self))
-        delete = config.delete_method
-        if delete is None:
-            msg = f"{config.kind} does not implement delete"
+        api = _api(type(self))
+        if not api.can_delete:
+            msg = f"{api.kind} does not implement delete"
             raise NotImplementedError(msg)
         name = self.name
         namespace = self.namespace
@@ -983,12 +1482,12 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             and propagation_policy not in _DELETION_PROPAGATION_POLICIES
         ):
             msg = (
-                f"invalid {config.kind} deletion propagation policy: "
+                f"invalid {api.kind} deletion propagation policy: "
                 f"{propagation_policy!r}"
             )
             raise ValueError(msg)
         if grace_period_seconds is not None and grace_period_seconds < 0:
-            msg = f"{config.kind} deletion grace period cannot be negative"
+            msg = f"{api.kind} deletion grace period cannot be negative"
             raise ValueError(msg)
         body = (
             None
@@ -998,48 +1497,28 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                 propagation_policy=propagation_policy,
             )
         )
-        api = config.api(kube.client)
-        if config.namespaced:
+        if api.namespaced:
             if not namespace or not name:
-                msg = (
-                    f"cannot delete {config.kind} with missing "
-                    "metadata.name/namespace"
-                )
+                msg = f"cannot delete {api.kind} with missing metadata.name/namespace"
                 raise OSError(msg)
             label = f"{namespace}/{name}"
-            payload = await kube.run(
-                lambda request_timeout: delete(
-                    api,
-                    name=name,
-                    namespace=namespace,
-                    body=body,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to delete {config.kind} {label}",
-                missing_ok=True,
-            )
         else:
             if namespace:
-                msg = f"{config.kind} is cluster-scoped; cannot delete by namespace"
+                msg = f"{api.kind} is cluster-scoped; cannot delete by namespace"
                 raise ValueError(msg)
             if not name:
-                msg = f"cannot delete {config.kind} with missing metadata.name"
+                msg = f"cannot delete {api.kind} with missing metadata.name"
                 raise OSError(msg)
             label = name
-            payload = await kube.run(
-                lambda request_timeout: delete(
-                    api,
-                    name=name,
-                    body=body,
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to delete {config.kind} {name}",
-                missing_ok=True,
-            )
+        payload = await api.delete(
+            kube,
+            name=name,
+            namespace=namespace,
+            body=body,
+            deadline=deadline,
+        )
         if payload is not None and not isinstance(payload, kube_client.V1Status):
-            msg = f"malformed Kubernetes response while deleting {config.kind} {label}"
+            msg = f"malformed Kubernetes response while deleting {api.kind} {label}"
             raise OSError(msg)
 
     async def wait(
@@ -1135,55 +1614,24 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
         WatchEvent[KubeResource]
             Typed resource events.
 
-        Raises
-        ------
-        NotImplementedError
-            If this resource cannot be watched across all namespaces.
-        ValueError
-            If namespace filters are invalid for the resource scope.
-
         Notes
         -----
         Kubernetes list, stream, timeout, and malformed-payload errors propagate
         from the underlying snapshot and stream helpers.
         """
-        config = _config(cls)
+        api = _api(cls)
         namespace = namespace.strip() if namespace is not None else ""
         field_selector = ",".join(
             item.strip() for item in field_selector if item.strip()
         )
         label_selector = ",".join(f"{key}={value}" for key, value in labels.items())
-        api = config.api(kube.client)
-        api_kwargs: dict[str, Any] = {}
-
-        if config.namespaced:
-            if namespace:
-                list_method = config.list_method
-                api_kwargs["namespace"] = namespace
-                context = (
-                    f"failed to watch {config.kind} resources in namespace "
-                    f"{namespace!r}"
-                )
-            else:
-                list_all = config.list_all_method
-                if list_all is None:
-                    msg = f"{config.kind} cannot be watched across all namespaces"
-                    raise NotImplementedError(msg)
-                list_method = list_all
-                context = f"failed to watch {config.kind} resources across namespaces"
-        else:
-            if namespace:
-                msg = f"{config.kind} is cluster-scoped; cannot watch by namespace"
-                raise ValueError(msg)
-            list_method = config.list_method
-            context = f"failed to watch {config.kind} resources"
+        list_method, api_kwargs, context = api.watch_method(kube, namespace=namespace)
 
         async def snapshot(
             attempt_deadline: Deadline,
         ) -> str:
             payload = await kube.run(
                 lambda request_timeout: list_method(
-                    api,
                     **api_kwargs,
                     label_selector=label_selector or None,
                     field_selector=field_selector or None,
@@ -1193,23 +1641,16 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
                 context=context,
                 missing_ok=False,
             )
-            metadata = getattr(payload, "metadata", None)
-            resource_version = (
-                str(getattr(metadata, "resource_version", "") or "").strip()
-                if metadata is not None
-                else ""
+            return api.list_resource_version(
+                cast("_KubeListPayload[PayloadT]", payload)
             )
-            if not resource_version:
-                msg = f"Kubernetes {config.kind} list had no resourceVersion"
-                raise OSError(msg)
-            return resource_version
 
         async def stream(
             resource_version: str,
             attempt_deadline: Deadline,
         ) -> AsyncIterator[WatchEvent[Self]]:
             async for event in watch_stream(
-                lambda **kwargs: list_method(api, **api_kwargs, **kwargs),
+                lambda **kwargs: list_method(**api_kwargs, **kwargs),
                 deadline=attempt_deadline,
                 context=context,
                 resource_version=resource_version,
@@ -1218,7 +1659,7 @@ class KubeResource[PayloadT: _HasObjectMeta, ManifestT: _KubeManifest]:
             ):
                 yield WatchEvent(
                     type=event.type,
-                    object=_validate_payload(cls, config, event.object),
+                    object=cls(cast("PayloadT", event.object)),
                     resource_version=event.resource_version,
                 )
 
@@ -1267,8 +1708,9 @@ def cluster_resource[ResourceT: type[KubeResource[Any, Any]]](
     Callable
         Class decorator that installs the resource configuration.
     """
+
     def decorate(cls: ResourceT) -> ResourceT:
-        cls._resource_config = _ResourceConfig(
+        cls._resource_api = _BuiltinResourceAPI(
             kind=cls.__name__,
             namespaced=False,
             api=api,
@@ -1325,8 +1767,9 @@ def namespaced_resource[ResourceT: type[KubeResource[Any, Any]]](
     Callable
         Class decorator that installs the resource configuration.
     """
+
     def decorate(cls: ResourceT) -> ResourceT:
-        cls._resource_config = _ResourceConfig(
+        cls._resource_api = _BuiltinResourceAPI(
             kind=cls.__name__,
             namespaced=True,
             api=api,
