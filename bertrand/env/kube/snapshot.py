@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from pydantic import Field, model_validator
+
 from bertrand.env.git import EMPTY_MAPPING
-from bertrand.env.kube.custom_object import CustomResource, custom_resource
+from bertrand.env.kube.custom_object import (
+    CustomObjectManifest,
+    CustomResource,
+    custom_resource,
+)
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -21,8 +26,7 @@ VOLUME_SNAPSHOT_CLASS_KIND = "VolumeSnapshotClass"
 VOLUME_SNAPSHOT_CLASS_PLURAL = "volumesnapshotclasses"
 
 
-@dataclass(frozen=True)
-class VolumeSnapshotClassManifest:
+class VolumeSnapshotClassManifest(CustomObjectManifest):
     """Push-side manifest for a Kubernetes CSI VolumeSnapshotClass.
 
     Parameters
@@ -39,16 +43,14 @@ class VolumeSnapshotClassManifest:
         Metadata labels to apply.
     """
 
-    name: str
+    api_version: str = Field(
+        default=SNAPSHOT_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: str = VOLUME_SNAPSHOT_CLASS_KIND
     driver: str
-    deletion_policy: str = "Delete"
+    deletion_policy: str = Field(default="Delete", alias="deletionPolicy")
     parameters: Mapping[str, object] = EMPTY_MAPPING
-    labels: Mapping[str, str] = EMPTY_MAPPING
-
-    @property
-    def namespace(self) -> None:
-        """Return `None` because VolumeSnapshotClass is cluster-scoped."""
-        return None
 
     def manifest(self) -> Mapping[str, object]:
         """Render the Kubernetes VolumeSnapshotClass manifest.
@@ -61,10 +63,7 @@ class VolumeSnapshotClassManifest:
         return {
             "apiVersion": SNAPSHOT_API_VERSION,
             "kind": VOLUME_SNAPSHOT_CLASS_KIND,
-            "metadata": {
-                "name": self.name,
-                "labels": dict(self.labels),
-            },
+            "metadata": self.metadata.manifest(),
             "driver": self.driver,
             "deletionPolicy": self.deletion_policy,
             "parameters": dict(self.parameters),
@@ -72,13 +71,14 @@ class VolumeSnapshotClassManifest:
 
 
 @custom_resource(
+    manifest=VolumeSnapshotClassManifest,
     group=SNAPSHOT_GROUP,
     version=SNAPSHOT_VERSION,
     kind=VOLUME_SNAPSHOT_CLASS_KIND,
     plural=VOLUME_SNAPSHOT_CLASS_PLURAL,
     scope="cluster",
 )
-class VolumeSnapshotClass(CustomResource):
+class VolumeSnapshotClass(CustomResource[VolumeSnapshotClassManifest]):
     """Wrapper around one Kubernetes CSI VolumeSnapshotClass object."""
 
     @property
@@ -90,7 +90,7 @@ class VolumeSnapshotClass(CustomResource):
         str
             Trimmed `driver` field.
         """
-        return str(self.payload.get("driver") or "").strip()
+        return self.payload.driver.strip()
 
     @property
     def deletion_policy(self) -> str:
@@ -101,11 +101,10 @@ class VolumeSnapshotClass(CustomResource):
         str
             Trimmed `deletionPolicy` field.
         """
-        return str(self.payload.get("deletionPolicy") or "").strip()
+        return self.payload.deletion_policy.strip()
 
 
-@dataclass(frozen=True)
-class VolumeSnapshotManifest:
+class VolumeSnapshotManifest(CustomObjectManifest):
     """Push-side manifest for a Kubernetes CSI VolumeSnapshot.
 
     Parameters
@@ -124,44 +123,38 @@ class VolumeSnapshotManifest:
         Metadata annotations to apply.
     """
 
-    namespace: str
-    name: str
-    snapshot_class_name: str
-    source_claim: str
-    labels: Mapping[str, str] = EMPTY_MAPPING
-    annotations: Mapping[str, str] = EMPTY_MAPPING
+    api_version: str = Field(
+        default=SNAPSHOT_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: str = VOLUME_SNAPSHOT_KIND
+    spec: Mapping[str, object] = EMPTY_MAPPING
+    status: Mapping[str, object] = EMPTY_MAPPING
 
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes VolumeSnapshot manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": SNAPSHOT_API_VERSION,
-            "kind": VOLUME_SNAPSHOT_KIND,
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": dict(self.labels),
-                "annotations": dict(self.annotations),
-            },
-            "spec": {
-                "volumeSnapshotClassName": self.snapshot_class_name,
-                "source": {"persistentVolumeClaimName": self.source_claim},
-            },
-        }
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_spec(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        raw = dict(value)
+        if "spec" not in raw:
+            snapshot_class_name = str(raw.pop("snapshot_class_name", "") or "")
+            source_claim = str(raw.pop("source_claim", "") or "")
+            raw["spec"] = {
+                "volumeSnapshotClassName": snapshot_class_name,
+                "source": {"persistentVolumeClaimName": source_claim},
+            }
+        return raw
 
 
 @custom_resource(
+    manifest=VolumeSnapshotManifest,
     group=SNAPSHOT_GROUP,
     version=SNAPSHOT_VERSION,
     kind=VOLUME_SNAPSHOT_KIND,
     plural=VOLUME_SNAPSHOT_PLURAL,
 )
-class VolumeSnapshot(CustomResource):
+class VolumeSnapshot(CustomResource[VolumeSnapshotManifest]):
     """Wrapper around one Kubernetes CSI VolumeSnapshot object."""
 
     @property
@@ -176,7 +169,7 @@ class VolumeSnapshot(CustomResource):
         value = self.status.get("creationTime")
         if isinstance(value, str):
             return self.parse_utc_datetime(value)
-        return self.created_at_utc
+        return self.created_at
 
     @property
     def ready_to_use(self) -> bool:

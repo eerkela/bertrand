@@ -12,8 +12,8 @@ from bertrand.env.git import BERTRAND_NAMESPACE, Deadline
 from bertrand.env.kube.build.project import project_image_spec
 from bertrand.env.kube.build.refs import digest_from_ref, digest_ref
 from bertrand.env.kube.dev.mailbox import (
-    CODE_OPEN_RESOURCE,
     DEV_GROUP,
+    CodeOpenRequest,
     code_open_host_labels,
 )
 from bertrand.env.kube.pod import POD_TERMINAL_PHASES, Pod, PodManifest
@@ -77,7 +77,7 @@ async def ensure_dev_backend(kube: Kube, *, deadline: Deadline) -> None:
 
     """
     await asyncio.gather(
-        CODE_OPEN_RESOURCE.ensure_crd(kube, deadline=deadline),
+        CodeOpenRequest.ensure_crd(kube, deadline=deadline),
         ServiceAccount.upsert(
             kube,
             intent=ServiceAccountManifest(
@@ -317,7 +317,7 @@ async def delete_dev_backend_state(
     }
     pods = await Pod.list(
         kube,
-        namespaces=(BERTRAND_NAMESPACE,),
+        namespace=BERTRAND_NAMESPACE,
         labels=pod_labels,
         deadline=deadline,
     )
@@ -329,7 +329,7 @@ async def delete_dev_backend_state(
         )
 
     try:
-        requests = await CODE_OPEN_RESOURCE.list(
+        requests = await CodeOpenRequest.list(
             kube,
             labels=code_open_host_labels(host_id),
             deadline=deadline,
@@ -338,11 +338,7 @@ async def delete_dev_backend_state(
         return
 
     for request in requests:
-        await CODE_OPEN_RESOURCE.delete(
-            kube,
-            resource=request,
-            deadline=deadline,
-        )
+        await request.delete(kube, deadline=deadline)
 
 
 def new_session_id() -> str:

@@ -36,8 +36,9 @@ from bertrand.env.git import (
 from bertrand.env.kube.build.refs import DIGEST_REF_RE, digest_from_ref, digest_ref
 from bertrand.env.kube.build.repository import delete_image_manifest
 from bertrand.env.kube.custom_object import (
-    CustomObjectMetadata,
-    CustomObjectResource,
+    CustomObjectManifest,
+    CustomResource,
+    custom_resource,
 )
 from bertrand.env.kube.pod import POD_ACTIVE_PHASES, Pod
 
@@ -239,48 +240,6 @@ class BuildKitBuildSpec(BaseModel):
             REPO_ID_LABEL: self.repo_id,
             WORKTREE_ID_LABEL: self.worktree_id,
             PROJECT_IMAGE_CONFIG_ID: self.config_id,
-        }
-
-
-@dataclass(frozen=True)
-class BuildKitBuildManifest:
-    """Push-side manifest for a BuildKitBuild request.
-
-    Parameters
-    ----------
-    spec : BuildKitBuildSpec
-        Validated project image build request.
-    """
-
-    spec: BuildKitBuildSpec
-
-    @property
-    def namespace(self) -> str:
-        """Return the namespace that owns BuildKitBuild requests."""
-        return BERTRAND_NAMESPACE
-
-    @property
-    def name(self) -> str:
-        """Return the deterministic BuildKitBuild object name."""
-        return _buildkit_build_name(self.spec)
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes BuildKitBuild manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": f"{BUILDKIT_BUILD_GROUP}/{BUILDKIT_BUILD_VERSION}",
-            "kind": BUILDKIT_BUILD_KIND,
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": self.spec.request_labels,
-            },
-            "spec": self.spec.model_dump(mode="json"),
         }
 
 
@@ -492,8 +451,8 @@ class BuildKitBuildStatus(BaseModel):
         )
 
 
-class BuildKitBuildRecord(BaseModel):
-    """Read-only model for one `BuildKitBuild` custom object.
+class BuildKitBuildManifest(CustomObjectManifest):
+    """Push/pull manifest model for one `BuildKitBuild` custom object.
 
     Parameters
     ----------
@@ -509,15 +468,16 @@ class BuildKitBuildRecord(BaseModel):
         Validated build status payload.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["BuildKitBuild"]
-    metadata: CustomObjectMetadata
+    api_version: str = Field(
+        default=f"{BUILDKIT_BUILD_GROUP}/{BUILDKIT_BUILD_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = BUILDKIT_BUILD_KIND
     spec: BuildKitBuildSpec
     status: BuildKitBuildStatus = Field(default_factory=BuildKitBuildStatus)
 
     @model_validator(mode="after")
-    def _validate_image_lifecycle(self) -> BuildKitBuildRecord:
+    def _validate_image_lifecycle(self) -> BuildKitBuildManifest:
         if self.image_phase == "Pending":
             return self
         if self.status.phase != "Succeeded" or not self.is_reconciled:
@@ -559,7 +519,7 @@ class BuildKitBuildRecord(BaseModel):
         str
             Kubernetes custom object name.
         """
-        return self.metadata.name
+        return self.metadata.name or _buildkit_build_name(self.spec)
 
     @property
     def namespace(self) -> str:
@@ -570,7 +530,26 @@ class BuildKitBuildRecord(BaseModel):
         str
             Kubernetes namespace that owns this build request.
         """
-        return self.metadata.namespace
+        return self.metadata.namespace or BERTRAND_NAMESPACE
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes BuildKitBuild manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete push-safe Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{BUILDKIT_BUILD_GROUP}/{BUILDKIT_BUILD_VERSION}",
+            "kind": BUILDKIT_BUILD_KIND,
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": self.spec.request_labels,
+            },
+            "spec": self.spec.model_dump(mode="json"),
+        }
 
     @property
     def generation(self) -> int:
@@ -696,7 +675,8 @@ def buildkit_build_label_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
-BUILDKIT_BUILD_RESOURCE = CustomObjectResource[BuildKitBuildRecord](
+@custom_resource(
+    manifest=BuildKitBuildManifest,
     group=BUILDKIT_BUILD_GROUP,
     version=BUILDKIT_BUILD_VERSION,
     kind=BUILDKIT_BUILD_KIND,
@@ -704,9 +684,6 @@ BUILDKIT_BUILD_RESOURCE = CustomObjectResource[BuildKitBuildRecord](
     labels=BUILDKIT_BUILD_LABELS,
     singular="buildkitbuild",
     short_names=("bkbuild",),
-    payload_parser=BuildKitBuildRecord.model_validate,
-    payload_error_context=f"{BUILDKIT_BUILD_KIND} custom object",
-    spec_model=BuildKitBuildSpec,
     spec_schema_overrides={
         "required": [
             "repo_id",
@@ -718,14 +695,100 @@ BUILDKIT_BUILD_RESOURCE = CustomObjectResource[BuildKitBuildRecord](
             "pull",
         ],
     },
-    status_model=BuildKitBuildStatus,
     default_namespace=BERTRAND_NAMESPACE,
 )
+class BuildKitBuild(CustomResource[BuildKitBuildManifest]):
+    """Wrapper around one BuildKitBuild custom object."""
+
+    @property
+    def spec(self) -> BuildKitBuildSpec:
+        """Return the validated BuildKitBuild spec."""
+        return self.payload.spec
+
+    @property
+    def status(self) -> BuildKitBuildStatus:
+        """Return the validated BuildKitBuild status."""
+        return self.payload.status
+
+    @property
+    def generation(self) -> int:
+        """Return the Kubernetes metadata generation."""
+        return self.payload.generation
+
+    @property
+    def is_reconciled(self) -> bool:
+        """Return whether status reflects this record generation."""
+        return self.payload.is_reconciled
+
+    @property
+    def is_terminal(self) -> bool:
+        """Return whether this build request is terminal."""
+        return self.payload.is_terminal
+
+    @property
+    def is_active(self) -> bool:
+        """Return whether this build request can still mutate build resources."""
+        return self.payload.is_active
+
+    @property
+    def image(self) -> str:
+        """Return the mutable project image reference."""
+        return self.payload.image
+
+    @property
+    def digest_ref(self) -> str:
+        """Return the immutable digest-pinned project image reference."""
+        return self.payload.digest_ref
+
+    @property
+    def digest(self) -> str:
+        """Return the project image manifest digest."""
+        return self.payload.digest
+
+    @property
+    def platforms(self) -> tuple[str, ...]:
+        """Return platforms included in this publication."""
+        return self.payload.platforms
+
+    @property
+    def platform_images(self) -> Mapping[str, str]:
+        """Return platform-specific digest refs for this publication."""
+        return self.payload.platform_images
+
+    @property
+    def config_id(self) -> str:
+        """Return the project image configuration identity."""
+        return self.payload.config_id
+
+    @property
+    def image_phase(self) -> BuildKitImagePhase:
+        """Return this build's project image lifecycle phase."""
+        return self.payload.image_phase
+
+    @property
+    def published_at(self) -> datetime | None:
+        """Return the publication timestamp normalized to UTC."""
+        return self.payload.published_at
+
+    @property
+    def retired_at(self) -> datetime | None:
+        """Return the retirement timestamp normalized to UTC."""
+        return self.payload.retired_at
+
+    @property
+    def last_gc_at(self) -> datetime | None:
+        """Return the last image GC attempt timestamp normalized to UTC."""
+        return self.payload.last_gc_at
+
+    @property
+    def image_last_error(self) -> str:
+        """Return the last non-fatal image lifecycle error."""
+        return self.payload.image_last_error
 
 
 @dataclass(frozen=True)
 class _ProjectImageGcInventory:
-    records: tuple[BuildKitBuildRecord, ...]
+    records: tuple[BuildKitBuild, ...]
     pods: tuple[Pod, ...]
 
     @classmethod
@@ -735,9 +798,9 @@ class _ProjectImageGcInventory:
         *,
         deadline: Deadline,
     ) -> _ProjectImageGcInventory:
-        await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, deadline=deadline)
+        await BuildKitBuild.ensure_crd(kube, deadline=deadline)
         records_task = asyncio.create_task(
-            BUILDKIT_BUILD_RESOURCE.list(kube, deadline=deadline)
+            BuildKitBuild.list(kube, deadline=deadline)
         )
         pods_task = asyncio.create_task(Pod.list(kube, deadline=deadline))
         await asyncio.gather(records_task, pods_task)
@@ -746,7 +809,7 @@ class _ProjectImageGcInventory:
             pods=tuple(pods_task.result()),
         )
 
-    def retired_records(self) -> tuple[BuildKitBuildRecord, ...]:
+    def retired_records(self) -> tuple[BuildKitBuild, ...]:
         return tuple(
             sorted(
                 (record for record in self.records if record.image_phase == "Retired"),
@@ -780,7 +843,7 @@ async def submit_buildkit_build(
     *,
     spec: BuildKitBuildSpec,
     deadline: Deadline,
-) -> BuildKitBuildRecord:
+) -> BuildKitBuild:
     """Create one durable project-image BuildKit request.
 
     Parameters
@@ -794,11 +857,11 @@ async def submit_buildkit_build(
 
     Returns
     -------
-    BuildKitBuildRecord
+    BuildKitBuild
         Submitted build request.
 
     """
-    return await BUILDKIT_BUILD_RESOURCE.create(
+    return await BuildKitBuild.create(
         kube,
         intent=BuildKitBuildManifest(spec=spec),
         deadline=deadline,
@@ -810,12 +873,12 @@ async def require_active_project_image(
     *,
     spec: BuildKitBuildSpec,
     deadline: Deadline,
-) -> BuildKitBuildRecord:
+) -> BuildKitBuild:
     """Return the active image-bearing build for one exact project image identity.
 
     Returns
     -------
-    BuildKitBuildRecord
+    BuildKitBuild
         Active successful build record matching the requested spec identity.
 
     Raises
@@ -823,8 +886,8 @@ async def require_active_project_image(
     OSError
         If no active image exists or lifecycle invariants are violated.
     """
-    await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, deadline=deadline)
-    records = await BUILDKIT_BUILD_RESOURCE.list(
+    await BuildKitBuild.ensure_crd(kube, deadline=deadline)
+    records = await BuildKitBuild.list(
         kube,
         labels={
             BUILDKIT_BUILD_REPO_LABEL: buildkit_build_label_hash(spec.repo_id),
@@ -894,19 +957,19 @@ async def retire_project_images(
     worktree_id: str,
     deadline: Deadline,
     exclude_names: Collection[str] = (),
-) -> list[BuildKitBuildRecord]:
+) -> list[BuildKitBuild]:
     """Retire active project images without deleting registry manifests.
 
     Returns
     -------
-    list[BuildKitBuildRecord]
+    list[BuildKitBuild]
         Build records transitioned from active to retired.
 
     """
     repo_id = _check_uuid(repo_id)
     worktree_id = _check_uuid(worktree_id)
-    await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, deadline=deadline)
-    records = await BUILDKIT_BUILD_RESOURCE.list(
+    await BuildKitBuild.ensure_crd(kube, deadline=deadline)
+    records = await BuildKitBuild.list(
         kube,
         labels={
             BUILDKIT_BUILD_REPO_LABEL: buildkit_build_label_hash(repo_id),
@@ -917,7 +980,7 @@ async def retire_project_images(
     )
     now = datetime.now(UTC)
     excluded = set(exclude_names)
-    retired: list[BuildKitBuildRecord] = []
+    retired: list[BuildKitBuild] = []
     for record in sorted(records, key=lambda item: item.name):
         if (
             record.spec.repo_id != repo_id
@@ -948,12 +1011,12 @@ async def gc_project_images(
     deadline: Deadline,
     grace_seconds: int = BUILDKIT_IMAGE_GC_GRACE_SECONDS,
     limit: int = BUILDKIT_IMAGE_GC_LIMIT,
-) -> list[BuildKitBuildRecord]:
+) -> list[BuildKitBuild]:
     """Delete eligible retired project image manifests and mark builds collected.
 
     Returns
     -------
-    list[BuildKitBuildRecord]
+    list[BuildKitBuild]
         Retired build records transitioned to collected.
 
     Raises
@@ -978,7 +1041,7 @@ async def gc_project_images(
     live_refs = inventory.live_image_refs()
     now = datetime.now(UTC)
     grace = timedelta(seconds=grace_seconds)
-    collected: list[BuildKitBuildRecord] = []
+    collected: list[BuildKitBuild] = []
     for record in inventory.retired_records():
         if len(collected) >= limit:
             break
@@ -1057,8 +1120,8 @@ async def next_project_image_gc_time(
         msg = "project image GC scheduling grace_seconds must be non-negative"
         raise ValueError(msg)
 
-    await BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, deadline=deadline)
-    records = await BUILDKIT_BUILD_RESOURCE.list(
+    await BuildKitBuild.ensure_crd(kube, deadline=deadline)
+    records = await BuildKitBuild.list(
         kube,
         labels={BUILDKIT_BUILD_IMAGE_PHASE_LABEL: "retired"},
         deadline=deadline,
@@ -1081,8 +1144,8 @@ async def wait_buildkit_build(
     *,
     name: str,
     deadline: Deadline,
-    on_update: Callable[[BuildKitBuildRecord], Awaitable[None]] | None = None,
-) -> BuildKitBuildRecord:
+    on_update: Callable[[BuildKitBuild], Awaitable[None]] | None = None,
+) -> BuildKitBuild:
     """Wait for one durable BuildKit build request to reach a terminal phase.
 
     Parameters
@@ -1093,12 +1156,12 @@ async def wait_buildkit_build(
         Build request name.
     deadline : Deadline
         Maximum wait budget in seconds.
-    on_update : Callable[[BuildKitBuildRecord], Awaitable[None]] | None, optional
+    on_update : Callable[[BuildKitBuild], Awaitable[None]] | None, optional
         Async callback invoked when the observed resource version changes.
 
     Returns
     -------
-    BuildKitBuildRecord
+    BuildKitBuild
         Terminal build request record.
 
     Raises
@@ -1108,9 +1171,9 @@ async def wait_buildkit_build(
     """
     seen_version = ""
 
-    async def terminal(attempt_deadline: Deadline) -> BuildKitBuildRecord:
+    async def terminal(attempt_deadline: Deadline) -> BuildKitBuild:
         nonlocal seen_version
-        record = await BUILDKIT_BUILD_RESOURCE.get(
+        record = await BuildKitBuild.get(
             kube,
             name=name,
             deadline=attempt_deadline,
@@ -1141,17 +1204,17 @@ async def wait_buildkit_build(
 async def patch_buildkit_build_status(
     kube: Kube,
     *,
-    record: BuildKitBuildRecord,
+    record: BuildKitBuild,
     status: BuildKitBuildStatus,
     deadline: Deadline,
-) -> BuildKitBuildRecord:
+) -> BuildKitBuild:
     """Patch one BuildKit request status subresource.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    record : BuildKitBuildRecord
+    record : BuildKitBuild
         Build request snapshot to patch.
     status : BuildKitBuildStatus
         Complete status payload to apply.
@@ -1160,10 +1223,10 @@ async def patch_buildkit_build_status(
 
     Returns
     -------
-    BuildKitBuildRecord
+    BuildKitBuild
         Updated build request record.
     """
-    updated = await BUILDKIT_BUILD_RESOURCE.patch_status(
+    updated = await BuildKitBuild.patch_status(
         kube,
         name=record.name,
         status=status.model_dump(mode="json", by_alias=True),
@@ -1177,16 +1240,10 @@ async def patch_buildkit_build_status(
         == image_phase_label
     ):
         return updated
-    return await BUILDKIT_BUILD_RESOURCE.patch(
+    return await updated.patch(
         kube,
-        name=updated.name,
-        body={
-            "metadata": {
-                "labels": {BUILDKIT_BUILD_IMAGE_PHASE_LABEL: image_phase_label}
-            }
-        },
+        labels={BUILDKIT_BUILD_IMAGE_PHASE_LABEL: image_phase_label},
         deadline=deadline,
-        context=f"patch {BUILDKIT_BUILD_KIND} image lifecycle labels",
     )
 
 

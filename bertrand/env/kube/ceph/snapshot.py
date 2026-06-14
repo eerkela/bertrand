@@ -17,6 +17,7 @@ from bertrand.env.git import (
     Deadline,
 )
 from bertrand.env.kube.api.client import Kube
+from bertrand.env.kube.custom_object import CustomObjectMetadata
 from bertrand.env.kube.snapshot import (
     VolumeSnapshot,
     VolumeSnapshotClass,
@@ -39,7 +40,7 @@ from .volume import (
     REPOSITORY_SNAPSHOT_PURPOSE_BUILD,
     REPOSITORY_SNAPSHOT_PURPOSE_LABEL,
     REPOSITORY_SNAPSHOT_PURPOSE_RETAINED,
-    REPOSITORY_STATE_RESOURCE,
+    CephRepositoryState,
     list_repository_volume_claims,
 )
 
@@ -206,7 +207,7 @@ async def maintain_repository_snapshots(
     )
     active_records = [
         record
-        for record in await REPOSITORY_STATE_RESOURCE.list(
+        for record in await CephRepositoryState.list(
             kube,
             namespace=BERTRAND_NAMESPACE,
             deadline=deadline,
@@ -303,7 +304,7 @@ async def next_repository_snapshot_time(
     )
     active_records = [
         record
-        for record in await REPOSITORY_STATE_RESOURCE.list(
+        for record in await CephRepositoryState.list(
             kube,
             namespace=BERTRAND_NAMESPACE,
             deadline=deadline,
@@ -473,7 +474,7 @@ async def cleanup_orphaned_build_sources(
 
     pvcs = await PersistentVolumeClaim.list(
         kube,
-        namespaces=(BERTRAND_NAMESPACE,),
+        namespace=BERTRAND_NAMESPACE,
         labels={
             BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
             REPOSITORY_BUILD_SOURCE_LABEL: REPOSITORY_BUILD_SOURCE_LABEL_VALUE,
@@ -552,13 +553,15 @@ async def _ensure_snapshot_class(
         return await VolumeSnapshotClass.create(
             kube,
             intent=VolumeSnapshotClassManifest(
-                name=name,
+                metadata=CustomObjectMetadata(
+                    name=name,
+                    labels={
+                        BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
+                        REPOSITORY_SNAPSHOT_CLASS_LABEL: "v1",
+                    },
+                ),
                 driver=storage.provisioner,
                 parameters=_snapshot_class_parameters(storage.parameters),
-                labels={
-                    BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
-                    REPOSITORY_SNAPSHOT_CLASS_LABEL: "v1",
-                },
             ),
             deadline=deadline,
         )
@@ -610,21 +613,27 @@ async def _create_snapshot(
     snapshot = await VolumeSnapshot.create(
         kube,
         intent=VolumeSnapshotManifest(
-            namespace=BERTRAND_NAMESPACE,
-            name=_snapshot_name(
-                repo_id=repo_id,
-                purpose=purpose,
-                build_name=build_name,
+            metadata=CustomObjectMetadata(
+                namespace=BERTRAND_NAMESPACE,
+                name=_snapshot_name(
+                    repo_id=repo_id,
+                    purpose=purpose,
+                    build_name=build_name,
+                ),
+                labels=_snapshot_labels(
+                    repo_id=repo_id,
+                    purpose=purpose,
+                    build_name=build_name,
+                ),
+                annotations={
+                    REPOSITORY_SNAPSHOT_SOURCE_CLAIM_ANNOTATION: volume.name,
+                },
             ),
-            snapshot_class_name=snapshot_class.name,
-            source_claim=volume.name,
-            labels=_snapshot_labels(
-                repo_id=repo_id,
-                purpose=purpose,
-                build_name=build_name,
-            ),
-            annotations={
-                REPOSITORY_SNAPSHOT_SOURCE_CLAIM_ANNOTATION: volume.name,
+            spec={
+                "volumeSnapshotClassName": snapshot_class.name,
+                "source": {
+                    "persistentVolumeClaimName": volume.name,
+                },
             },
         ),
         deadline=deadline,

@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
+
+from pydantic import Field
 
 from bertrand.env.git import (
     BERTRAND_LABEL,
     BERTRAND_LABEL_MANAGED,
     BERTRAND_NAMESPACE,
+    EMPTY_MAPPING,
     Deadline,
 )
 from bertrand.env.kube.api.client import Kube
-from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
+from bertrand.env.kube.custom_object import (
+    CustomObjectManifest,
+    CustomObjectMetadata,
+    CustomResource,
+    custom_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -41,29 +48,9 @@ HTTP_ROUTE_LABELS = {
     BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     HTTP_ROUTE_LABEL: HTTP_ROUTE_LABEL_VALUE,
 }
-GATEWAY_CLASS_RESOURCE = CustomObjectResource[CustomObject](
-    group=GATEWAY_API_GROUP,
-    version=GATEWAY_API_VERSION,
-    kind="GatewayClass",
-    plural="gatewayclasses",
-    scope="cluster",
-)
-GATEWAY_RESOURCE = CustomObjectResource[CustomObject](
-    group=GATEWAY_API_GROUP,
-    version=GATEWAY_API_VERSION,
-    kind="Gateway",
-    plural="gateways",
-)
-HTTP_ROUTE_RESOURCE = CustomObjectResource[CustomObject](
-    group=GATEWAY_API_GROUP,
-    version=GATEWAY_API_VERSION,
-    kind="HTTPRoute",
-    plural="httproutes",
-)
 
 
-@dataclass(frozen=True)
-class GatewayClassManifest:
+class GatewayClassManifest(CustomObjectManifest):
     """Push-side manifest for one GatewayClass.
 
     Parameters
@@ -76,14 +63,13 @@ class GatewayClassManifest:
         Metadata labels to apply.
     """
 
-    name: str
+    api_version: str = Field(
+        default=f"{GATEWAY_API_GROUP}/{GATEWAY_API_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = "GatewayClass"
     controller_name: str
-    labels: Mapping[str, str] | None = None
-
-    @property
-    def namespace(self) -> None:
-        """Return `None` because GatewayClass is cluster-scoped."""
-        return None
+    status: Mapping[str, object] = EMPTY_MAPPING
 
     def manifest(self) -> Mapping[str, object]:
         """Render the Kubernetes GatewayClass manifest.
@@ -96,13 +82,24 @@ class GatewayClassManifest:
         return {
             "apiVersion": f"{GATEWAY_API_GROUP}/{GATEWAY_API_VERSION}",
             "kind": "GatewayClass",
-            "metadata": {"name": self.name, "labels": dict(self.labels or {})},
+            "metadata": self.metadata.manifest(),
             "spec": {"controllerName": self.controller_name},
         }
 
 
-@dataclass(frozen=True)
-class GatewayManifest:
+@custom_resource(
+    manifest=GatewayClassManifest,
+    group=GATEWAY_API_GROUP,
+    version=GATEWAY_API_VERSION,
+    kind="GatewayClass",
+    plural="gatewayclasses",
+    scope="cluster",
+)
+class GatewayClass(CustomResource[GatewayClassManifest]):
+    """Wrapper around one GatewayClass custom object."""
+
+
+class GatewayManifest(CustomObjectManifest):
     """Push-side manifest for one Gateway.
 
     Parameters
@@ -119,11 +116,14 @@ class GatewayManifest:
         Metadata labels to apply.
     """
 
-    namespace: str
-    name: str
+    api_version: str = Field(
+        default=f"{GATEWAY_API_GROUP}/{GATEWAY_API_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = "Gateway"
     gateway_class: str
     listeners: Sequence[Mapping[str, object]]
-    labels: Mapping[str, str] | None = None
+    status: Mapping[str, object] = EMPTY_MAPPING
 
     def manifest(self) -> Mapping[str, object]:
         """Render the Kubernetes Gateway manifest.
@@ -136,11 +136,7 @@ class GatewayManifest:
         return {
             "apiVersion": f"{GATEWAY_API_GROUP}/{GATEWAY_API_VERSION}",
             "kind": "Gateway",
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": dict(self.labels or {}),
-            },
+            "metadata": self.metadata.manifest(),
             "spec": {
                 "gatewayClassName": self.gateway_class,
                 "listeners": [dict(listener) for listener in self.listeners],
@@ -148,8 +144,18 @@ class GatewayManifest:
         }
 
 
-@dataclass(frozen=True)
-class HTTPRouteManifest:
+@custom_resource(
+    manifest=GatewayManifest,
+    group=GATEWAY_API_GROUP,
+    version=GATEWAY_API_VERSION,
+    kind="Gateway",
+    plural="gateways",
+)
+class Gateway(CustomResource[GatewayManifest]):
+    """Wrapper around one Gateway custom object."""
+
+
+class HTTPRouteManifest(CustomObjectManifest):
     """Push-side manifest for one HTTPRoute.
 
     Parameters
@@ -168,12 +174,15 @@ class HTTPRouteManifest:
         Metadata labels to apply.
     """
 
-    namespace: str
-    name: str
+    api_version: str = Field(
+        default=f"{GATEWAY_API_GROUP}/{GATEWAY_API_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = "HTTPRoute"
     parent_refs: Sequence[Mapping[str, object]]
     hostnames: Sequence[str]
     rules: Sequence[Mapping[str, object]]
-    labels: Mapping[str, str] | None = None
+    status: Mapping[str, object] = EMPTY_MAPPING
 
     def manifest(self) -> Mapping[str, object]:
         """Render the Kubernetes HTTPRoute manifest.
@@ -186,17 +195,24 @@ class HTTPRouteManifest:
         return {
             "apiVersion": f"{GATEWAY_API_GROUP}/{GATEWAY_API_VERSION}",
             "kind": "HTTPRoute",
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": dict(self.labels or {}),
-            },
+            "metadata": self.metadata.manifest(),
             "spec": {
                 "parentRefs": [dict(ref) for ref in self.parent_refs],
                 "hostnames": list(self.hostnames),
                 "rules": [dict(rule) for rule in self.rules],
             },
         }
+
+
+@custom_resource(
+    manifest=HTTPRouteManifest,
+    group=GATEWAY_API_GROUP,
+    version=GATEWAY_API_VERSION,
+    kind="HTTPRoute",
+    plural="httproutes",
+)
+class HTTPRoute(CustomResource[HTTPRouteManifest]):
+    """Wrapper around one HTTPRoute custom object."""
 
 
 async def upsert_gateway_class(
@@ -206,7 +222,7 @@ async def upsert_gateway_class(
     controller_name: str,
     deadline: Deadline,
     labels: Mapping[str, str] | None = None,
-) -> CustomObject:
+) -> GatewayClass:
     """Create or patch one GatewayClass.
 
     Parameters
@@ -224,15 +240,14 @@ async def upsert_gateway_class(
 
     Returns
     -------
-    CustomObject
+    GatewayClass
         Created or patched GatewayClass.
     """
-    return await GATEWAY_CLASS_RESOURCE.upsert(
+    return await GatewayClass.upsert(
         kube,
         intent=GatewayClassManifest(
-            name=name,
+            metadata=CustomObjectMetadata(name=name, labels=dict(labels or {})),
             controller_name=controller_name,
-            labels=labels,
         ),
         deadline=deadline,
     )
@@ -247,7 +262,7 @@ async def upsert_gateway(
     listeners: Sequence[Mapping[str, object]],
     deadline: Deadline,
     labels: Mapping[str, str] | None = None,
-) -> CustomObject:
+) -> Gateway:
     """Create or patch one Gateway.
 
     Parameters
@@ -269,17 +284,19 @@ async def upsert_gateway(
 
     Returns
     -------
-    CustomObject
+    Gateway
         Created or patched Gateway.
     """
-    return await GATEWAY_RESOURCE.upsert(
+    return await Gateway.upsert(
         kube,
         intent=GatewayManifest(
-            namespace=namespace,
-            name=name,
+            metadata=CustomObjectMetadata(
+                namespace=namespace,
+                name=name,
+                labels=dict(labels or {}),
+            ),
             gateway_class=gateway_class,
             listeners=listeners,
-            labels=labels,
         ),
         deadline=deadline,
     )
@@ -295,7 +312,7 @@ async def upsert_http_route(
     rules: Sequence[Mapping[str, object]],
     deadline: Deadline,
     labels: Mapping[str, str] | None = None,
-) -> CustomObject:
+) -> HTTPRoute:
     """Create or patch one HTTPRoute.
 
     Parameters
@@ -319,24 +336,26 @@ async def upsert_http_route(
 
     Returns
     -------
-    CustomObject
+    HTTPRoute
         Created or patched HTTPRoute.
     """
-    return await HTTP_ROUTE_RESOURCE.upsert(
+    return await HTTPRoute.upsert(
         kube,
         intent=HTTPRouteManifest(
-            namespace=namespace,
-            name=name,
+            metadata=CustomObjectMetadata(
+                namespace=namespace,
+                name=name,
+                labels=dict(labels or {}),
+            ),
             parent_refs=parent_refs,
             hostnames=hostnames,
             rules=rules,
-            labels=labels,
         ),
         deadline=deadline,
     )
 
 
-def gateway_class_accepted(gateway_class: CustomObject) -> bool:
+def gateway_class_accepted(gateway_class: GatewayClass) -> bool:
     """Return whether the GatewayClass is accepted by its controller.
 
     Returns
@@ -347,7 +366,7 @@ def gateway_class_accepted(gateway_class: CustomObject) -> bool:
     return _condition_status(gateway_class.status, "Accepted") == "true"
 
 
-def gateway_class_acceptance_message(gateway_class: CustomObject) -> str:
+def gateway_class_acceptance_message(gateway_class: GatewayClass) -> str:
     """Return a diagnostic message for GatewayClass acceptance.
 
     Returns
@@ -358,7 +377,7 @@ def gateway_class_acceptance_message(gateway_class: CustomObject) -> str:
     return _condition_message(gateway_class.status, "Accepted")
 
 
-def gateway_addresses(gateway: CustomObject) -> tuple[str, ...]:
+def gateway_addresses(gateway: Gateway) -> tuple[str, ...]:
     """Return Gateway external addresses.
 
     Returns
@@ -379,7 +398,7 @@ def gateway_addresses(gateway: CustomObject) -> tuple[str, ...]:
     return tuple(out)
 
 
-def http_route_hostnames(route: CustomObject) -> tuple[str, ...]:
+def http_route_hostnames(route: HTTPRoute) -> tuple[str, ...]:
     """Return HTTPRoute hostnames.
 
     Returns
@@ -397,7 +416,7 @@ def http_route_hostnames(route: CustomObject) -> tuple[str, ...]:
     )
 
 
-async def ensure_bertrand_gateway(kube: Kube, *, deadline: Deadline) -> CustomObject:
+async def ensure_bertrand_gateway(kube: Kube, *, deadline: Deadline) -> Gateway:
     """Converge Bertrand's shared Gateway API substrate.
 
     Parameters
@@ -409,7 +428,7 @@ async def ensure_bertrand_gateway(kube: Kube, *, deadline: Deadline) -> CustomOb
 
     Returns
     -------
-    CustomObject
+    Gateway
         Accepted Bertrand Gateway with at least one external address.
 
     Raises
@@ -419,7 +438,7 @@ async def ensure_bertrand_gateway(kube: Kube, *, deadline: Deadline) -> CustomOb
         assignment are unavailable.
     """
     try:
-        current_class = await GATEWAY_CLASS_RESOURCE.get(
+        current_class = await GatewayClass.get(
             kube,
             name=BERTRAND_GATEWAY_CLASS,
             deadline=deadline,
@@ -442,7 +461,7 @@ async def ensure_bertrand_gateway(kube: Kube, *, deadline: Deadline) -> CustomOb
         deadline=deadline,
     )
     try:
-        current_gateway = await GATEWAY_RESOURCE.get(
+        current_gateway = await Gateway.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BERTRAND_GATEWAY,
@@ -516,8 +535,8 @@ async def _wait_gateway_class_accepted(
     kube: Kube,
     *,
     deadline: Deadline,
-) -> CustomObject:
-    last: CustomObject | None = None
+) -> GatewayClass:
+    last: GatewayClass | None = None
     while True:
         remaining = deadline.remaining
         if remaining <= 0:
@@ -532,7 +551,7 @@ async def _wait_gateway_class_accepted(
                 "Install/start Envoy Gateway and ensure it watches this controller."
             )
             raise OSError(msg)
-        current = await GATEWAY_CLASS_RESOURCE.get(
+        current = await GatewayClass.get(
             kube,
             name=BERTRAND_GATEWAY_CLASS,
             deadline=deadline,
@@ -544,7 +563,7 @@ async def _wait_gateway_class_accepted(
         await deadline.sleep(0.5)
 
 
-async def _wait_gateway_address(kube: Kube, *, deadline: Deadline) -> CustomObject:
+async def _wait_gateway_address(kube: Kube, *, deadline: Deadline) -> Gateway:
     while True:
         remaining = deadline.remaining
         if remaining <= 0:
@@ -555,7 +574,7 @@ async def _wait_gateway_address(kube: Kube, *, deadline: Deadline) -> CustomObje
                 "pool; Bertrand does not guess address pools."
             )
             raise OSError(msg)
-        current = await GATEWAY_RESOURCE.get(
+        current = await Gateway.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=BERTRAND_GATEWAY,
@@ -577,7 +596,7 @@ def _gateway_api_error_message(action: str, err: OSError) -> str | None:
 
 
 def _assert_managed_gateway_resource(
-    resource: CustomObject | None,
+    resource: CustomResource[Any] | None,
     *,
     kind: str,
 ) -> None:

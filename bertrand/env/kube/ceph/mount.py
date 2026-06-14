@@ -25,7 +25,7 @@ from bertrand.env.git import (
 )
 from bertrand.env.kube.ceph.auth import RepoCredentials
 from bertrand.env.kube.ceph.volume import (
-    REPOSITORY_STATE_RESOURCE,
+    CephRepositoryState,
     ensure_repository_mount_record,
     ensure_repository_volume_claim,
     ensure_repository_volume_record,
@@ -725,7 +725,7 @@ async def prune_repository_mount_aliases(
     """
     repo_id = _check_uuid(repo_id)
     host_id = _current_host_id()
-    states = await REPOSITORY_STATE_RESOURCE.list(
+    states = await CephRepositoryState.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         deadline=deadline,

@@ -128,7 +128,6 @@ class CronJobManifest:
 
 @namespaced_resource(
     api=kubernetes.client.BatchV1Api,
-    payload=kubernetes.client.V1CronJob,
     read=kubernetes.client.BatchV1Api.read_namespaced_cron_job,
     list=kubernetes.client.BatchV1Api.list_namespaced_cron_job,
     list_all=kubernetes.client.BatchV1Api.list_cron_job_for_all_namespaces,

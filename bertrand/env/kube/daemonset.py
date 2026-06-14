@@ -62,7 +62,6 @@ class DaemonSetManifest:
 
 @namespaced_resource(
     api=kubernetes.client.AppsV1Api,
-    payload=kubernetes.client.V1DaemonSet,
     read=kubernetes.client.AppsV1Api.read_namespaced_daemon_set,
     list=kubernetes.client.AppsV1Api.list_namespaced_daemon_set,
     list_all=kubernetes.client.AppsV1Api.list_daemon_set_for_all_namespaces,

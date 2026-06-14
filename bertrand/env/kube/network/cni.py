@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 from bertrand.env.kube.daemonset import DaemonSet
@@ -40,9 +41,15 @@ async def inspect_cni(kube: Kube, *, deadline: Deadline) -> dict[str, object]:
     dict[str, object]
         Passive CNI diagnostic payload for status and doctor commands.
     """
-    daemonsets = await DaemonSet.list(
-        kube, deadline=deadline, namespaces=CNI_NAMESPACES
+    daemonset_batches = await asyncio.gather(
+        *(
+            DaemonSet.list(kube, deadline=deadline, namespace=namespace)
+            for namespace in CNI_NAMESPACES
+        )
     )
+    daemonsets = [
+        daemonset for batch in daemonset_batches for daemonset in batch
+    ]
     names = tuple(
         sorted(
             f"{daemonset.namespace}/{daemonset.name}"

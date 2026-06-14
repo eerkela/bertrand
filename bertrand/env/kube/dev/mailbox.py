@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -12,8 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bertrand.env.git import BERTRAND_NAMESPACE, REPO_ID_LABEL, Deadline
 from bertrand.env.kube.custom_object import (
-    CustomObjectMetadata,
-    CustomObjectResource,
+    CustomObjectManifest,
+    CustomResource,
+    custom_resource,
 )
 
 if TYPE_CHECKING:
@@ -95,68 +95,22 @@ class CodeOpenStatus(BaseModel):
         return self.phase in ("Succeeded", "Failed", "Expired")
 
 
-@dataclass(frozen=True)
-class CodeOpenManifest:
-    """Push-side manifest for a CodeOpenRequest mailbox entry.
+class CodeOpenManifest(CustomObjectManifest):
+    """Push/pull manifest for a CodeOpenRequest mailbox entry."""
 
-    Parameters
-    ----------
-    spec : CodeOpenSpec
-        Validated editor-open request.
-    host_id : str
-        Host UUID submitting the request.
-    """
-
+    api_version: str = Field(default=f"{DEV_GROUP}/{DEV_VERSION}", alias="apiVersion")
+    kind: str = CODE_OPEN_KIND
     spec: CodeOpenSpec
-    host_id: str
-
-    @property
-    def namespace(self) -> str:
-        """Return the namespace that owns CodeOpenRequest objects."""
-        return BERTRAND_NAMESPACE
-
-    @property
-    def name(self) -> str:
-        """Return the deterministic CodeOpenRequest name."""
-        return code_open_request_name(self.spec.session_id, self.spec.request_id)
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes CodeOpenRequest manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": f"{DEV_GROUP}/{DEV_VERSION}",
-            "kind": CODE_OPEN_KIND,
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": code_open_request_labels(self.spec, self.host_id),
-            },
-            "spec": self.spec.model_dump(mode="json"),
-        }
-
-
-class CodeOpenRecord(BaseModel):
-    """Validated Kubernetes `CodeOpenRequest` custom object."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["CodeOpenRequest"]
-    metadata: CustomObjectMetadata
-    spec: CodeOpenSpec
+    host_id: str = Field(default="", exclude=True)
     status: CodeOpenStatus = Field(default_factory=CodeOpenStatus)
 
     @model_validator(mode="after")
-    def _validate_identity(self) -> CodeOpenRecord:
+    def _validate_identity(self) -> CodeOpenManifest:
         """Validate deterministic identity labels against the request spec.
 
         Returns
         -------
-        CodeOpenRecord
+        CodeOpenManifest
             This validated record.
 
         Raises
@@ -195,7 +149,10 @@ class CodeOpenRecord(BaseModel):
         str
             Kubernetes object name.
         """
-        return self.metadata.name
+        return self.metadata.name or code_open_request_name(
+            self.spec.session_id,
+            self.spec.request_id,
+        )
 
     @property
     def namespace(self) -> str:
@@ -206,10 +163,30 @@ class CodeOpenRecord(BaseModel):
         str
             Kubernetes object namespace.
         """
-        return self.metadata.namespace
+        return self.metadata.namespace or BERTRAND_NAMESPACE
+
+    def manifest(self) -> Mapping[str, object]:
+        """Render the Kubernetes CodeOpenRequest manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete push-safe Kubernetes custom-object manifest.
+        """
+        return {
+            "apiVersion": f"{DEV_GROUP}/{DEV_VERSION}",
+            "kind": CODE_OPEN_KIND,
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": code_open_request_labels(self.spec, self.host_id),
+            },
+            "spec": self.spec.model_dump(mode="json"),
+        }
 
 
-CODE_OPEN_RESOURCE = CustomObjectResource[CodeOpenRecord](
+@custom_resource(
+    manifest=CodeOpenManifest,
     group=DEV_GROUP,
     version=DEV_VERSION,
     kind=CODE_OPEN_KIND,
@@ -217,9 +194,6 @@ CODE_OPEN_RESOURCE = CustomObjectResource[CodeOpenRecord](
     labels=_CODE_OPEN_LABELS,
     singular="codeopenrequest",
     short_names=("cor",),
-    payload_parser=CodeOpenRecord.model_validate,
-    payload_error_context=f"{CODE_OPEN_KIND} custom object",
-    spec_model=CodeOpenSpec,
     spec_schema_overrides={
         "properties": {
             "session_id": {"type": "string", "minLength": 1},
@@ -232,28 +206,39 @@ CODE_OPEN_RESOURCE = CustomObjectResource[CodeOpenRecord](
             "editor": {"type": "string", "minLength": 1},
         },
     },
-    status_model=CodeOpenStatus,
     status_schema_overrides={"properties": {"phase": {"type": "string"}}},
     default_namespace=BERTRAND_NAMESPACE,
 )
+class CodeOpenRequest(CustomResource[CodeOpenManifest]):
+    """Wrapper around one CodeOpenRequest custom object."""
+
+    @property
+    def spec(self) -> CodeOpenSpec:
+        """Return the validated CodeOpenRequest spec."""
+        return self.payload.spec
+
+    @property
+    def status(self) -> CodeOpenStatus:
+        """Return the validated CodeOpenRequest status."""
+        return self.payload.status
 
 
 async def patch_code_open_request_status(
     kube: Kube,
     *,
-    record: CodeOpenRecord,
+    record: CodeOpenRequest,
     phase: CodeOpenPhase,
     host_id: str = "",
     message: str = "",
     deadline: Deadline,
-) -> CodeOpenRecord:
+) -> CodeOpenRequest:
     """Patch one editor-open request status.
 
     Parameters
     ----------
     kube : Kube
         Active Kubernetes API context.
-    record : CodeOpenRecord
+    record : CodeOpenRequest
         Existing mailbox record.
     phase : CodeOpenPhase
         New lifecycle phase.
@@ -266,7 +251,7 @@ async def patch_code_open_request_status(
 
     Returns
     -------
-    CodeOpenRecord
+    CodeOpenRequest
         Updated mailbox record.
     """
     status: dict[str, object] = {
@@ -279,7 +264,7 @@ async def patch_code_open_request_status(
         status["accepted_at"] = _now()
     if phase in ("Succeeded", "Failed", "Expired"):
         status["completed_at"] = _now()
-    return await CODE_OPEN_RESOURCE.patch_status(
+    return await CodeOpenRequest.patch_status(
         kube,
         name=record.name,
         status=status,
@@ -292,7 +277,7 @@ async def wait_code_open_request(
     *,
     name: str,
     deadline: Deadline,
-) -> CodeOpenRecord:
+) -> CodeOpenRequest:
     """Wait until one editor-open request reaches a terminal phase.
 
     Parameters
@@ -306,7 +291,7 @@ async def wait_code_open_request(
 
     Returns
     -------
-    CodeOpenRecord
+    CodeOpenRequest
         Terminal request record.
 
     Raises
@@ -325,7 +310,7 @@ async def wait_code_open_request(
                 "then run `bertrand code` inside that session."
             )
             raise TimeoutError(msg)
-        record = await CODE_OPEN_RESOURCE.get(kube, name=name, deadline=deadline)
+        record = await CodeOpenRequest.get(kube, name=name, deadline=deadline)
         if record is None:
             msg = f"{CODE_OPEN_KIND} {name!r} disappeared before completion"
             raise OSError(msg)

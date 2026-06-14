@@ -10,7 +10,7 @@ from bertrand.env.kube.network.gateway import (
     HTTP_ROUTE_LABEL,
     HTTP_ROUTE_LABEL_VALUE,
     HTTP_ROUTE_LABELS,
-    HTTP_ROUTE_RESOURCE,
+    HTTPRoute,
     bertrand_gateway_parent_refs,
     ensure_bertrand_gateway,
     gateway_api_crd_missing,
@@ -22,7 +22,6 @@ from bertrand.env.kube.service import Service, ServiceManifest, ServicePortView
 if TYPE_CHECKING:
     from bertrand.env.config.bertrand import BertrandModel
     from bertrand.env.kube.api.client import Kube
-    from bertrand.env.kube.custom_object import CustomObject
     from bertrand.env.kube.workload.base import WorkloadIdentity, WorkloadPod
 
 _SERVICE_PROTOCOLS = frozenset({"TCP", "UDP", "SCTP"})
@@ -229,7 +228,7 @@ async def ensure_workload_http_routes(
     workload: WorkloadPod,
     deadline: Deadline,
     route_plan: _HTTPRoutePlan | None = None,
-) -> tuple[CustomObject, ...]:
+) -> tuple[HTTPRoute, ...]:
     """Converge this workload's managed Gateway API HTTPRoutes.
 
     Parameters
@@ -249,7 +248,7 @@ async def ensure_workload_http_routes(
 
     Returns
     -------
-    tuple[CustomObject, ...]
+    tuple[HTTPRoute, ...]
         Managed HTTPRoutes matching the workload's configured external routes.
 
     Raises
@@ -276,9 +275,9 @@ async def ensure_workload_http_routes(
     )
     if not plan:
         return ()
-    out: list[CustomObject] = []
+    out: list[HTTPRoute] = []
     for name, (route, service_port) in plan.items():
-        current = await HTTP_ROUTE_RESOURCE.get(
+        current = await HTTPRoute.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=name,
@@ -398,11 +397,7 @@ async def prune_workload_http_routes(
         if stale.name in route_plan:
             continue
         _assert_managed(stale, identity=identity, kind="HTTPRoute")
-        await HTTP_ROUTE_RESOURCE.delete(
-            kube,
-            resource=stale,
-            deadline=deadline,
-        )
+        await stale.delete(kube, deadline=deadline)
 
 
 async def delete_workload_http_routes(
@@ -434,11 +429,7 @@ async def delete_workload_http_routes(
         require_gateway_api=require_gateway_api,
     ):
         _assert_managed(route, identity=identity, kind="HTTPRoute")
-        await HTTP_ROUTE_RESOURCE.delete(
-            kube,
-            resource=route,
-            deadline=deadline,
-        )
+        await route.delete(kube, deadline=deadline)
 
 
 def workload_service_ports(workload: WorkloadPod) -> tuple[ServicePortView, ...]:
@@ -528,10 +519,10 @@ async def _list_workload_http_routes(
     identity: WorkloadIdentity,
     deadline: Deadline,
     require_gateway_api: bool,
-) -> tuple[CustomObject, ...]:
+) -> tuple[HTTPRoute, ...]:
     try:
         return tuple(
-            await HTTP_ROUTE_RESOURCE.list(
+            await HTTPRoute.list(
                 kube,
                 namespace=BERTRAND_NAMESPACE,
                 labels={
@@ -644,7 +635,7 @@ def _http_route_labels(identity: WorkloadIdentity) -> dict[str, str]:
 
 
 def _assert_managed(
-    resource: Service | NetworkPolicy | CustomObject | None,
+    resource: Service | NetworkPolicy | HTTPRoute | None,
     *,
     identity: WorkloadIdentity,
     kind: str,

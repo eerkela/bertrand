@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 from contextlib import suppress
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -23,9 +22,10 @@ from bertrand.env.git import (
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.api.manifest import ContainerSpec, PodTemplateSpec
 from bertrand.env.kube.custom_object import (
-    CustomObject,
+    CustomObjectManifest,
     CustomObjectMetadata,
-    CustomObjectResource,
+    CustomResource,
+    custom_resource,
 )
 from bertrand.env.kube.daemonset import DaemonSet, DaemonSetManifest
 from bertrand.env.kube.dra import (
@@ -139,49 +139,7 @@ class _BertrandDeviceSpec(BaseModel):
         }
 
 
-@dataclass(frozen=True)
-class BertrandDeviceManifest:
-    """Push-side manifest for a BertrandDevice inventory record.
-
-    Parameters
-    ----------
-    name : str
-        Kubernetes custom-object name.
-    spec : _BertrandDeviceSpec
-        Desired Bertrand device inventory spec.
-    labels : Mapping[str, str]
-        Metadata labels to apply.
-    """
-
-    name: str
-    spec: _BertrandDeviceSpec
-    labels: Mapping[str, str]
-
-    @property
-    def namespace(self) -> None:
-        """Return `None` because BertrandDevice is cluster-scoped."""
-        return None
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes BertrandDevice manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": f"{BERTRAND_DEVICE_GROUP}/{BERTRAND_DEVICE_VERSION}",
-            "kind": BERTRAND_DEVICE_KIND,
-            "metadata": {
-                "name": self.name,
-                "labels": dict(self.labels),
-            },
-            "spec": self.spec.model_dump(mode="json"),
-        }
-
-
-class BertrandDeviceRecord(BaseModel):
+class BertrandDeviceManifest(CustomObjectManifest):
     """Managed node-scoped DRA device inventory record.
 
     Parameters
@@ -193,21 +151,12 @@ class BertrandDeviceRecord(BaseModel):
     """
 
     model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
-    api_version: str = Field(default="", alias="apiVersion")
-    kind: str = ""
-    metadata: CustomObjectMetadata
+    api_version: str = Field(
+        default=f"{BERTRAND_DEVICE_GROUP}/{BERTRAND_DEVICE_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = BERTRAND_DEVICE_KIND
     spec: _BertrandDeviceSpec
-
-    @property
-    def name(self) -> str:
-        """Return the Kubernetes record name.
-
-        Returns
-        -------
-        str
-            Kubernetes `metadata.name`.
-        """
-        return self.metadata.name
 
     @property
     def capability_id(self) -> str:
@@ -254,7 +203,8 @@ class BertrandDeviceRecord(BaseModel):
         return self.spec.cdi_selector
 
 
-BERTRAND_DEVICE_RESOURCE = CustomObjectResource[BertrandDeviceRecord](
+@custom_resource(
+    manifest=BertrandDeviceManifest,
     group=BERTRAND_DEVICE_GROUP,
     version=BERTRAND_DEVICE_VERSION,
     kind=BERTRAND_DEVICE_KIND,
@@ -262,10 +212,34 @@ BERTRAND_DEVICE_RESOURCE = CustomObjectResource[BertrandDeviceRecord](
     scope="cluster",
     labels=_BERTRAND_DEVICE_LABELS,
     singular="bertranddevice",
-    payload_parser=BertrandDeviceRecord.model_validate,
-    payload_error_context=f"{BERTRAND_DEVICE_KIND} payload",
-    spec_model=_BertrandDeviceSpec,
 )
+class BertrandDevice(CustomResource[BertrandDeviceManifest]):
+    """Wrapper around one managed BertrandDevice inventory object."""
+
+    @property
+    def capability_id(self) -> str:
+        """Return the host-agnostic capability ID."""
+        return self.payload.capability_id
+
+    @property
+    def host_id(self) -> str:
+        """Return the Bertrand host UUID that owns this device."""
+        return self.payload.host_id
+
+    @property
+    def node_name(self) -> str:
+        """Return the Kubernetes node that owns this device."""
+        return self.payload.node_name
+
+    @property
+    def cdi_selector(self) -> str:
+        """Return the CDI selector exposed after DRA allocation."""
+        return self.payload.cdi_selector
+
+    @property
+    def spec(self) -> _BertrandDeviceSpec:
+        """Return the validated device inventory spec."""
+        return self.payload.spec
 
 
 async def ensure_dra_backend(
@@ -299,15 +273,17 @@ async def ensure_dra_backend(
         raise ValueError(msg)
     await asyncio.gather(
         ensure_dra_api(kube, deadline=deadline),
-        BERTRAND_DEVICE_RESOURCE.ensure_crd(kube, deadline=deadline),
+        BertrandDevice.ensure_crd(kube, deadline=deadline),
     )
     await asyncio.gather(
         DeviceClass.upsert(
             kube,
             intent=DeviceClassManifest(
-                name=DRA_DEVICE_CLASS,
+                metadata=CustomObjectMetadata(
+                    name=DRA_DEVICE_CLASS,
+                    labels=dict(_DRA_LABELS),
+                ),
                 spec=_device_class_spec(),
-                labels=_DRA_LABELS,
             ),
             deadline=deadline,
         ),
@@ -401,7 +377,7 @@ async def list_device_inventory(
     host_ids: Collection[str] | None = None,
     node_names: Collection[str] | None = None,
     deadline: Deadline,
-) -> list[BertrandDeviceRecord]:
+) -> list[BertrandDevice]:
     """List managed DRA device inventory records.
 
     Parameters
@@ -419,7 +395,7 @@ async def list_device_inventory(
 
     Returns
     -------
-    list[BertrandDeviceRecord]
+    list[BertrandDevice]
         Validated inventory records.
     """
     labels: dict[str, str] = {}
@@ -430,7 +406,7 @@ async def list_device_inventory(
     allowed_hosts = {_check_uuid(host_id) for host_id in host_ids or ()}
     if len(allowed_hosts) == 1:
         labels[BERTRAND_DEVICE_HOST_LABEL] = _label_value(next(iter(allowed_hosts)))
-    records = await BERTRAND_DEVICE_RESOURCE.list(
+    records = await BertrandDevice.list(
         kube,
         labels=labels,
         deadline=deadline,
@@ -456,7 +432,7 @@ async def upsert_device_inventory(
     cdi_selector: str,
     deadline: Deadline,
     attributes: Mapping[str, str] | None = None,
-) -> BertrandDeviceRecord:
+) -> BertrandDevice:
     """Create or update one managed DRA device inventory record.
 
     Parameters
@@ -480,7 +456,7 @@ async def upsert_device_inventory(
 
     Returns
     -------
-    BertrandDeviceRecord
+    BertrandDevice
         Validated inventory record returned by Kubernetes.
     """
     spec = _BertrandDeviceSpec(
@@ -491,20 +467,22 @@ async def upsert_device_inventory(
         cdi_selector=cdi_selector,
         attributes=dict(attributes or {}),
     )
-    return await BERTRAND_DEVICE_RESOURCE.upsert(
+    return await BertrandDevice.upsert(
         kube,
         intent=BertrandDeviceManifest(
-            name=_device_inventory_name(
-                host_id=spec.host_id,
-                capability_id=spec.capability_id,
-                device_name=spec.device_name,
+            metadata=CustomObjectMetadata(
+                name=_device_inventory_name(
+                    host_id=spec.host_id,
+                    capability_id=spec.capability_id,
+                    device_name=spec.device_name,
+                ),
+                labels={
+                    BERTRAND_DEVICE_CAPABILITY_LABEL: _label_value(spec.capability_id),
+                    BERTRAND_DEVICE_HOST_LABEL: _label_value(spec.host_id),
+                    BERTRAND_DEVICE_NODE_LABEL: _label_value(spec.node_name),
+                },
             ),
             spec=spec,
-            labels={
-                BERTRAND_DEVICE_CAPABILITY_LABEL: _label_value(spec.capability_id),
-                BERTRAND_DEVICE_HOST_LABEL: _label_value(spec.host_id),
-                BERTRAND_DEVICE_NODE_LABEL: _label_value(spec.node_name),
-            },
         ),
         deadline=deadline,
     )
@@ -558,7 +536,7 @@ async def delete_device_inventory(
         capability_id=capability_id,
         device_name=device_name,
     )
-    record = await BERTRAND_DEVICE_RESOURCE.get(
+    record = await BertrandDevice.get(
         kube,
         name=name,
         deadline=deadline,
@@ -572,11 +550,7 @@ async def delete_device_inventory(
         or record.spec.device_name != device_name
     ):
         return False
-    await BERTRAND_DEVICE_RESOURCE.delete(
-        kube,
-        resource=record,
-        deadline=deadline,
-    )
+    await record.delete(kube, deadline=deadline)
     return True
 
 
@@ -585,7 +559,7 @@ async def delete_device_inventory_for_host(
     *,
     host_id: str,
     deadline: Deadline,
-) -> tuple[BertrandDeviceRecord, ...]:
+) -> tuple[BertrandDevice, ...]:
     """Delete managed DRA inventory records owned by one Bertrand host UUID.
 
     Parameters
@@ -599,7 +573,7 @@ async def delete_device_inventory_for_host(
 
     Returns
     -------
-    tuple[BertrandDeviceRecord, ...]
+    tuple[BertrandDevice, ...]
         Inventory records deleted from the cluster.
     """
     records = await list_device_inventory(
@@ -608,11 +582,7 @@ async def delete_device_inventory_for_host(
         deadline=deadline,
     )
     for record in records:
-        await BERTRAND_DEVICE_RESOURCE.delete(
-            kube,
-            resource=record,
-            deadline=deadline,
-        )
+        await record.delete(kube, deadline=deadline)
     return tuple(records)
 
 
@@ -827,14 +797,16 @@ async def create_resource_claim_templates(
         template = await ResourceClaimTemplate.create(
             kube,
             intent=ResourceClaimTemplateManifest(
-                namespace=namespace,
-                name=resource_claim_template_name(
-                    owner=owner,
-                    capability_id=capability_id,
-                    container_name=container_name,
+                metadata=CustomObjectMetadata(
+                    namespace=namespace,
+                    name=resource_claim_template_name(
+                        owner=owner,
+                        capability_id=capability_id,
+                        container_name=container_name,
+                    ),
+                    labels=template_labels,
                 ),
                 spec={"spec": _resource_claim_spec(capability_id)},
-                labels=template_labels,
             ),
             deadline=deadline,
         )
@@ -851,7 +823,7 @@ async def upsert_resource_claim_templates(
     container_name: str | None = None,
     labels: Mapping[str, str],
     deadline: Deadline,
-) -> tuple[CustomObject, ...]:
+) -> tuple[ResourceClaimTemplate, ...]:
     """Create or patch ResourceClaimTemplates for a controller-backed workload.
 
     Parameters
@@ -873,27 +845,29 @@ async def upsert_resource_claim_templates(
 
     Returns
     -------
-    tuple[CustomObject, ...]
+    tuple[ResourceClaimTemplate, ...]
         Converged templates.
     """
     capability_ids = tuple(sorted(_check_kube_name(item) for item in capability_ids))
     if not capability_ids:
         return ()
-    rendered: list[CustomObject] = []
+    rendered: list[ResourceClaimTemplate] = []
     template_labels = dict(_DRA_LABELS)
     template_labels.update(labels)
     for capability_id in capability_ids:
         template = await ResourceClaimTemplate.upsert(
             kube,
             intent=ResourceClaimTemplateManifest(
-                namespace=namespace,
-                name=resource_claim_template_name(
-                    owner=owner,
-                    capability_id=capability_id,
-                    container_name=container_name,
+                metadata=CustomObjectMetadata(
+                    namespace=namespace,
+                    name=resource_claim_template_name(
+                        owner=owner,
+                        capability_id=capability_id,
+                        container_name=container_name,
+                    ),
+                    labels=template_labels,
                 ),
                 spec={"spec": _resource_claim_spec(capability_id)},
-                labels=template_labels,
             ),
             deadline=deadline,
         )
@@ -1015,9 +989,14 @@ async def _publish_node_slice(
     await ResourceSlice.upsert(
         kube,
         intent=ResourceSliceManifest(
-            name=_resource_slice_name(node_name),
+            metadata=CustomObjectMetadata(
+                name=_resource_slice_name(node_name),
+                labels={
+                    **_DRA_LABELS,
+                    BERTRAND_DEVICE_NODE_LABEL: _label_value(node_name),
+                },
+            ),
             spec=_resource_slice_spec(node_name, records),
-            labels={**_DRA_LABELS, BERTRAND_DEVICE_NODE_LABEL: _label_value(node_name)},
         ),
         deadline=deadline,
     )
@@ -1076,7 +1055,7 @@ def _resource_claim_spec(capability_id: str) -> dict[str, object]:
 
 def _resource_slice_spec(
     node_name: str,
-    devices: Collection[BertrandDeviceRecord],
+    devices: Collection[BertrandDevice],
 ) -> dict[str, object]:
     entries = [
         {
@@ -1101,7 +1080,7 @@ def _resource_slice_spec(
 
 
 def _resource_slice_attributes(
-    record: BertrandDeviceRecord,
+    record: BertrandDevice,
 ) -> dict[str, dict[str, str]]:
     attributes = {
         "bertrand.dev/capability": {"string": record.capability_id},

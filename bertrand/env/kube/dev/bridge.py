@@ -15,8 +15,7 @@ from typing import TYPE_CHECKING
 from bertrand.env.config.bertrand import EDITORS, Editor
 from bertrand.env.git import CommandError, Deadline, run
 from bertrand.env.kube.dev.mailbox import (
-    CODE_OPEN_RESOURCE,
-    CodeOpenRecord,
+    CodeOpenRequest,
     code_open_session_labels,
     patch_code_open_request_status,
 )
@@ -91,7 +90,7 @@ async def _run_bridge(
     labels = code_open_session_labels(session_id)
     while True:
         try:
-            records = await CODE_OPEN_RESOURCE.list(
+            records = await CodeOpenRequest.list(
                 kube,
                 labels=labels,
                 deadline=Deadline(BRIDGE_API_TIMEOUT_SECONDS),
@@ -120,7 +119,7 @@ async def _run_bridge(
 async def _handle_bridge_record(
     kube: Kube,
     *,
-    record: CodeOpenRecord,
+    record: CodeOpenRequest,
     host_id: str,
 ) -> None:
     try:
@@ -166,7 +165,7 @@ async def _handle_bridge_record(
         )
 
 
-async def _open_editor(record: CodeOpenRecord) -> None:
+async def _open_editor(record: CodeOpenRequest) -> None:
     editor = record.spec.editor
     if editor != "vscode":
         msg = f"unsupported editor for development mailbox request: {editor!r}"
@@ -234,7 +233,7 @@ async def _validate_vscode_extensions(editor_bin: Path) -> None:
         raise RuntimeError(msg)
 
 
-def _vscode_attach_message(record: CodeOpenRecord) -> str:
+def _vscode_attach_message(record: CodeOpenRequest) -> str:
     spec = record.spec
     remaining = max(0.0, spec.deadline - time.time())
     return (

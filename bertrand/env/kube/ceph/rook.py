@@ -9,10 +9,10 @@ from kubernetes import client as kube_client
 
 from bertrand.env.kube.ceph.api import PreparedOSD, ceph_osds, kube_quantity
 from bertrand.env.kube.ceph.bootstrap import (
-    ROOK_CEPH_CLUSTER_RESOURCE,
     ROOK_CLUSTER_NAME,
     ROOK_NAMESPACE,
     ROOK_OSD_STORAGE_CLASS,
+    RookCephCluster,
 )
 from bertrand.env.kube.ceph.capacity import (
     STORAGE_OSD_LABEL,
@@ -110,11 +110,10 @@ async def patch_rook_device_sets(
     OSError
         If the existing CephCluster device sets include non-Bertrand-owned entries.
     """
-    current = await ROOK_CEPH_CLUSTER_RESOURCE.get(
+    current = await RookCephCluster.get(
         kube,
         name=ROOK_CLUSTER_NAME,
         deadline=deadline,
-        context="failed to inspect Rook CephCluster OSD device sets",
     )
     allowed_names = {record.device_set_name for record in records}
     storage: object = {}
@@ -145,10 +144,17 @@ async def patch_rook_device_sets(
         for record in sorted(records, key=lambda item: item.device_set_name)
         if record.phase not in {"Failed", "Shrinking", "Retiring", "Retired"}
     ]
-    await ROOK_CEPH_CLUSTER_RESOURCE.patch(
-        kube,
-        name=ROOK_CLUSTER_NAME,
-        body={"spec": {"storage": {"storageClassDeviceSets": device_sets}}},
+    api = kube_client.CustomObjectsApi(kube.client)
+    await kube.run(
+        lambda timeout: api.patch_namespaced_custom_object(
+            group="ceph.rook.io",
+            version="v1",
+            namespace=ROOK_NAMESPACE,
+            plural="cephclusters",
+            name=ROOK_CLUSTER_NAME,
+            body={"spec": {"storage": {"storageClassDeviceSets": device_sets}}},
+            _request_timeout=timeout,
+        ),
         deadline=deadline,
         context="failed to patch Rook CephCluster OSD device sets",
     )
@@ -164,7 +170,7 @@ async def resize_osd_claim(
     claims = await PersistentVolumeClaim.list(
         kube,
         deadline=deadline,
-        namespaces=(ROOK_NAMESPACE,),
+        namespace=ROOK_NAMESPACE,
         labels={STORAGE_OSD_NAME_LABEL: record.name},
     )
     if not claims:
@@ -207,7 +213,7 @@ async def delete_osd_claims(
     claims = await PersistentVolumeClaim.list(
         kube,
         deadline=deadline,
-        namespaces=(ROOK_NAMESPACE,),
+        namespace=ROOK_NAMESPACE,
         labels={STORAGE_OSD_NAME_LABEL: record.name},
     )
     for claim in claims:
@@ -235,7 +241,7 @@ async def wait_osd_claims_gone(
         claims = await PersistentVolumeClaim.list(
             kube,
             deadline=deadline,
-            namespaces=(ROOK_NAMESPACE,),
+            namespace=ROOK_NAMESPACE,
             labels={STORAGE_OSD_NAME_LABEL: record.name},
         )
         if not claims:
@@ -263,7 +269,7 @@ async def wait_osd_workloads_gone(
         for claim in await PersistentVolumeClaim.list(
             kube,
             deadline=deadline,
-            namespaces=(ROOK_NAMESPACE,),
+            namespace=ROOK_NAMESPACE,
             labels={STORAGE_OSD_NAME_LABEL: record.name},
         )
     }
@@ -271,7 +277,7 @@ async def wait_osd_workloads_gone(
         pods = await Pod.list(
             kube,
             deadline=deadline,
-            namespaces=(ROOK_NAMESPACE,),
+            namespace=ROOK_NAMESPACE,
         )
         active = [
             pod.name
@@ -321,7 +327,7 @@ async def observe_rook_osd(
         claims = await PersistentVolumeClaim.list(
             kube,
             deadline=deadline,
-            namespaces=(ROOK_NAMESPACE,),
+            namespace=ROOK_NAMESPACE,
             labels={STORAGE_OSD_NAME_LABEL: record.name},
         )
         claim_names = {claim.name for claim in claims}
@@ -334,7 +340,7 @@ async def observe_rook_osd(
         pods = await Pod.list(
             kube,
             deadline=deadline,
-            namespaces=(ROOK_NAMESPACE,),
+            namespace=ROOK_NAMESPACE,
         )
         for pod in pods:
             labels = pod.labels

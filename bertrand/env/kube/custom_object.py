@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import math
 from collections.abc import AsyncIterator, Callable, Collection, Mapping
 from dataclasses import dataclass, field
@@ -11,7 +10,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, TypeVar, cast
 
 from kubernetes import client as kube_client
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from bertrand.env.git import EMPTY_MAPPING, Deadline, until
 from bertrand.env.kube.crd import (
@@ -23,9 +22,8 @@ from .api.client import Kube
 from .api.resource import (
     RESOURCE_WAIT_POLL_INTERVAL_SECONDS,
     WatchEvent,
-    _KubeListPayload,
-    _KubeManifest,
     _ResourceAPI,
+    _ResourceMetadata,
     watch_collection,
     watch_stream,
 )
@@ -37,16 +35,7 @@ type CustomObjectScope = Literal["cluster", "namespaced"]
 type _CustomObjectFragment = Mapping[str, object] | BaseModel
 
 
-def _normalized_namespaces(
-    namespaces: Collection[str] | None,
-) -> tuple[str, ...] | None:
-    if namespaces is None:
-        return None
-    normalized = {namespace.strip() for namespace in namespaces}
-    normalized.discard("")
-    return tuple(sorted(normalized))
-
-
+ManifestT = TypeVar("ManifestT", bound="CustomObjectManifest")
 _CustomResourceClass = TypeVar("_CustomResourceClass", bound=type[Any])
 
 
@@ -63,153 +52,120 @@ class CustomObjectMetadata(BaseModel):
         Kubernetes metadata generation.
     resource_version : str
         Kubernetes resource version, parsed from `resourceVersion`.
+    uid : str
+        Kubernetes object UID.
+    creation_timestamp : datetime | None
+        Kubernetes object creation timestamp, parsed from `creationTimestamp`.
     labels : dict[str, str]
         Kubernetes metadata labels.
+    annotations : dict[str, str]
+        Kubernetes metadata annotations.
     """
 
-    model_config = ConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
     name: str = ""
     namespace: str = ""
     generation: int = 0
     resource_version: str = Field(default="", alias="resourceVersion")
+    uid: str = ""
+    creation_timestamp: datetime | None = Field(default=None, alias="creationTimestamp")
     labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
 
-
-@dataclass(frozen=True, init=False)
-class CustomObject:
-    """Generic read-only wrapper around one Kubernetes custom-object payload.
-
-    Parameters
-    ----------
-    payload : Mapping[str, Any]
-        Custom-object payload returned by Kubernetes.
-    """
-
-    _payload: Mapping[str, Any] = field(repr=False)
-
-    def __init__(self, payload: Mapping[str, Any]) -> None:
-        """Initialize one custom-object wrapper."""
-        object.__setattr__(self, "_payload", payload)
-
-    @classmethod
-    def from_payload(
-        cls,
-        payload: object,
-        *,
-        description: str = "custom object payload",
-    ) -> Self:
-        """Create a custom-object wrapper from a Kubernetes payload.
+    def manifest(self) -> dict[str, object]:
+        """Render push-safe Kubernetes metadata.
 
         Returns
         -------
-        CustomObject
-            Wrapped custom object.
-
-        Raises
-        ------
-        OSError
-            If the payload is malformed.
+        dict[str, object]
+            Metadata containing only name, optional namespace, labels, and
+            annotations.
         """
-        if not isinstance(payload, Mapping):
-            msg = f"malformed Kubernetes {description}"
-            raise OSError(msg)
-        return cls(cast("Mapping[str, Any]", payload))
+        metadata: dict[str, object] = {"name": self.name}
+        if self.namespace:
+            metadata["namespace"] = self.namespace
+        if self.labels:
+            metadata["labels"] = dict(self.labels)
+        if self.annotations:
+            metadata["annotations"] = dict(self.annotations)
+        return metadata
 
-    @property
-    def payload(self) -> Mapping[str, Any]:
-        """Return a read-only top-level payload view."""
-        return MappingProxyType(dict(self._payload))
 
-    @property
-    def metadata(self) -> Mapping[str, Any]:
-        """Return a read-only metadata view."""
-        metadata = self._payload.get("metadata", {})
-        if not isinstance(metadata, Mapping):
-            return MappingProxyType({})
-        return MappingProxyType(cast("dict[str, Any]", dict(metadata)))
+class CustomObjectManifest(BaseModel):
+    """Base Pydantic model for a Kubernetes custom-object manifest.
 
-    @property
-    def spec(self) -> Mapping[str, Any]:
-        """Return a read-only spec view."""
-        spec = self._payload.get("spec", {})
-        if not isinstance(spec, Mapping):
-            return MappingProxyType({})
-        return MappingProxyType(cast("dict[str, Any]", dict(spec)))
+    Parameters
+    ----------
+    api_version : str
+        Kubernetes API version, parsed from `apiVersion`.
+    kind : str
+        Kubernetes object kind.
+    metadata : CustomObjectMetadata
+        Kubernetes object metadata.
+    """
 
-    @property
-    def status(self) -> Mapping[str, Any]:
-        """Return a read-only status view."""
-        status = self._payload.get("status", {})
-        if not isinstance(status, Mapping):
-            return MappingProxyType({})
-        return MappingProxyType(cast("dict[str, Any]", dict(status)))
+    model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
+    api_version: str = Field(alias="apiVersion")
+    kind: str
+    metadata: CustomObjectMetadata = Field(default_factory=CustomObjectMetadata)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_metadata(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        raw = dict(value)
+        metadata = raw.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+        for key in ("name", "namespace", "labels", "annotations"):
+            if key in raw and key not in metadata:
+                metadata[key] = raw.pop(key)
+        raw["metadata"] = metadata
+        return raw
 
     @property
     def name(self) -> str:
         """Return this custom object's name."""
-        return str(self.metadata.get("name") or "").strip()
+        return self.metadata.name.strip()
 
     @property
-    def namespace(self) -> str:
-        """Return this custom object's namespace."""
-        return str(self.metadata.get("namespace") or "").strip()
+    def namespace(self) -> str | None:
+        """Return this custom object's namespace, if any."""
+        namespace = self.metadata.namespace.strip()
+        return namespace or None
 
     @property
-    def labels(self) -> Mapping[str, str]:
-        """Return this custom object's labels."""
-        labels = self.metadata.get("labels", {})
-        if not isinstance(labels, Mapping):
-            return MappingProxyType({})
-        return MappingProxyType({str(key): str(value) for key, value in labels.items()})
-
-    @property
-    def annotations(self) -> Mapping[str, str]:
-        """Return this custom object's annotations."""
-        annotations = self.metadata.get("annotations", {})
-        if not isinstance(annotations, Mapping):
-            return MappingProxyType({})
+    def payload(self) -> Mapping[str, Any]:
+        """Return this object as a read-only Kubernetes mapping."""
         return MappingProxyType(
-            {str(key): str(value) for key, value in annotations.items()}
+            cast(
+                "dict[str, Any]",
+                self.model_dump(mode="json", by_alias=True),
+            )
         )
 
-    @property
-    def resource_version(self) -> str:
-        """Return this custom object's resource version."""
-        return str(self.metadata.get("resourceVersion") or "").strip()
-
-    @property
-    def uid(self) -> str:
-        """Return this custom object's UID."""
-        return str(self.metadata.get("uid") or "").strip()
-
-    @property
-    def created_at(self) -> datetime | None:
-        """Return this custom object's creation timestamp.
+    def manifest(self) -> Mapping[str, object]:
+        """Render the push-safe Kubernetes manifest.
 
         Returns
         -------
-        datetime | None
-            Parsed UTC `metadata.creationTimestamp`, or `None` when unavailable or
-            malformed.
+        Mapping[str, object]
+            Manifest body containing `apiVersion`, `kind`, push-safe metadata,
+            and `spec` when present.
         """
-        return _parse_kubernetes_datetime(
-            str(self.metadata.get("creationTimestamp") or "")
-        )
-
-    @staticmethod
-    def parse_utc_datetime(value: object) -> datetime | None:
-        """Parse a Kubernetes timestamp-like value as UTC.
-
-        Returns
-        -------
-        datetime | None
-            Parsed UTC timestamp, or `None` when unavailable or malformed.
-        """
-        return _parse_kubernetes_datetime(str(value or ""))
+        body: dict[str, object] = {
+            "apiVersion": self.api_version,
+            "kind": self.kind,
+            "metadata": self.metadata.manifest(),
+        }
+        if "spec" in type(self).model_fields:
+            body["spec"] = self.payload.get("spec", {})
+        return body
 
 
 @dataclass(frozen=True)
 class _CustomResourceConfig:
+    manifest: type[CustomObjectManifest]
     group: str
     version: str
     kind: str
@@ -217,29 +173,16 @@ class _CustomResourceConfig:
     scope: CustomObjectScope = "namespaced"
     labels: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     singular: str | None = None
-    spec_model: type[BaseModel] | None = None
     spec_schema_overrides: Mapping[str, object] | None = None
     spec_schema_include_defaults: bool = False
     short_names: tuple[str, ...] = ()
-    status_model: type[BaseModel] | None = None
     status_schema_overrides: Mapping[str, object] | None = None
     status_schema_include_defaults: bool = False
     default_namespace: str | None = None
 
 
 @dataclass(frozen=True)
-class _CustomListMeta:
-    resource_version: str | None
-
-
-@dataclass(frozen=True)
-class _CustomListPayload:
-    metadata: _CustomListMeta | None
-    items: list[Mapping[str, Any]]
-
-
-@dataclass(frozen=True)
-class _CustomResourceAPI:
+class _CustomResourceAPI[ManifestT: CustomObjectManifest]:
     """Resource API binding for dynamic Kubernetes custom objects.
 
     Parameters
@@ -260,148 +203,129 @@ class _CustomResourceAPI:
         """Return whether this custom resource is namespace-scoped."""
         return self.config.scope == "namespaced"
 
-    @property
-    def can_create(self) -> bool:
-        """Return whether this binding supports generic create."""
-        return True
-
-    @property
-    def can_patch(self) -> bool:
-        """Return whether this binding supports generic patch."""
-        return True
-
-    @property
-    def can_delete(self) -> bool:
-        """Return whether this binding supports generic delete."""
-        return True
-
-    def items(
+    def _identity(
         self,
-        payload: _KubeListPayload[Mapping[str, Any]],
-    ) -> builtins.list[Mapping[str, Any]]:
-        """Return items from one custom-object list payload.
+        *,
+        name: str,
+        namespace: str | None,
+        action: str,
+    ) -> tuple[str | None, str, str]:
+        name = name.strip()
+        namespace = self._identity_namespace(namespace, action=action)
+        if not name:
+            msg = f"{self.kind} {action} requires a name"
+            raise OSError(msg)
+        label = f"{namespace}/{name}" if namespace else name
+        return namespace, name, label
 
-        Parameters
-        ----------
-        payload : _KubeListPayload[Mapping[str, Any]]
-            Validated custom-object list payload.
+    def _identity_namespace(self, namespace: str | None, *, action: str) -> str | None:
+        namespace = (
+            namespace if namespace is not None else self.config.default_namespace
+        )
+        namespace = namespace.strip() if namespace is not None else ""
+        if self.config.scope == "cluster":
+            if namespace:
+                msg = f"{self.kind} is cluster-scoped; cannot {action} in namespace"
+                raise ValueError(msg)
+            return None
+        if not namespace:
+            msg = f"{self.kind} {action} requires a namespace"
+            raise ValueError(msg)
+        return namespace
+
+    def _payload(self, payload: object, *, label: str) -> ManifestT:
+        if not isinstance(payload, Mapping):
+            msg = f"malformed Kubernetes {label}"
+            raise OSError(msg)
+        try:
+            return cast("ManifestT", self.config.manifest.model_validate(payload))
+        except ValidationError as err:
+            msg = f"malformed Kubernetes {label}: {err}"
+            raise OSError(msg) from err
+
+    def _listed(
+        self,
+        payload: object,
+    ) -> tuple[builtins.list[ManifestT], str]:
+        if not isinstance(payload, Mapping):
+            msg = f"malformed Kubernetes {self.kind} list payload"
+            raise OSError(msg)
+        payload = cast("Mapping[str, Any]", payload)
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, Mapping):
+            msg = f"malformed Kubernetes {self.kind} list metadata"
+            raise OSError(msg)
+        items = payload.get("items", [])
+        if not isinstance(items, list):
+            msg = f"malformed Kubernetes {self.kind} list items"
+            raise OSError(msg)
+        out = [
+            self._payload(
+                item,
+                label=f"custom object payload for {self.config.plural}",
+            )
+            for item in items
+        ]
+        resource_version = str(
+            cast("Mapping[str, object]", metadata).get("resourceVersion") or ""
+        ).strip()
+        if not resource_version:
+            msg = f"Kubernetes {self.kind} list had no resourceVersion"
+            raise OSError(msg)
+        return out, resource_version
+
+    def metadata(self, payload: CustomObjectManifest) -> _ResourceMetadata:
+        """Return normalized custom-object metadata.
 
         Returns
         -------
-        list[Mapping[str, Any]]
-            Custom-object payload mappings from the list.
+        _ResourceMetadata
+            Normalized metadata view for the payload.
         """
-        return payload.items
+        metadata = payload.metadata
+        return _ResourceMetadata(
+            name=metadata.name.strip(),
+            namespace=metadata.namespace.strip(),
+            labels=MappingProxyType(dict(metadata.labels)),
+            annotations=MappingProxyType(dict(metadata.annotations)),
+            resource_version=metadata.resource_version.strip(),
+            uid=metadata.uid.strip(),
+            created_at=metadata.creation_timestamp,
+        )
 
-    def list_resource_version(
+    def identity(
         self,
-        payload: _KubeListPayload[Mapping[str, Any]],
-    ) -> str:
-        """Return a custom-object list payload's resource version.
-
-        Parameters
-        ----------
-        payload : _KubeListPayload[Mapping[str, Any]]
-            Validated custom-object list payload.
+        payload: CustomObjectManifest,
+        *,
+        action: str,
+    ) -> tuple[str | None, str, str]:
+        """Return a custom-object payload's required Kubernetes identity.
 
         Returns
         -------
-        str
-            Trimmed list `metadata.resourceVersion`.
+        tuple[str | None, str, str]
+            Namespace, name, and diagnostic label for the payload.
 
         Raises
         ------
         OSError
-            If Kubernetes omits the list resource version.
+            If required identity metadata is missing.
         """
-        metadata = payload.metadata
-        resource_version = (
-            str(metadata.resource_version or "").strip() if metadata is not None else ""
-        )
-        if not resource_version:
-            msg = f"Kubernetes {self.kind} list had no resourceVersion"
+        metadata = self.metadata(payload)
+        if self.config.scope == "cluster":
+            if not metadata.name:
+                msg = f"cannot {action} {self.kind} with missing metadata.name"
+                raise OSError(msg)
+            return None, metadata.name, metadata.name
+        if not metadata.namespace or not metadata.name:
+            msg = (
+                f"cannot {action} {self.kind} with missing metadata.name/namespace"
+            )
             raise OSError(msg)
-        return resource_version
-
-    def name(self, payload: Mapping[str, Any]) -> str:
-        """Return a custom-object payload's metadata name.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.name`, or an empty string when unavailable.
-        """
-        return str(self._metadata(payload).get("name") or "").strip()
-
-    def namespace(self, payload: Mapping[str, Any]) -> str:
-        """Return a custom-object payload's metadata namespace.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.namespace`, or an empty string when unavailable.
-        """
-        return str(self._metadata(payload).get("namespace") or "").strip()
-
-    def labels(self, payload: Mapping[str, Any]) -> Mapping[str, str]:
-        """Return a custom-object payload's labels.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only labels, or an empty mapping when unavailable.
-        """
-        labels = self._metadata(payload).get("labels", {})
-        if not isinstance(labels, Mapping):
-            return MappingProxyType({})
-        return MappingProxyType({str(key): str(value) for key, value in labels.items()})
-
-    def annotations(self, payload: Mapping[str, Any]) -> Mapping[str, str]:
-        """Return a custom-object payload's annotations.
-
-        Returns
-        -------
-        Mapping[str, str]
-            Read-only annotations, or an empty mapping when unavailable.
-        """
-        annotations = self._metadata(payload).get("annotations", {})
-        if not isinstance(annotations, Mapping):
-            return MappingProxyType({})
-        return MappingProxyType(
-            {str(key): str(value) for key, value in annotations.items()}
-        )
-
-    def resource_version(self, payload: Mapping[str, Any]) -> str:
-        """Return a custom-object payload's resource version.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.resourceVersion`, or an empty string when unavailable.
-        """
-        return str(self._metadata(payload).get("resourceVersion") or "").strip()
-
-    def uid(self, payload: Mapping[str, Any]) -> str:
-        """Return a custom-object payload's UID.
-
-        Returns
-        -------
-        str
-            Trimmed `metadata.uid`, or an empty string when unavailable.
-        """
-        return str(self._metadata(payload).get("uid") or "").strip()
-
-    def created_at(self, payload: Mapping[str, Any]) -> datetime | None:
-        """Return a custom-object payload's creation timestamp.
-
-        Returns
-        -------
-        datetime | None
-            Parsed UTC `metadata.creationTimestamp`, or `None` when unavailable or
-            malformed.
-        """
-        return _parse_kubernetes_datetime(
-            str(self._metadata(payload).get("creationTimestamp") or "")
+        return (
+            metadata.namespace,
+            metadata.name,
+            f"{metadata.namespace}/{metadata.name}",
         )
 
     async def read(
@@ -411,7 +335,7 @@ class _CustomResourceAPI:
         name: str,
         namespace: str | None,
         deadline: Deadline,
-    ) -> Mapping[str, Any] | None:
+    ) -> ManifestT | None:
         """Read one custom object by name.
 
         Parameters
@@ -427,7 +351,7 @@ class _CustomResourceAPI:
 
         Returns
         -------
-        Mapping[str, Any] | None
+            CustomObjectManifest | None
             Custom-object payload, or `None` when the object is absent.
 
         Raises
@@ -435,11 +359,12 @@ class _CustomResourceAPI:
         OSError
             If Kubernetes returns malformed data or another API error.
         """
-        namespace, name, label = self._identity(
+        identity = self._identity(
             name=name,
             namespace=namespace,
             action="read",
         )
+        identity_namespace, identity_name, identity_label = identity
         api = kube_client.CustomObjectsApi(kube.client)
         try:
             if self.namespaced:
@@ -447,13 +372,13 @@ class _CustomResourceAPI:
                     lambda request_timeout: api.get_namespaced_custom_object(
                         group=self.config.group,
                         version=self.config.version,
-                        namespace=cast("str", namespace),
+                        namespace=cast("str", identity_namespace),
                         plural=self.config.plural,
-                        name=name,
+                        name=identity_name,
                         _request_timeout=request_timeout,
                     ),
                     deadline=deadline,
-                    context=f"failed to read {self.kind} {label}",
+                    context=f"failed to read {self.kind} {identity_label}",
                     missing_ok=False,
                 )
             else:
@@ -462,11 +387,11 @@ class _CustomResourceAPI:
                         group=self.config.group,
                         version=self.config.version,
                         plural=self.config.plural,
-                        name=name,
+                        name=identity_name,
                         _request_timeout=request_timeout,
                     ),
                     deadline=deadline,
-                    context=f"failed to read {self.kind} {label}",
+                    context=f"failed to read {self.kind} {identity_label}",
                     missing_ok=False,
                 )
         except OSError as err:
@@ -488,10 +413,9 @@ class _CustomResourceAPI:
         *,
         deadline: Deadline,
         namespace: str | None,
-        namespaces: Collection[str] | None,
         label_selector: str,
         field_selector: str,
-    ) -> builtins.list[_KubeListPayload[Mapping[str, Any]]]:
+    ) -> tuple[builtins.list[ManifestT], str]:
         """List custom objects with rendered selector filters.
 
         Parameters
@@ -502,8 +426,6 @@ class _CustomResourceAPI:
             Maximum request budget in seconds.
         namespace : str | None
             Single namespace filter.
-        namespaces : Collection[str] | None
-            Multiple namespace filters.
         label_selector : str
             Rendered Kubernetes label selector.
         field_selector : str
@@ -511,19 +433,29 @@ class _CustomResourceAPI:
 
         Returns
         -------
-        list[_KubeListPayload[Mapping[str, Any]]]
-            Validated custom-object list payloads.
+        tuple[list[CustomObjectManifest], str]
+            Validated custom-object payloads and list resource version.
+
+        Raises
+        ------
+        ValueError
+            If namespace filters are invalid for this custom resource's scope.
         """
-        selected = self.namespace_filter(
-            action="list",
-            namespace=namespace,
-            namespaces=namespaces,
+        namespace = (
+            namespace if namespace is not None else self.config.default_namespace
         )
-        normalized = _normalized_namespaces(selected)
+        namespace = namespace.strip() if namespace is not None else ""
+        if self.config.scope == "cluster":
+            if namespace:
+                msg = f"{self.kind} is cluster-scoped; cannot list by namespace"
+                raise ValueError(msg)
+        else:
+            namespace = namespace or ""
         api = kube_client.CustomObjectsApi(kube.client)
         field_selector = field_selector.strip()
 
-        if self.config.scope == "cluster" or normalized is None:
+        if self.config.scope == "cluster" or not namespace:
+            context = f"failed to list {self.kind}s"
             payload = await kube.run(
                 lambda request_timeout: api.list_cluster_custom_object(
                     group=self.config.group,
@@ -534,35 +466,26 @@ class _CustomResourceAPI:
                     _request_timeout=request_timeout,
                 ),
                 deadline=deadline,
-                context=self.collection_context("list", None),
+                context=context,
                 missing_ok=False,
             )
-            return [self._list_payload(payload)]
+            return self._listed(payload)
 
-        if not normalized:
-            return []
-        payloads = await asyncio.gather(
-            *(
-                kube.run(
-                    lambda request_timeout, namespace=namespace: (
-                        api.list_namespaced_custom_object(
-                            group=self.config.group,
-                            version=self.config.version,
-                            namespace=namespace,
-                            plural=self.config.plural,
-                            label_selector=label_selector or None,
-                            field_selector=field_selector or None,
-                            _request_timeout=request_timeout,
-                        )
-                    ),
-                    deadline=deadline,
-                    context=self.collection_context("list", namespace),
-                    missing_ok=False,
-                )
-                for namespace in normalized
-            )
+        payload = await kube.run(
+            lambda request_timeout: api.list_namespaced_custom_object(
+                group=self.config.group,
+                version=self.config.version,
+                namespace=namespace,
+                plural=self.config.plural,
+                label_selector=label_selector or None,
+                field_selector=field_selector or None,
+                _request_timeout=request_timeout,
+            ),
+            deadline=deadline,
+            context=f"failed to list {self.kind}s in namespace {namespace!r}",
+            missing_ok=False,
         )
-        return [self._list_payload(payload) for payload in payloads]
+        return self._listed(payload)
 
     async def create(
         self,
@@ -572,7 +495,7 @@ class _CustomResourceAPI:
         namespace: str | None,
         body: Mapping[str, Any],
         deadline: Deadline,
-    ) -> Mapping[str, Any]:
+    ) -> ManifestT:
         """Create one custom object from a manifest body.
 
         Parameters
@@ -590,31 +513,31 @@ class _CustomResourceAPI:
 
         Returns
         -------
-        Mapping[str, Any]
+            CustomObjectManifest
             Created custom-object payload.
         """
-        namespace, name, body = self.manifest_body(
+        identity, body = self._manifest_body(
             name=name,
             namespace=namespace,
             body=body,
             action="create",
         )
-        label = self.object_label(name=name, namespace=namespace)
+        identity_namespace, _, identity_label = identity
         api = kube_client.CustomObjectsApi(kube.client)
         if self.namespaced:
             payload = await kube.run(
                 lambda request_timeout: api.create_namespaced_custom_object(
-                    group=self.config.group,
-                    version=self.config.version,
-                    namespace=cast("str", namespace),
-                    plural=self.config.plural,
-                    body=dict(body),
-                    _request_timeout=request_timeout,
-                ),
-                deadline=deadline,
-                context=f"failed to create {self.kind} {label}",
-                missing_ok=False,
-            )
+                        group=self.config.group,
+                        version=self.config.version,
+                        namespace=cast("str", identity_namespace),
+                        plural=self.config.plural,
+                        body=dict(body),
+                        _request_timeout=request_timeout,
+                    ),
+                    deadline=deadline,
+                    context=f"failed to create {self.kind} {identity_label}",
+                    missing_ok=False,
+                )
         else:
             payload = await kube.run(
                 lambda request_timeout: api.create_cluster_custom_object(
@@ -625,7 +548,7 @@ class _CustomResourceAPI:
                     _request_timeout=request_timeout,
                 ),
                 deadline=deadline,
-                context=f"failed to create {self.kind} {label}",
+                context=f"failed to create {self.kind} {identity_label}",
                 missing_ok=False,
             )
         return self._payload(
@@ -642,7 +565,7 @@ class _CustomResourceAPI:
         body: Mapping[str, object],
         deadline: Deadline,
         context: str,
-    ) -> Mapping[str, Any]:
+    ) -> ManifestT:
         """Patch one custom object.
 
         Parameters
@@ -662,26 +585,27 @@ class _CustomResourceAPI:
 
         Returns
         -------
-        Mapping[str, Any]
+            CustomObjectManifest
             Patched custom-object payload.
         """
-        namespace, name, _ = self._identity(
+        identity = self._identity(
             name=name,
             namespace=namespace,
             action="patch",
         )
+        identity_namespace, identity_name, _ = identity
         api = kube_client.CustomObjectsApi(kube.client)
         if self.namespaced:
             payload = await kube.run(
                 lambda request_timeout: api.patch_namespaced_custom_object(
-                    group=self.config.group,
-                    version=self.config.version,
-                    namespace=cast("str", namespace),
-                    plural=self.config.plural,
-                    name=name,
-                    body=dict(body),
-                    _request_timeout=request_timeout,
-                ),
+                        group=self.config.group,
+                        version=self.config.version,
+                        namespace=cast("str", identity_namespace),
+                        plural=self.config.plural,
+                        name=identity_name,
+                        body=dict(body),
+                        _request_timeout=request_timeout,
+                    ),
                 deadline=deadline,
                 context=context,
                 missing_ok=False,
@@ -689,13 +613,13 @@ class _CustomResourceAPI:
         else:
             payload = await kube.run(
                 lambda request_timeout: api.patch_cluster_custom_object(
-                    group=self.config.group,
-                    version=self.config.version,
-                    plural=self.config.plural,
-                    name=name,
-                    body=dict(body),
-                    _request_timeout=request_timeout,
-                ),
+                        group=self.config.group,
+                        version=self.config.version,
+                        plural=self.config.plural,
+                        name=identity_name,
+                        body=dict(body),
+                        _request_timeout=request_timeout,
+                    ),
                 deadline=deadline,
                 context=context,
                 missing_ok=False,
@@ -714,7 +638,7 @@ class _CustomResourceAPI:
         body: Mapping[str, object],
         deadline: Deadline,
         context: str,
-    ) -> Mapping[str, Any]:
+    ) -> ManifestT:
         """Patch one custom object's status payload.
 
         Parameters
@@ -734,26 +658,27 @@ class _CustomResourceAPI:
 
         Returns
         -------
-        Mapping[str, Any]
+            CustomObjectManifest
             Patched custom-object payload.
         """
-        namespace, name, _ = self._identity(
+        identity = self._identity(
             name=name,
             namespace=namespace,
             action="status patch",
         )
+        identity_namespace, identity_name, _ = identity
         api = kube_client.CustomObjectsApi(kube.client)
         if self.namespaced:
             payload = await kube.run(
                 lambda request_timeout: api.patch_namespaced_custom_object_status(
-                    group=self.config.group,
-                    version=self.config.version,
-                    namespace=cast("str", namespace),
-                    plural=self.config.plural,
-                    name=name,
-                    body=dict(body),
-                    _request_timeout=request_timeout,
-                ),
+                        group=self.config.group,
+                        version=self.config.version,
+                        namespace=cast("str", identity_namespace),
+                        plural=self.config.plural,
+                        name=identity_name,
+                        body=dict(body),
+                        _request_timeout=request_timeout,
+                    ),
                 deadline=deadline,
                 context=context,
                 missing_ok=False,
@@ -761,13 +686,13 @@ class _CustomResourceAPI:
         else:
             payload = await kube.run(
                 lambda request_timeout: api.patch_cluster_custom_object_status(
-                    group=self.config.group,
-                    version=self.config.version,
-                    plural=self.config.plural,
-                    name=name,
-                    body=dict(body),
-                    _request_timeout=request_timeout,
-                ),
+                        group=self.config.group,
+                        version=self.config.version,
+                        plural=self.config.plural,
+                        name=identity_name,
+                        body=dict(body),
+                        _request_timeout=request_timeout,
+                    ),
                 deadline=deadline,
                 context=context,
                 missing_ok=False,
@@ -785,7 +710,7 @@ class _CustomResourceAPI:
         namespace: str | None,
         body: kube_client.V1DeleteOptions | None,
         deadline: Deadline,
-    ) -> object | None:
+    ) -> None:
         """Delete one custom object.
 
         Parameters
@@ -801,52 +726,54 @@ class _CustomResourceAPI:
         deadline : Deadline
             Maximum request budget in seconds.
 
-        Returns
-        -------
-        object | None
-            Kubernetes deletion response, or `None` when absent.
         """
         del body
-        namespace, name, label = self._identity(
+        identity = self._identity(
             name=name,
             namespace=namespace,
             action="delete",
         )
+        identity_namespace, identity_name, identity_label = identity
         api = kube_client.CustomObjectsApi(kube.client)
         if self.namespaced:
-            return await kube.run(
+            await kube.run(
                 lambda request_timeout: api.delete_namespaced_custom_object(
                     group=self.config.group,
                     version=self.config.version,
-                    namespace=cast("str", namespace),
+                    namespace=cast("str", identity_namespace),
                     plural=self.config.plural,
-                    name=name,
+                    name=identity_name,
                     _request_timeout=request_timeout,
                 ),
                 deadline=deadline,
-                context=f"failed to delete {self.kind} {label}",
+                context=f"failed to delete {self.kind} {identity_label}",
                 missing_ok=True,
             )
-        return await kube.run(
+            return
+        await kube.run(
             lambda request_timeout: api.delete_cluster_custom_object(
                 group=self.config.group,
                 version=self.config.version,
                 plural=self.config.plural,
-                name=name,
+                name=identity_name,
                 _request_timeout=request_timeout,
             ),
             deadline=deadline,
-            context=f"failed to delete {self.kind} {label}",
+            context=f"failed to delete {self.kind} {identity_label}",
             missing_ok=True,
         )
 
-    def watch_method(
+    async def stream(
         self,
         kube: Kube,
         *,
         namespace: str | None,
-    ) -> tuple[Callable[..., Any], dict[str, Any], str]:
-        """Return the list-style method used for custom-object watches.
+        deadline: Deadline,
+        resource_version: str,
+        label_selector: str,
+        field_selector: str,
+    ) -> AsyncIterator[WatchEvent[ManifestT]]:
+        """Stream custom-object watch events.
 
         Parameters
         ----------
@@ -854,94 +781,80 @@ class _CustomResourceAPI:
             Active Kubernetes API context.
         namespace : str | None
             Namespace to watch.
+        deadline : Deadline
+            Maximum stream budget.
+        resource_version : str
+            Collection resource version to stream from.
+        label_selector : str
+            Rendered Kubernetes label selector.
+        field_selector : str
+            Rendered Kubernetes field selector.
 
-        Returns
-        -------
-        tuple[Callable[..., Any], dict[str, Any], str]
-            List method, keyword arguments, and error context.
+        Yields
+        ------
+        WatchEvent[Mapping[str, Any]]
+            Custom-object watch events.
+
+        Raises
+        ------
+        ValueError
+            If namespace is invalid for this custom resource's scope.
         """
-        selected = self.namespace_filter(action="watch", namespace=namespace)
-        normalized = _normalized_namespaces(selected)
-        namespace = None if normalized is None else next(iter(normalized), None)
+        namespace = (
+            namespace if namespace is not None else self.config.default_namespace
+        )
+        namespace = namespace.strip() if namespace is not None else ""
+        if self.config.scope == "cluster":
+            if namespace:
+                msg = f"{self.kind} is cluster-scoped; cannot watch in namespace"
+                raise ValueError(msg)
+            namespace = ""
         api = kube_client.CustomObjectsApi(kube.client)
         api_kwargs: dict[str, Any] = {
             "group": self.config.group,
             "version": self.config.version,
             "plural": self.config.plural,
         }
-        if namespace is None:
-            return (
-                api.list_cluster_custom_object,
-                api_kwargs,
-                self.collection_context("watch", None),
+        if self.config.scope == "cluster" or not namespace:
+            list_method = api.list_cluster_custom_object
+            context = f"failed to watch {self.kind}s"
+        else:
+            api_kwargs["namespace"] = namespace
+            list_method = api.list_namespaced_custom_object
+            context = f"failed to watch {self.kind}s in namespace {namespace!r}"
+        async for event in watch_stream(
+            list_method,
+            deadline=deadline,
+            context=context,
+            resource_version=resource_version,
+            label_selector=label_selector,
+            field_selector=field_selector,
+            api_kwargs=api_kwargs,
+        ):
+            payload = self._payload(
+                event.object,
+                label=f"custom object payload for {self.config.plural}",
             )
-        api_kwargs["namespace"] = namespace
-        return (
-            api.list_namespaced_custom_object,
-            api_kwargs,
-            self.collection_context("watch", namespace),
-        )
-
-    def label_selector(self, labels: Mapping[str, str]) -> str:
-        """Return caller labels merged with descriptor labels as a selector.
-
-        Returns
-        -------
-        str
-            Rendered Kubernetes label selector.
-        """
-        merged = dict(self.config.labels)
-        merged.update(labels)
-        return ",".join(f"{key}={value}" for key, value in merged.items())
-
-    def namespace_filter(
-        self,
-        *,
-        action: Literal["list", "watch"],
-        namespace: str | None,
-        namespaces: Collection[str] | None = None,
-    ) -> Collection[str] | None:
-        """Validate namespace collection filters for list and watch operations.
-
-        Returns
-        -------
-        Collection[str] | None
-            Normalized namespace selection, or `None` for all namespaces.
-
-        Raises
-        ------
-        ValueError
-            If namespace filters are invalid for this resource's scope.
-        """
-        namespace = self.default_namespace(namespace)
-        namespace = namespace.strip() if namespace is not None else ""
-        if self.config.scope == "cluster":
-            if namespace or namespaces is not None:
-                relation = "in namespace" if action == "watch" else "by namespace"
-                msg = f"{self.kind} is cluster-scoped; cannot {action} {relation}"
-                raise ValueError(msg)
-            return None
-        if namespace and namespaces is not None:
-            msg = (
-                f"{self.kind} {action} accepts either namespace or namespaces, not both"
+            yield WatchEvent(
+                type=event.type,
+                object=payload,
+                resource_version=event.resource_version,
             )
-            raise ValueError(msg)
-        return (namespace,) if namespace else namespaces
 
-    def manifest_body(
+    def _manifest_body(
         self,
         *,
         name: str,
         namespace: str | None,
         body: Mapping[str, Any],
         action: Literal["create", "upsert"],
-    ) -> tuple[str | None, str, dict[str, object]]:
+    ) -> tuple[tuple[str | None, str, str], dict[str, object]]:
         """Validate and normalize a custom-object manifest body.
 
         Returns
         -------
-        tuple[str | None, str, dict[str, object]]
-            Namespace, name, and normalized manifest body.
+        tuple[tuple[str | None, str, str], dict[str, object]]
+            Resource identity and normalized manifest body.
 
         Raises
         ------
@@ -953,6 +866,7 @@ class _CustomResourceAPI:
             msg = f"{self.kind} {action} requires a name"
             raise OSError(msg)
         namespace = self._identity_namespace(namespace, action=action)
+        identity = (namespace, name, f"{namespace}/{name}" if namespace else name)
         raw = dict(body)
         metadata = raw.get("metadata")
         if not isinstance(metadata, Mapping):
@@ -988,133 +902,12 @@ class _CustomResourceAPI:
         merged_labels.update({str(key): str(value) for key, value in labels.items()})
         metadata["labels"] = merged_labels
         raw["metadata"] = metadata
-        return namespace, name, raw
-
-    def resource_identity(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        action: str,
-    ) -> tuple[str | None, str]:
-        """Return a custom-object payload's required Kubernetes identity.
-
-        Returns
-        -------
-        tuple[str | None, str]
-            Namespace and name for namespaced resources, or `None` and name for
-            cluster-scoped resources.
-
-        Raises
-        ------
-        OSError
-            If the payload metadata is missing required identity fields.
-        """
-        name = self.name(payload)
-        namespace = self.namespace(payload)
-        if self.config.scope == "cluster":
-            if not name:
-                msg = f"cannot {action} with missing metadata.name"
-                raise OSError(msg)
-            return None, name
-        if not namespace or not name:
-            msg = f"cannot {action} with missing metadata.name/namespace"
-            raise OSError(msg)
-        return namespace, name
-
-    def object_label(self, *, name: str, namespace: str | None) -> str:
-        """Return a human-readable custom-object identity label.
-
-        Returns
-        -------
-        str
-            `namespace/name` for namespaced resources, otherwise `name`.
-        """
-        return f"{namespace}/{name}" if namespace else name
-
-    def collection_context(
-        self,
-        action: Literal["list", "watch"],
-        namespace: str | None,
-    ) -> str:
-        """Return an error context for collection operations.
-
-        Returns
-        -------
-        str
-            Human-readable Kubernetes request context.
-        """
-        context = f"failed to {action} {self.kind}s"
-        return context if namespace is None else f"{context} in namespace {namespace!r}"
-
-    def _identity(
-        self,
-        *,
-        name: str,
-        namespace: str | None,
-        action: str,
-    ) -> tuple[str | None, str, str]:
-        name = name.strip()
-        namespace = self._identity_namespace(namespace, action=action)
-        if not name:
-            msg = f"{self.kind} {action} requires a name"
-            raise OSError(msg)
-        return namespace, name, self.object_label(name=name, namespace=namespace)
-
-    def _identity_namespace(self, namespace: str | None, *, action: str) -> str | None:
-        namespace = self.default_namespace(namespace)
-        namespace = namespace.strip() if namespace is not None else ""
-        if self.config.scope == "cluster":
-            if namespace:
-                msg = f"{self.kind} is cluster-scoped; cannot {action} in namespace"
-                raise ValueError(msg)
-            return None
-        if not namespace:
-            msg = f"{self.kind} {action} requires a namespace"
-            raise ValueError(msg)
-        return namespace
-
-    def default_namespace(self, namespace: str | None) -> str | None:
-        return namespace if namespace is not None else self.config.default_namespace
-
-    def _metadata(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        metadata = payload.get("metadata", {})
-        if not isinstance(metadata, Mapping):
-            return MappingProxyType({})
-        return MappingProxyType(cast("dict[str, Any]", dict(metadata)))
-
-    def _payload(self, payload: object, *, label: str) -> Mapping[str, Any]:
-        if not isinstance(payload, Mapping):
-            msg = f"malformed Kubernetes {label}"
-            raise OSError(msg)
-        return cast("Mapping[str, Any]", payload)
-
-    def _list_payload(self, payload: object) -> _CustomListPayload:
-        payload = self._payload(payload, label=f"{self.kind} list payload")
-        metadata = payload.get("metadata", {})
-        if not isinstance(metadata, Mapping):
-            msg = f"malformed Kubernetes {self.kind} list metadata"
-            raise OSError(msg)
-        items = payload.get("items", [])
-        if not isinstance(items, list):
-            msg = f"malformed Kubernetes {self.kind} list items"
-            raise OSError(msg)
-        out = [
-            self._payload(
-                item,
-                label=f"custom object payload for {self.config.plural}",
-            )
-            for item in items
-        ]
-        return _CustomListPayload(
-            metadata=_CustomListMeta(
-                str(cast("Mapping[str, object]", metadata).get("resourceVersion") or "")
-            ),
-            items=out,
-        )
+        return identity, raw
 
 
 def custom_resource(
     *,
+    manifest: type[CustomObjectManifest],
     group: str,
     version: str,
     plural: str,
@@ -1122,11 +915,9 @@ def custom_resource(
     kind: str | None = None,
     labels: Mapping[str, str] | None = None,
     singular: str | None = None,
-    spec_model: type[BaseModel] | None = None,
     spec_schema_overrides: Mapping[str, object] | None = None,
     spec_schema_include_defaults: bool = False,
     short_names: Collection[str] = (),
-    status_model: type[BaseModel] | None = None,
     status_schema_overrides: Mapping[str, object] | None = None,
     status_schema_include_defaults: bool = False,
     default_namespace: str | None = None,
@@ -1137,6 +928,8 @@ def custom_resource(
     ----------
     group : str
         Kubernetes API group that owns the custom resource.
+    manifest : type[CustomObjectManifest]
+        Pydantic push/pull manifest model for this resource.
     version : str
         Served API version.
     plural : str
@@ -1150,16 +943,12 @@ def custom_resource(
     singular : str | None, optional
         Singular resource name for CRD ownership. When omitted, the wrapper can use
         an existing API but cannot converge its CRD.
-    spec_model : type[BaseModel] | None, optional
-        Pydantic model used to generate a CRD `spec` schema.
     spec_schema_overrides : Mapping[str, object] | None, optional
         Schema overrides merged into the generated `spec` schema.
     spec_schema_include_defaults : bool, optional
         Whether generated `spec` schema fragments keep Pydantic defaults.
     short_names : Collection[str], optional
         Optional CRD short names.
-    status_model : type[BaseModel] | None, optional
-        Pydantic model used to generate a CRD `status` schema.
     status_schema_overrides : Mapping[str, object] | None, optional
         Schema overrides merged into the generated `status` schema.
     status_schema_include_defaults : bool, optional
@@ -1200,6 +989,7 @@ def custom_resource(
             msg = "custom resource declarations require non-empty kind"
             raise ValueError(msg)
         config = _CustomResourceConfig(
+            manifest=manifest,
             group=group,
             version=version,
             kind=resource_kind,
@@ -1207,7 +997,6 @@ def custom_resource(
             scope=resource_scope,
             labels=MappingProxyType(dict(labels or {})),
             singular=None if singular is None else singular.strip() or None,
-            spec_model=spec_model,
             spec_schema_overrides=(
                 None
                 if spec_schema_overrides is None
@@ -1215,7 +1004,6 @@ def custom_resource(
             ),
             spec_schema_include_defaults=spec_schema_include_defaults,
             short_names=tuple(name.strip() for name in short_names if name.strip()),
-            status_model=status_model,
             status_schema_overrides=(
                 None
                 if status_schema_overrides is None
@@ -1233,10 +1021,93 @@ def custom_resource(
     return register
 
 
-class CustomResource(CustomObject):
-    """Base class for class-owned Kubernetes custom-resource wrappers."""
+class CustomResource[ManifestT: CustomObjectManifest]:
+    """Base class for class-owned Kubernetes custom-resource wrappers.
 
-    _resource_api: ClassVar[_ResourceAPI[Mapping[str, Any]] | None] = None
+    Parameters
+    ----------
+    payload : ManifestT
+        Parsed Kubernetes custom-object manifest payload.
+    """
+
+    _resource_api: ClassVar[_ResourceAPI[Any] | None] = None
+    _payload: ManifestT
+
+    def __init__(self, payload: ManifestT) -> None:
+        """Initialize a custom-resource wrapper."""
+        self._payload = payload
+
+    @property
+    def payload(self) -> ManifestT:
+        """Return the typed custom-object manifest payload."""
+        return self._payload
+
+    @property
+    def metadata(self) -> CustomObjectMetadata:
+        """Return this custom object's metadata."""
+        return self._payload.metadata
+
+    @property
+    def name(self) -> str:
+        """Return this custom object's name."""
+        return self._payload.name
+
+    @property
+    def namespace(self) -> str:
+        """Return this custom object's namespace."""
+        return self._payload.metadata.namespace.strip()
+
+    @property
+    def labels(self) -> Mapping[str, str]:
+        """Return this custom object's labels."""
+        return MappingProxyType(dict(self._payload.metadata.labels))
+
+    @property
+    def annotations(self) -> Mapping[str, str]:
+        """Return this custom object's annotations."""
+        return MappingProxyType(dict(self._payload.metadata.annotations))
+
+    @property
+    def resource_version(self) -> str:
+        """Return this custom object's resource version."""
+        return self._payload.metadata.resource_version.strip()
+
+    @property
+    def uid(self) -> str:
+        """Return this custom object's UID."""
+        return self._payload.metadata.uid.strip()
+
+    @property
+    def created_at(self) -> datetime | None:
+        """Return this custom object's creation timestamp."""
+        return self._payload.metadata.creation_timestamp
+
+    @staticmethod
+    def parse_utc_datetime(value: object) -> datetime | None:
+        """Parse a Kubernetes timestamp-like value as UTC.
+
+        Returns
+        -------
+        datetime | None
+            Parsed UTC timestamp, or `None` when unavailable or malformed.
+        """
+        return _parse_kubernetes_datetime(str(value or ""))
+
+    @property
+    def spec(self) -> Any:
+        """Return a read-only spec mapping."""
+        spec = self._payload.payload.get("spec", {})
+        if not isinstance(spec, Mapping):
+            return MappingProxyType({})
+        return MappingProxyType(cast("dict[str, Any]", dict(spec)))
+
+    @property
+    def status(self) -> Any:
+        """Return a read-only status mapping."""
+        status = self._payload.payload.get("status", {})
+        if not isinstance(status, Mapping):
+            return MappingProxyType({})
+        return MappingProxyType(cast("dict[str, Any]", dict(status)))
 
     @classmethod
     async def ensure_crd(cls, kube: Kube, *, deadline: Deadline) -> None:
@@ -1332,7 +1203,6 @@ class CustomResource(CustomObject):
         *,
         deadline: Deadline,
         namespace: str | None = None,
-        namespaces: Collection[str] | None = None,
         labels: Mapping[str, str] = EMPTY_MAPPING,
         field_selector: Collection[str] = (),
     ) -> builtins.list[Self]:
@@ -1345,9 +1215,7 @@ class CustomResource(CustomObject):
         deadline : Deadline
             Maximum request budget.
         namespace : str | None, optional
-            Single namespace filter for namespaced resources.
-        namespaces : Collection[str] | None, optional
-            Multiple namespace filters for namespaced resources.
+            Namespace filter for namespaced resources.
         labels : Mapping[str, str], optional
             Label filters to merge with resource labels.
         field_selector : Collection[str], optional
@@ -1360,22 +1228,22 @@ class CustomResource(CustomObject):
 
         """
         api = cls._api()
-        label_selector = api.label_selector(labels)
+        merged_labels = dict(api.config.labels)
+        merged_labels.update(labels)
+        label_selector = ",".join(
+            f"{key}={value}" for key, value in merged_labels.items()
+        )
         field_selector_text = ",".join(
             item.strip() for item in field_selector if item.strip()
         )
-        payloads = await api.list(
+        items, _resource_version = await api.list(
             kube,
             deadline=deadline,
             namespace=namespace,
-            namespaces=namespaces,
             label_selector=label_selector,
             field_selector=field_selector_text,
         )
-        out: builtins.list[Self] = []
-        for payload in payloads:
-            out.extend(cls(item) for item in api.items(payload))
-        return out
+        return [cls(item) for item in items]
 
     @classmethod
     async def watch(
@@ -1411,46 +1279,40 @@ class CustomResource(CustomObject):
             Typed custom-object watch events.
         """
         api = cls._api()
-        label_selector = api.label_selector(labels)
+        merged_labels = dict(api.config.labels)
+        merged_labels.update(labels)
+        label_selector = ",".join(
+            f"{key}={value}" for key, value in merged_labels.items()
+        )
         field_selector_text = ",".join(
             item.strip() for item in field_selector if item.strip()
         )
-        list_method, api_kwargs, context = api.watch_method(kube, namespace=namespace)
 
         async def snapshot(attempt_deadline: Deadline) -> str:
-            payload = await kube.run(
-                lambda request_timeout: list_method(
-                    **api_kwargs,
-                    label_selector=label_selector or None,
-                    field_selector=field_selector_text or None,
-                    _request_timeout=request_timeout,
-                ),
+            _items, resource_version = await api.list(
+                kube,
                 deadline=attempt_deadline,
-                context=context,
-                missing_ok=False,
+                namespace=namespace,
+                label_selector=label_selector,
+                field_selector=field_selector_text,
             )
-            return api.list_resource_version(api._list_payload(payload))
+            return resource_version
 
         async def stream(
             resource_version: str,
             attempt_deadline: Deadline,
         ) -> AsyncIterator[WatchEvent[Self]]:
-            async for event in watch_stream(
-                list_method,
+            async for event in api.stream(
+                kube,
                 deadline=attempt_deadline,
-                context=context,
+                namespace=namespace,
                 resource_version=resource_version,
                 label_selector=label_selector,
                 field_selector=field_selector_text,
-                api_kwargs=api_kwargs,
             ):
-                payload = api._payload(
-                    event.object,
-                    label=f"custom object payload for {api.config.plural}",
-                )
                 yield WatchEvent(
                     type=event.type,
-                    object=cls(payload),
+                    object=cls(event.object),
                     resource_version=event.resource_version,
                 )
 
@@ -1466,7 +1328,7 @@ class CustomResource(CustomObject):
         cls,
         kube: Kube,
         *,
-        intent: _KubeManifest,
+        intent: ManifestT,
         deadline: Deadline,
     ) -> Self:
         """Create one custom object from a typed manifest intent.
@@ -1475,7 +1337,7 @@ class CustomResource(CustomObject):
         ----------
         kube : Kube
             Active Kubernetes API context.
-        intent : _KubeManifest
+        intent : ManifestT
             Push-side manifest intent to create.
         deadline : Deadline
             Maximum request budget in seconds.
@@ -1501,7 +1363,7 @@ class CustomResource(CustomObject):
         cls,
         kube: Kube,
         *,
-        intent: _KubeManifest,
+        intent: ManifestT,
         deadline: Deadline,
     ) -> Self:
         """Create or patch one custom object from a typed manifest intent.
@@ -1510,7 +1372,7 @@ class CustomResource(CustomObject):
         ----------
         kube : Kube
             Active Kubernetes API context.
-        intent : _KubeManifest
+        intent : ManifestT
             Push-side manifest intent to create or patch.
         deadline : Deadline
             Maximum request budget in seconds.
@@ -1526,18 +1388,18 @@ class CustomResource(CustomObject):
             If the manifest is malformed or the API request fails.
         """
         api = cls._api()
-        namespace, name, body = api.manifest_body(
+        identity, body = api._manifest_body(
             name=intent.name,
             namespace=intent.namespace,
             body=intent.manifest(),
             action="upsert",
         )
-        label = api.object_label(name=name, namespace=namespace)
+        identity_namespace, identity_name, identity_label = identity
         try:
             payload = await api.create(
                 kube,
-                name=name,
-                namespace=namespace,
+                name=identity_name,
+                namespace=identity_namespace,
                 body=body,
                 deadline=deadline,
             )
@@ -1546,11 +1408,11 @@ class CustomResource(CustomObject):
                 raise
             payload = await api.patch(
                 kube,
-                name=name,
-                namespace=namespace,
+                name=identity_name,
+                namespace=identity_namespace,
                 body=body,
                 deadline=deadline,
-                context=f"failed to patch {api.kind} {label}",
+                context=f"failed to patch {api.kind} {identity_label}",
             )
         return cls(payload)
 
@@ -1590,11 +1452,11 @@ class CustomResource(CustomObject):
         if not labels and not annotations:
             msg = f"{api.kind} metadata patch cannot be empty"
             raise ValueError(msg)
-        namespace, name = api.resource_identity(
+        identity = api.identity(
             self._payload,
             action="patch custom object",
         )
-        label = api.object_label(name=name, namespace=namespace)
+        identity_namespace, identity_name, identity_label = identity
 
         body: dict[str, object] = {"metadata": {}}
         metadata = cast("dict[str, object]", body["metadata"])
@@ -1605,11 +1467,11 @@ class CustomResource(CustomObject):
 
         payload = await api.patch(
             kube,
-            name=name,
-            namespace=namespace,
+            name=identity_name,
+            namespace=identity_namespace,
             body=body,
             deadline=deadline,
-            context=f"failed to patch {api.kind} metadata {label}",
+            context=f"failed to patch {api.kind} metadata {identity_label}",
         )
         return type(self)(payload)
 
@@ -1644,19 +1506,20 @@ class CustomResource(CustomObject):
             Wrapped object returned by Kubernetes.
         """
         api = cls._api()
-        namespace, name, label = api._identity(
+        identity = api._identity(
             name=name,
             namespace=namespace,
             action="patch status",
         )
+        identity_namespace, identity_name, identity_label = identity
         body = {"status": _custom_object_fragment(status)}
         payload = await api.patch_status(
             kube,
-            name=name,
-            namespace=namespace,
+            name=identity_name,
+            namespace=identity_namespace,
             body=body,
             deadline=deadline,
-            context=f"failed to patch {api.kind} status {label}",
+            context=f"failed to patch {api.kind} status {identity_label}",
         )
         return cls(payload)
 
@@ -1672,14 +1535,15 @@ class CustomResource(CustomObject):
 
         """
         api = type(self)._api()
-        namespace, name = api.resource_identity(
+        identity = api.identity(
             self._payload,
             action="delete custom object",
         )
+        identity_namespace, identity_name, _ = identity
         await api.delete(
             kube,
-            name=name,
-            namespace=namespace,
+            name=identity_name,
+            namespace=identity_namespace,
             body=None,
             deadline=deadline,
         )
@@ -1700,18 +1564,15 @@ class CustomResource(CustomObject):
             Fresh wrapped object, or `None` when absent.
 
         """
-        namespace, name = (
-            type(self)
-            ._api()
-            .resource_identity(
-                self._payload,
-                action="refresh custom object",
-            )
+        identity = type(self)._api().identity(
+            self._payload,
+            action="refresh custom object",
         )
+        identity_namespace, identity_name, _ = identity
         return await type(self).get(
             kube,
-            namespace=namespace,
-            name=name,
+            namespace=identity_namespace,
+            name=identity_name,
             deadline=deadline,
         )
 
@@ -1747,15 +1608,12 @@ class CustomResource(CustomObject):
         TimeoutError
             If the wait deadline expires.
         """
-        namespace, name = (
-            type(self)
-            ._api()
-            .resource_identity(
-                self._payload,
-                action="wait for custom object",
-            )
+        identity = type(self)._api().identity(
+            self._payload,
+            action="wait for custom object",
         )
-        label = f"{type(self).__name__} {namespace}/{name}" if namespace else name
+        _, _, identity_label = identity
+        label = f"{type(self).__name__} {identity_label}"
         checked_current = False
 
         async def reached(attempt_deadline: Deadline) -> Self | None:
@@ -1781,20 +1639,19 @@ class CustomResource(CustomObject):
             raise TimeoutError(msg) from err
 
     @classmethod
-    def _api(cls) -> _CustomResourceAPI:
+    def _api(cls) -> _CustomResourceAPI[ManifestT]:
         api = cls._resource_api
         if api is None:
             msg = f"{cls.__name__} must be decorated with @custom_resource"
             raise TypeError(msg)
-        return cast("_CustomResourceAPI", api)
+        return cast("_CustomResourceAPI[ManifestT]", api)
 
     @classmethod
     def _spec_schema(cls) -> Mapping[str, object] | None:
         config = cls._api().config
-        if config.spec_model is None:
-            return None
-        return _schema_from_model(
-            config.spec_model,
+        return _field_schema_from_model(
+            config.manifest,
+            "spec",
             include_defaults=config.spec_schema_include_defaults,
             overrides=config.spec_schema_overrides,
         )
@@ -1802,10 +1659,9 @@ class CustomResource(CustomObject):
     @classmethod
     def _status_schema(cls) -> Mapping[str, object] | None:
         config = cls._api().config
-        if config.status_model is None:
-            return None
-        return _schema_from_model(
-            config.status_model,
+        return _field_schema_from_model(
+            config.manifest,
+            "status",
             include_defaults=config.status_schema_include_defaults,
             overrides=config.status_schema_overrides,
         )
@@ -1818,6 +1674,43 @@ def _custom_object_fragment(fragment: _CustomObjectFragment) -> dict[str, object
             fragment.model_dump(mode="json", by_alias=True),
         )
     return dict(fragment)
+
+
+def _field_schema_from_model(
+    model: type[CustomObjectManifest],
+    field: Literal["spec", "status"],
+    *,
+    include_defaults: bool,
+    overrides: Mapping[str, object] | None,
+) -> Mapping[str, object] | None:
+    model_field = model.model_fields.get(field)
+    if model_field is None:
+        return None
+    annotation = model_field.annotation
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return _schema_from_model(
+            annotation,
+            include_defaults=include_defaults,
+            overrides=overrides,
+        )
+    raw = model.model_json_schema(mode="validation", by_alias=True)
+    properties = raw.get("properties", {})
+    if not isinstance(properties, Mapping):
+        return None
+    schema = properties.get(field)
+    if not isinstance(schema, Mapping):
+        return None
+    normalized = _normalize_schema_fragment(
+        schema,
+        defs=raw.get("$defs", {}),
+        include_defaults=include_defaults,
+    )
+    if not isinstance(normalized, Mapping):
+        return None
+    if overrides is not None:
+        normalized = dict(normalized)
+        _merge_schema_overrides(normalized, overrides)
+    return MappingProxyType(dict(cast("Mapping[str, object]", normalized)))
 
 
 def _schema_from_model(

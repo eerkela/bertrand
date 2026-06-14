@@ -157,7 +157,6 @@ class RoleBindingManifest:
 
 @cluster_resource(
     api=kube_client.RbacAuthorizationV1Api,
-    payload=kube_client.V1ClusterRole,
     read=kube_client.RbacAuthorizationV1Api.read_cluster_role,
     list=kube_client.RbacAuthorizationV1Api.list_cluster_role,
     create=kube_client.RbacAuthorizationV1Api.create_cluster_role,
@@ -175,7 +174,6 @@ class ClusterRole(
 
 @cluster_resource(
     api=kube_client.RbacAuthorizationV1Api,
-    payload=kube_client.V1ClusterRoleBinding,
     read=kube_client.RbacAuthorizationV1Api.read_cluster_role_binding,
     list=kube_client.RbacAuthorizationV1Api.list_cluster_role_binding,
     create=kube_client.RbacAuthorizationV1Api.create_cluster_role_binding,
@@ -193,7 +191,6 @@ class ClusterRoleBinding(
 
 @namespaced_resource(
     api=kube_client.RbacAuthorizationV1Api,
-    payload=kube_client.V1Role,
     read=kube_client.RbacAuthorizationV1Api.read_namespaced_role,
     list=kube_client.RbacAuthorizationV1Api.list_namespaced_role,
     list_all=kube_client.RbacAuthorizationV1Api.list_role_for_all_namespaces,
@@ -212,7 +209,6 @@ class Role(
 
 @namespaced_resource(
     api=kube_client.RbacAuthorizationV1Api,
-    payload=kube_client.V1RoleBinding,
     read=kube_client.RbacAuthorizationV1Api.read_namespaced_role_binding,
     list=kube_client.RbacAuthorizationV1Api.list_namespaced_role_binding,
     list_all=kube_client.RbacAuthorizationV1Api.list_role_binding_for_all_namespaces,

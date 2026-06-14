@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from pydantic import Field
+
 from bertrand.env.git import EMPTY_MAPPING
-from bertrand.env.kube.custom_object import CustomResource, custom_resource
+from bertrand.env.kube.custom_object import (
+    CustomObjectManifest,
+    CustomResource,
+    custom_resource,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -27,8 +32,7 @@ RESOURCE_CLAIM_TEMPLATE_KIND = "ResourceClaimTemplate"
 RESOURCE_CLAIM_TEMPLATE_PLURAL = "resourceclaimtemplates"
 
 
-@dataclass(frozen=True)
-class DeviceClassManifest:
+class DeviceClassManifest(CustomObjectManifest):
     """Push-side manifest for a Kubernetes DRA DeviceClass.
 
     Parameters
@@ -41,44 +45,28 @@ class DeviceClassManifest:
         Metadata labels to apply.
     """
 
-    name: str
+    api_version: str = Field(
+        default=f"{DRA_GROUP}/{DRA_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = DEVICE_CLASS_KIND
     spec: Mapping[str, object]
-    labels: Mapping[str, str] = EMPTY_MAPPING
-
-    @property
-    def namespace(self) -> None:
-        """Return `None` because DeviceClass is cluster-scoped."""
-        return None
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes DeviceClass manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": f"{DRA_GROUP}/{DRA_VERSION}",
-            "kind": DEVICE_CLASS_KIND,
-            "metadata": {"name": self.name, "labels": dict(self.labels)},
-            "spec": dict(self.spec),
-        }
+    status: Mapping[str, object] = EMPTY_MAPPING
 
 
 @custom_resource(
+    manifest=DeviceClassManifest,
     group=DRA_GROUP,
     version=DRA_VERSION,
     kind=DEVICE_CLASS_KIND,
     plural=DEVICE_CLASS_PLURAL,
     scope="cluster",
 )
-class DeviceClass(CustomResource):
+class DeviceClass(CustomResource[DeviceClassManifest]):
     """Wrapper around one Kubernetes DRA DeviceClass object."""
 
 
-@dataclass(frozen=True)
-class ResourceSliceManifest:
+class ResourceSliceManifest(CustomObjectManifest):
     """Push-side manifest for a Kubernetes DRA ResourceSlice.
 
     Parameters
@@ -91,54 +79,51 @@ class ResourceSliceManifest:
         Metadata labels to apply.
     """
 
-    name: str
+    api_version: str = Field(
+        default=f"{DRA_GROUP}/{DRA_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = RESOURCE_SLICE_KIND
     spec: Mapping[str, object]
-    labels: Mapping[str, str] = EMPTY_MAPPING
-
-    @property
-    def namespace(self) -> None:
-        """Return `None` because ResourceSlice is cluster-scoped."""
-        return None
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes ResourceSlice manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": f"{DRA_GROUP}/{DRA_VERSION}",
-            "kind": RESOURCE_SLICE_KIND,
-            "metadata": {"name": self.name, "labels": dict(self.labels)},
-            "spec": dict(self.spec),
-        }
+    status: Mapping[str, object] = EMPTY_MAPPING
 
 
 @custom_resource(
+    manifest=ResourceSliceManifest,
     group=DRA_GROUP,
     version=DRA_VERSION,
     kind=RESOURCE_SLICE_KIND,
     plural=RESOURCE_SLICE_PLURAL,
     scope="cluster",
 )
-class ResourceSlice(CustomResource):
+class ResourceSlice(CustomResource[ResourceSliceManifest]):
     """Wrapper around one Kubernetes DRA ResourceSlice object."""
 
 
+class ResourceClaimManifest(CustomObjectManifest):
+    """Pull-side manifest for a Kubernetes DRA ResourceClaim."""
+
+    api_version: str = Field(
+        default=f"{DRA_GROUP}/{DRA_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = RESOURCE_CLAIM_KIND
+    spec: Mapping[str, object] = EMPTY_MAPPING
+    status: Mapping[str, object] = EMPTY_MAPPING
+
+
 @custom_resource(
+    manifest=ResourceClaimManifest,
     group=DRA_GROUP,
     version=DRA_VERSION,
     kind=RESOURCE_CLAIM_KIND,
     plural=RESOURCE_CLAIM_PLURAL,
 )
-class ResourceClaim(CustomResource):
+class ResourceClaim(CustomResource[ResourceClaimManifest]):
     """Wrapper around one Kubernetes DRA ResourceClaim object."""
 
 
-@dataclass(frozen=True)
-class ResourceClaimTemplateManifest:
+class ResourceClaimTemplateManifest(CustomObjectManifest):
     """Push-side manifest for a Kubernetes DRA ResourceClaimTemplate.
 
     Parameters
@@ -153,38 +138,23 @@ class ResourceClaimTemplateManifest:
         Metadata labels to apply.
     """
 
-    namespace: str
-    name: str
+    api_version: str = Field(
+        default=f"{DRA_GROUP}/{DRA_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = RESOURCE_CLAIM_TEMPLATE_KIND
     spec: Mapping[str, object]
-    labels: Mapping[str, str] = EMPTY_MAPPING
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes ResourceClaimTemplate manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": f"{DRA_GROUP}/{DRA_VERSION}",
-            "kind": RESOURCE_CLAIM_TEMPLATE_KIND,
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": dict(self.labels),
-            },
-            "spec": dict(self.spec),
-        }
+    status: Mapping[str, object] = EMPTY_MAPPING
 
 
 @custom_resource(
+    manifest=ResourceClaimTemplateManifest,
     group=DRA_GROUP,
     version=DRA_VERSION,
     kind=RESOURCE_CLAIM_TEMPLATE_KIND,
     plural=RESOURCE_CLAIM_TEMPLATE_PLURAL,
 )
-class ResourceClaimTemplate(CustomResource):
+class ResourceClaimTemplate(CustomResource[ResourceClaimTemplateManifest]):
     """Wrapper around one Kubernetes DRA ResourceClaimTemplate object."""
 
 

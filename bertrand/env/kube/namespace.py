@@ -50,7 +50,6 @@ class NamespaceManifest:
 
 @cluster_resource(
     api=kube_client.CoreV1Api,
-    payload=kube_client.V1Namespace,
     read=kube_client.CoreV1Api.read_namespace,
     list=kube_client.CoreV1Api.list_namespace,
     create=kube_client.CoreV1Api.create_namespace,

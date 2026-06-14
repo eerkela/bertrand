@@ -46,7 +46,6 @@ STORAGE_FACTORS: dict[str, Decimal] = {
 
 @cluster_resource(
     api=kubernetes.client.StorageV1Api,
-    payload=kubernetes.client.V1StorageClass,
     read=kubernetes.client.StorageV1Api.read_storage_class,
     list=kubernetes.client.StorageV1Api.list_storage_class,
     create=None,
@@ -180,7 +179,6 @@ class PersistentVolumeClaimManifest:
 
 @namespaced_resource(
     api=kubernetes.client.CoreV1Api,
-    payload=kubernetes.client.V1PersistentVolumeClaim,
     read=kubernetes.client.CoreV1Api.read_namespaced_persistent_volume_claim,
     list=kubernetes.client.CoreV1Api.list_namespaced_persistent_volume_claim,
     list_all=kubernetes.client.CoreV1Api.list_persistent_volume_claim_for_all_namespaces,
@@ -513,7 +511,6 @@ class PersistentVolumeClaim(
 
 @cluster_resource(
     api=kubernetes.client.CoreV1Api,
-    payload=kubernetes.client.V1PersistentVolume,
     read=kubernetes.client.CoreV1Api.read_persistent_volume,
     list=kubernetes.client.CoreV1Api.list_persistent_volume,
     create=None,

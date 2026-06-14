@@ -100,7 +100,6 @@ class DeploymentManifest:
 
 @namespaced_resource(
     api=kubernetes.client.AppsV1Api,
-    payload=kubernetes.client.V1Deployment,
     read=kubernetes.client.AppsV1Api.read_namespaced_deployment,
     list=kubernetes.client.AppsV1Api.list_namespaced_deployment,
     list_all=kubernetes.client.AppsV1Api.list_deployment_for_all_namespaces,

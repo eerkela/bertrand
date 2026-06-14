@@ -13,9 +13,9 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationError,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
 from bertrand.env.config.core import _check_uuid
@@ -29,16 +29,16 @@ from bertrand.env.git import (
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.build.request import (
-    BUILDKIT_BUILD_RESOURCE,
-    BuildKitBuildRecord,
+    BuildKitBuild,
 )
 from bertrand.env.kube.capability.base import delete_capabilities_for_scope
 from bertrand.env.kube.ceph.auth import RepoCredentials
 from bertrand.env.kube.cronjob import CronJob
 from bertrand.env.kube.custom_object import (
-    CustomObject,
+    CustomObjectManifest,
     CustomObjectMetadata,
-    CustomObjectResource,
+    CustomResource,
+    custom_resource,
 )
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.job import Job
@@ -419,7 +419,7 @@ async def list_repository_volume_claims(
         labels[REPO_ID_LABEL] = repo_id
     pvcs = await PersistentVolumeClaim.list(
         kube=kube,
-        namespaces=(BERTRAND_NAMESPACE,),
+        namespace=BERTRAND_NAMESPACE,
         deadline=deadline,
         labels=labels,
     )
@@ -473,7 +473,7 @@ async def delete_repository_volume_claim(
     if not force:
         pods = await Pod.list(
             kube=kube,
-            namespaces=(BERTRAND_NAMESPACE,),
+            namespace=BERTRAND_NAMESPACE,
             deadline=deadline,
             labels={BERTRAND_LABEL: BERTRAND_LABEL_MANAGED, REPO_ID_LABEL: repo_id},
         )
@@ -627,46 +627,6 @@ class _RepositoryVolumeSpec(BaseModel):
         }
 
 
-@dataclass(frozen=True)
-class CephRepositoryStateManifest:
-    """Push-side manifest for one CephRepositoryState resource.
-
-    Parameters
-    ----------
-    name : str
-        Kubernetes repository-state object name.
-    spec : _RepositoryVolumeSpec
-        Desired repository volume lifecycle spec.
-    """
-
-    name: str
-    spec: _RepositoryVolumeSpec
-
-    @property
-    def namespace(self) -> str:
-        """Return the namespace that owns CephRepositoryState objects."""
-        return BERTRAND_NAMESPACE
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes CephRepositoryState manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": f"{REPOSITORY_VOLUME_GROUP}/{REPOSITORY_VOLUME_VERSION}",
-            "kind": REPOSITORY_STATE_KIND,
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": self.spec.labels,
-            },
-            "spec": self.spec.model_dump(mode="json"),
-        }
-
-
 class CephRepositoryMount(BaseModel):
     """Repository mount lifecycle entry embedded in `CephRepositoryState`."""
 
@@ -770,36 +730,32 @@ class _RepositoryStateStatus(BaseModel):
         )
 
 
-class CephRepositoryStateRecord(BaseModel):
-    """Validated `CephRepositoryState` custom-resource payload."""
+class CephRepositoryStateManifest(CustomObjectManifest):
+    """Push/pull manifest for one CephRepositoryState resource."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["CephRepositoryState"]
-    metadata: CustomObjectMetadata
+    api_version: str = Field(
+        default=f"{REPOSITORY_VOLUME_GROUP}/{REPOSITORY_VOLUME_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = REPOSITORY_STATE_KIND
     spec: _RepositoryVolumeSpec
     status: _RepositoryStateStatus = Field(default_factory=_RepositoryStateStatus)
 
-    @classmethod
-    def parse_payload(cls, payload: object) -> CephRepositoryStateRecord:
-        """Validate a Kubernetes custom object payload.
+    @model_validator(mode="after")
+    def _validate_record(self) -> CephRepositoryStateManifest:
+        """Validate deterministic identity and embedded lifecycle maps.
 
         Returns
         -------
-        CephRepositoryStateRecord
+        CephRepositoryStateManifest
             Validated repository state record.
 
         Raises
         ------
-        OSError
-            If the payload or embedded lifecycle maps are malformed.
+        ValueError
+            If the object identity or embedded lifecycle maps are malformed.
         """
-        try:
-            record = cls.model_validate(payload)
-        except ValidationError as err:
-            msg = f"malformed {REPOSITORY_STATE_KIND} custom object: {err}"
-            raise OSError(msg) from err
-
+        record = self
         repo_id = _check_uuid(record.spec.repo_id)
         expected_name = repo_volume_claim_name(repo_id)
         if record.name != expected_name:
@@ -807,14 +763,14 @@ class CephRepositoryStateRecord(BaseModel):
                 f"malformed {REPOSITORY_STATE_KIND} {record.name!r}: object name "
                 f"does not match expected claim name {expected_name!r}"
             )
-            raise OSError(msg)
+            raise ValueError(msg)
         labels = record.metadata.labels
         if labels.get(REPO_ID_LABEL) != repo_id:
             msg = (
                 f"malformed {REPOSITORY_STATE_KIND} {record.name!r}: repo label "
                 f"{REPO_ID_LABEL!r} does not match spec repo_id {repo_id!r}"
             )
-            raise OSError(msg)
+            raise ValueError(msg)
         label_phase = labels.get(REPOSITORY_VOLUME_PHASE_LABEL, "").strip()
         expected_phase = record.spec.phase.lower()
         if label_phase != expected_phase:
@@ -822,7 +778,7 @@ class CephRepositoryStateRecord(BaseModel):
                 f"malformed {REPOSITORY_STATE_KIND} {record.name!r}: phase label "
                 f"{label_phase!r} does not match spec phase {record.spec.phase!r}"
             )
-            raise OSError(msg)
+            raise ValueError(msg)
         for key, entry in record.status.mounts.items():
             _validate_repository_mount_entry(record, key, entry)
         for key, entry in record.status.worktrees.items():
@@ -832,12 +788,12 @@ class CephRepositoryStateRecord(BaseModel):
     @property
     def name(self) -> str:
         """Return the Kubernetes custom object name."""
-        return self.metadata.name
+        return self.metadata.name or repo_volume_claim_name(self.spec.repo_id)
 
     @property
     def namespace(self) -> str:
         """Return the namespace that owns this record."""
-        return self.metadata.namespace
+        return self.metadata.namespace or BERTRAND_NAMESPACE
 
     @property
     def generation(self) -> int:
@@ -859,9 +815,28 @@ class CephRepositoryStateRecord(BaseModel):
         """Return the deterministic repository PVC name."""
         return repo_volume_claim_name(self.spec.repo_id)
 
+    def manifest(self) -> Mapping[str, object]:
+        """Render the push-safe Kubernetes CephRepositoryState manifest.
+
+        Returns
+        -------
+        Mapping[str, object]
+            Complete custom-object manifest without status.
+        """
+        return {
+            "apiVersion": self.api_version,
+            "kind": self.kind,
+            "metadata": {
+                "namespace": self.namespace,
+                "name": self.name,
+                "labels": self.spec.labels,
+            },
+            "spec": self.spec.model_dump(mode="json"),
+        }
+
 
 def _validate_repository_mount_entry(
-    state: CephRepositoryStateRecord,
+    state: CephRepositoryStateManifest,
     key: str,
     entry: CephRepositoryMount,
 ) -> None:
@@ -874,24 +849,24 @@ def _validate_repository_mount_entry(
             f"malformed {REPOSITORY_STATE_KIND} {state.name!r}: mount map key "
             f"{key!r} does not match entry name {entry.name!r}"
         )
-        raise OSError(msg)
+        raise ValueError(msg)
     if entry.name != expected_name:
         msg = (
             f"malformed {REPOSITORY_STATE_KIND} {state.name!r}: mount entry "
             f"{entry.name!r} expected deterministic name {expected_name!r}"
         )
-        raise OSError(msg)
+        raise ValueError(msg)
     if repo_id != state.spec.repo_id:
         msg = (
             f"malformed {REPOSITORY_STATE_KIND} {state.name!r}: mount entry "
             f"{entry.name!r} repo_id {repo_id!r} does not match state "
             f"repo_id {state.spec.repo_id!r}"
         )
-        raise OSError(msg)
+        raise ValueError(msg)
 
 
 def _validate_repository_worktree_entry(
-    state: CephRepositoryStateRecord,
+    state: CephRepositoryStateManifest,
     key: str,
     entry: CephRepositoryWorktree,
 ) -> None:
@@ -903,23 +878,24 @@ def _validate_repository_worktree_entry(
             f"malformed {REPOSITORY_STATE_KIND} {state.name!r}: worktree map key "
             f"{key!r} does not match entry name {entry.name!r}"
         )
-        raise OSError(msg)
+        raise ValueError(msg)
     if entry.name != expected_name:
         msg = (
             f"malformed {REPOSITORY_STATE_KIND} {state.name!r}: worktree entry "
             f"{entry.name!r} expected deterministic name {expected_name!r}"
         )
-        raise OSError(msg)
+        raise ValueError(msg)
     if repo_id != state.spec.repo_id:
         msg = (
             f"malformed {REPOSITORY_STATE_KIND} {state.name!r}: worktree entry "
             f"{entry.name!r} repo_id {repo_id!r} does not match state "
             f"repo_id {state.spec.repo_id!r}"
         )
-        raise OSError(msg)
+        raise ValueError(msg)
 
 
-REPOSITORY_STATE_RESOURCE = CustomObjectResource[CephRepositoryStateRecord](
+@custom_resource(
+    manifest=CephRepositoryStateManifest,
     group=REPOSITORY_VOLUME_GROUP,
     version=REPOSITORY_VOLUME_VERSION,
     kind=REPOSITORY_STATE_KIND,
@@ -927,8 +903,6 @@ REPOSITORY_STATE_RESOURCE = CustomObjectResource[CephRepositoryStateRecord](
     labels=_REPOSITORY_VOLUME_LABELS,
     singular="cephrepositorystate",
     short_names=("crs",),
-    payload_parser=CephRepositoryStateRecord.parse_payload,
-    spec_model=_RepositoryVolumeSpec,
     spec_schema_overrides={
         "required": [
             "repo_id",
@@ -938,18 +912,63 @@ REPOSITORY_STATE_RESOURCE = CustomObjectResource[CephRepositoryStateRecord](
             "last_error",
         ],
     },
-    status_model=_RepositoryStateStatus,
 )
+class CephRepositoryState(CustomResource[CephRepositoryStateManifest]):
+    """Wrapper around one CephRepositoryState custom object."""
+
+    @property
+    def spec(self) -> _RepositoryVolumeSpec:
+        """Return the validated repository volume spec."""
+        return self.payload.spec
+
+    @property
+    def status(self) -> _RepositoryStateStatus:
+        """Return the validated repository lifecycle status."""
+        return self.payload.status
+
+    @property
+    def generation(self) -> int:
+        """Return the Kubernetes metadata generation."""
+        return self.payload.generation
+
+    @property
+    def resource_version(self) -> str:
+        """Return the Kubernetes resource version."""
+        return self.payload.resource_version
+
+    @property
+    def labels(self) -> dict[str, str]:
+        """Return Kubernetes labels for this repository state object."""
+        return self.payload.labels
+
+    @property
+    def claim_name(self) -> str:
+        """Return the deterministic repository PVC name."""
+        return self.payload.claim_name
+
+
+def _repository_state_manifest(
+    name: str,
+    spec: _RepositoryVolumeSpec,
+) -> CephRepositoryStateManifest:
+    return CephRepositoryStateManifest(
+        metadata=CustomObjectMetadata(
+            namespace=BERTRAND_NAMESPACE,
+            name=name,
+            labels=spec.labels,
+        ),
+        spec=spec,
+    )
 
 
 @dataclass(frozen=True)
 class _RepositoryVolumeGcInventory:
-    buildkit_builds: tuple[BuildKitBuildRecord, ...]
+    buildkit_builds: tuple[BuildKitBuild, ...]
     deployments: tuple[Deployment, ...]
     cronjobs: tuple[CronJob, ...]
     jobs: tuple[Job, ...]
     pods: tuple[Pod, ...]
-    retained_snapshots: tuple[CustomObject, ...]
+    retained_snapshots: tuple[VolumeSnapshot, ...]
 
     @classmethod
     async def collect(
@@ -964,7 +983,7 @@ class _RepositoryVolumeGcInventory:
         deployment_task = asyncio.create_task(
             Deployment.list(
                 kube,
-                namespaces=(BERTRAND_NAMESPACE,),
+                namespace=BERTRAND_NAMESPACE,
                 labels={WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE},
                 deadline=deadline,
             )
@@ -972,7 +991,7 @@ class _RepositoryVolumeGcInventory:
         cronjob_task = asyncio.create_task(
             CronJob.list(
                 kube,
-                namespaces=(BERTRAND_NAMESPACE,),
+                namespace=BERTRAND_NAMESPACE,
                 labels={WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE},
                 deadline=deadline,
             )
@@ -980,7 +999,7 @@ class _RepositoryVolumeGcInventory:
         job_task = asyncio.create_task(
             Job.list(
                 kube,
-                namespaces=(BERTRAND_NAMESPACE,),
+                namespace=BERTRAND_NAMESPACE,
                 labels={WORKLOAD_LABEL: WORKLOAD_LABEL_VALUE},
                 deadline=deadline,
             )
@@ -988,7 +1007,7 @@ class _RepositoryVolumeGcInventory:
         pod_task = asyncio.create_task(
             Pod.list(
                 kube,
-                namespaces=(BERTRAND_NAMESPACE,),
+                namespace=BERTRAND_NAMESPACE,
                 deadline=deadline,
             )
         )
@@ -1077,7 +1096,7 @@ class _RepositoryVolumeGcInventory:
             )
         return None
 
-    def pod_blocker(self, record: CephRepositoryStateRecord) -> str | None:
+    def pod_blocker(self, record: CephRepositoryState) -> str | None:
         active_pods = [
             pod
             for pod in self.pods
@@ -1106,9 +1125,9 @@ async def _list_buildkit_records(
     kube: Kube,
     *,
     deadline: Deadline,
-) -> list[BuildKitBuildRecord]:
+) -> list[BuildKitBuild]:
     try:
-        return await BUILDKIT_BUILD_RESOURCE.list(kube, deadline=deadline)
+        return await BuildKitBuild.list(kube, deadline=deadline)
     except OSError as err:
         if isinstance(err, Kube.APIError) and err.missing_api_resource:
             return []
@@ -1120,7 +1139,7 @@ async def ensure_repository_volume_record(
     *,
     repo_id: str,
     deadline: Deadline,
-) -> CephRepositoryStateRecord:
+) -> CephRepositoryState:
     """Mark a managed repository volume as initializing or recently observed.
 
     Parameters
@@ -1134,17 +1153,17 @@ async def ensure_repository_volume_record(
 
     Returns
     -------
-    CephRepositoryStateRecord
+    CephRepositoryState
         Lifecycle record for the repository volume.
 
     """
     repo_id = _check_uuid(repo_id)
     claim_name = repo_volume_claim_name(repo_id)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+    await CephRepositoryState.ensure_crd(
         kube,
         deadline=deadline,
     )
-    existing = await REPOSITORY_STATE_RESOURCE.get(
+    existing = await CephRepositoryState.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
@@ -1163,9 +1182,9 @@ async def ensure_repository_volume_record(
         last_gc_at=None,
         last_error="",
     )
-    return await REPOSITORY_STATE_RESOURCE.upsert(
+    return await CephRepositoryState.upsert(
         kube,
-        intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
+        intent=_repository_state_manifest(claim_name, spec),
         deadline=deadline,
     )
 
@@ -1203,7 +1222,7 @@ async def repository_volume_ready(
     """
     repo_id = _check_uuid(repo_id)
     try:
-        record = await REPOSITORY_STATE_RESOURCE.get(
+        record = await CephRepositoryState.get(
             kube,
             namespace=BERTRAND_NAMESPACE,
             name=repo_volume_claim_name(repo_id),
@@ -1221,7 +1240,7 @@ async def mark_repository_volume_ready(
     *,
     repo_id: str,
     deadline: Deadline,
-) -> CephRepositoryStateRecord:
+) -> CephRepositoryState:
     """Mark a repository volume as finalized and safe for normal recovery.
 
     Parameters
@@ -1235,17 +1254,17 @@ async def mark_repository_volume_ready(
 
     Returns
     -------
-    CephRepositoryStateRecord
+    CephRepositoryState
         Ready lifecycle record for the repository volume.
 
     """
     repo_id = _check_uuid(repo_id)
     claim_name = repo_volume_claim_name(repo_id)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+    await CephRepositoryState.ensure_crd(
         kube,
         deadline=deadline,
     )
-    existing = await REPOSITORY_STATE_RESOURCE.get(
+    existing = await CephRepositoryState.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
@@ -1260,9 +1279,9 @@ async def mark_repository_volume_ready(
             last_seen_at=now,
             last_error="",
         )
-        return await REPOSITORY_STATE_RESOURCE.upsert(
+        return await CephRepositoryState.upsert(
             kube,
-            intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
+            intent=_repository_state_manifest(claim_name, spec),
             deadline=deadline,
         )
 
@@ -1273,9 +1292,9 @@ async def mark_repository_volume_ready(
             "last_error": "",
         },
     )
-    return await REPOSITORY_STATE_RESOURCE.upsert(
+    return await CephRepositoryState.upsert(
         kube,
-        intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
+        intent=_repository_state_manifest(claim_name, spec),
         deadline=deadline,
     )
 
@@ -1286,7 +1305,7 @@ async def mark_repository_volume_failed(
     repo_id: str,
     last_error: str,
     deadline: Deadline,
-) -> CephRepositoryStateRecord | None:
+) -> CephRepositoryState | None:
     """Mark an incomplete repository volume as failed.
 
     Ready or retired records are left unchanged so a later failed config render does
@@ -1305,7 +1324,7 @@ async def mark_repository_volume_failed(
 
     Returns
     -------
-    CephRepositoryStateRecord | None
+    CephRepositoryState | None
         Updated failed record, existing ready/retired record, or None if the volume
         has not yet been recorded.
     """
@@ -1313,11 +1332,11 @@ async def mark_repository_volume_failed(
         return None
     repo_id = _check_uuid(repo_id)
     claim_name = repo_volume_claim_name(repo_id)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+    await CephRepositoryState.ensure_crd(
         kube,
         deadline=deadline,
     )
-    record = await REPOSITORY_STATE_RESOURCE.get(
+    record = await CephRepositoryState.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
@@ -1333,9 +1352,9 @@ async def mark_repository_volume_failed(
             "last_error": last_error,
         },
     )
-    return await REPOSITORY_STATE_RESOURCE.upsert(
+    return await CephRepositoryState.upsert(
         kube,
-        intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
+        intent=_repository_state_manifest(claim_name, spec),
         deadline=deadline,
     )
 
@@ -1376,11 +1395,11 @@ async def ensure_repository_mount_record(
     host_id = _check_uuid(host_id)
     alias_path = repository_mount_alias_path(alias_path)
     claim_name = repo_volume_claim_name(repo_id)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+    await CephRepositoryState.ensure_crd(
         kube,
         deadline=deadline,
     )
-    state = await REPOSITORY_STATE_RESOURCE.get(
+    state = await CephRepositoryState.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
@@ -1396,9 +1415,9 @@ async def ensure_repository_mount_record(
             last_gc_at=None,
             last_error="",
         )
-        state = await REPOSITORY_STATE_RESOURCE.upsert(
+        state = await CephRepositoryState.upsert(
             kube,
-            intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
+            intent=_repository_state_manifest(claim_name, spec),
             deadline=deadline,
         )
     name = repository_mount_name(repo_id, host_id, alias_path)
@@ -1417,7 +1436,7 @@ async def ensure_repository_mount_record(
         retired_at=None,
         last_error="",
     )
-    state = await REPOSITORY_STATE_RESOURCE.patch_status(
+    state = await CephRepositoryState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=state.name,
@@ -1460,11 +1479,11 @@ async def ensure_repository_worktree_record(
     worktree_id = _check_uuid(worktree_id)
     worktree = repository_worktree_path(worktree)
     claim_name = repo_volume_claim_name(repo_id)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+    await CephRepositoryState.ensure_crd(
         kube,
         deadline=deadline,
     )
-    state = await REPOSITORY_STATE_RESOURCE.get(
+    state = await CephRepositoryState.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
@@ -1480,9 +1499,9 @@ async def ensure_repository_worktree_record(
             last_gc_at=None,
             last_error="",
         )
-        state = await REPOSITORY_STATE_RESOURCE.upsert(
+        state = await CephRepositoryState.upsert(
             kube,
-            intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
+            intent=_repository_state_manifest(claim_name, spec),
             deadline=deadline,
         )
     name = repository_worktree_name(repo_id, worktree_id)
@@ -1500,7 +1519,7 @@ async def ensure_repository_worktree_record(
         retired_at=None,
         last_error="",
     )
-    state = await REPOSITORY_STATE_RESOURCE.patch_status(
+    state = await CephRepositoryState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=state.name,
@@ -1535,7 +1554,7 @@ async def retire_repository_mount_record(
     """
     repo_id = _check_uuid(record.repo_id)
     claim_name = repo_volume_claim_name(repo_id)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+    await CephRepositoryState.ensure_crd(
         kube,
         deadline=deadline,
     )
@@ -1548,7 +1567,7 @@ async def retire_repository_mount_record(
             "last_error": "",
         }
     )
-    state = await REPOSITORY_STATE_RESOURCE.get(
+    state = await CephRepositoryState.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
@@ -1564,12 +1583,12 @@ async def retire_repository_mount_record(
             last_gc_at=None,
             last_error="",
         )
-        state = await REPOSITORY_STATE_RESOURCE.upsert(
+        state = await CephRepositoryState.upsert(
             kube,
-            intent=CephRepositoryStateManifest(name=claim_name, spec=spec),
+            intent=_repository_state_manifest(claim_name, spec),
             deadline=deadline,
         )
-    state = await REPOSITORY_STATE_RESOURCE.patch_status(
+    state = await CephRepositoryState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=state.name,
@@ -1612,11 +1631,11 @@ async def retire_repository_mount(
     host_id = _check_uuid(host_id)
     alias_path = repository_mount_alias_path(alias_path)
     claim_name = repo_volume_claim_name(repo_id)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+    await CephRepositoryState.ensure_crd(
         kube,
         deadline=deadline,
     )
-    state = await REPOSITORY_STATE_RESOURCE.get(
+    state = await CephRepositoryState.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=claim_name,
@@ -1638,7 +1657,7 @@ async def retire_repository_mount(
             "last_error": "",
         }
     )
-    state = await REPOSITORY_STATE_RESOURCE.patch_status(
+    state = await CephRepositoryState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=state.name,
@@ -1669,7 +1688,7 @@ async def delete_repository_snapshot_artifacts(
     repo_id = _check_uuid(repo_id)
     pvcs = await PersistentVolumeClaim.list(
         kube,
-        namespaces=(BERTRAND_NAMESPACE,),
+        namespace=BERTRAND_NAMESPACE,
         labels={
             BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
             REPO_ID_LABEL: repo_id,
@@ -1709,7 +1728,7 @@ async def delete_all_repository_volumes(
     kube: Kube,
     *,
     deadline: Deadline,
-) -> list[CephRepositoryStateRecord]:
+) -> list[CephRepositoryState]:
     """Delete all managed repository volumes during final cluster teardown.
 
     Parameters
@@ -1721,16 +1740,16 @@ async def delete_all_repository_volumes(
 
     Returns
     -------
-    list[CephRepositoryStateRecord]
+    list[CephRepositoryState]
         Repository state records deleted by this teardown pass.
     """
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, deadline=deadline)
-    records = await REPOSITORY_STATE_RESOURCE.list(
+    await CephRepositoryState.ensure_crd(kube, deadline=deadline)
+    records = await CephRepositoryState.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         deadline=deadline,
     )
-    deleted: list[CephRepositoryStateRecord] = []
+    deleted: list[CephRepositoryState] = []
     for record in sorted(records, key=lambda item: item.name):
         repo_id = record.spec.repo_id
         await delete_repository_snapshot_artifacts(
@@ -1770,11 +1789,7 @@ async def delete_all_repository_volumes(
             scope_value=repo_id,
             deadline=deadline,
         )
-        await REPOSITORY_STATE_RESOURCE.delete(
-            kube,
-            resource=record,
-            deadline=deadline,
-        )
+        await record.delete(kube, deadline=deadline)
         deleted.append(record)
     return deleted
 
@@ -1785,7 +1800,7 @@ async def gc_repository_volumes(
     deadline: Deadline,
     grace_seconds: int = REPOSITORY_VOLUME_GC_GRACE_SECONDS,
     limit: int = REPOSITORY_VOLUME_GC_LIMIT,
-) -> list[CephRepositoryStateRecord]:
+) -> list[CephRepositoryState]:
     """Delete eligible retired repository volumes and lifecycle records.
 
     Parameters
@@ -1801,7 +1816,7 @@ async def gc_repository_volumes(
 
     Returns
     -------
-    list[CephRepositoryStateRecord]
+    list[CephRepositoryState]
         Records collected during this GC pass.
 
     Raises
@@ -1819,18 +1834,18 @@ async def gc_repository_volumes(
         return []
     now = datetime.now(UTC)
     grace = timedelta(seconds=grace_seconds)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+    await CephRepositoryState.ensure_crd(
         kube,
         deadline=deadline,
     )
-    records = await REPOSITORY_STATE_RESOURCE.list(
+    records = await CephRepositoryState.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels={REPOSITORY_VOLUME_PHASE_LABEL: "retired"},
         deadline=deadline,
     )
     inventory: _RepositoryVolumeGcInventory | None = None
-    collected: list[CephRepositoryStateRecord] = []
+    collected: list[CephRepositoryState] = []
 
     for record in sorted(
         records,
@@ -1897,9 +1912,9 @@ async def gc_repository_volumes(
                         "last_error": blocker,
                     },
                 )
-                await REPOSITORY_STATE_RESOURCE.upsert(
+                await CephRepositoryState.upsert(
                     kube,
-                    intent=CephRepositoryStateManifest(name=record.name, spec=spec),
+                    intent=_repository_state_manifest(record.name, spec),
                     deadline=deadline,
                 )
                 continue
@@ -1946,9 +1961,9 @@ async def gc_repository_volumes(
                         "last_error": collection_error,
                     },
                 )
-                await REPOSITORY_STATE_RESOURCE.upsert(
+                await CephRepositoryState.upsert(
                     kube,
-                    intent=CephRepositoryStateManifest(name=record.name, spec=spec),
+                    intent=_repository_state_manifest(record.name, spec),
                     deadline=deadline,
                 )
                 continue
@@ -1965,11 +1980,7 @@ async def gc_repository_volumes(
                 record=record,
                 deadline=deadline,
             )
-            await REPOSITORY_STATE_RESOURCE.delete(
-                kube,
-                resource=record,
-                deadline=deadline,
-            )
+            await record.delete(kube, deadline=deadline)
         except (OSError, TimeoutError, ValueError) as err:
             spec = record.spec.model_copy(
                 update={
@@ -1978,9 +1989,9 @@ async def gc_repository_volumes(
                     "last_error": str(err),
                 },
             )
-            await REPOSITORY_STATE_RESOURCE.upsert(
+            await CephRepositoryState.upsert(
                 kube,
-                intent=CephRepositoryStateManifest(name=record.name, spec=spec),
+                intent=_repository_state_manifest(record.name, spec),
                 deadline=deadline,
             )
             continue
@@ -2019,8 +2030,8 @@ async def next_repository_volume_gc_time(
     if grace_seconds < 0:
         msg = "repository volume GC grace_seconds must be non-negative"
         raise ValueError(msg)
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(kube, deadline=deadline)
-    records = await REPOSITORY_STATE_RESOURCE.list(
+    await CephRepositoryState.ensure_crd(kube, deadline=deadline)
+    records = await CephRepositoryState.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         labels={REPOSITORY_VOLUME_PHASE_LABEL: "retired"},
@@ -2042,7 +2053,7 @@ async def next_repository_volume_gc_time(
 async def _delete_repository_parented_records(
     kube: Kube,
     *,
-    record: CephRepositoryStateRecord,
+    record: CephRepositoryState,
     deadline: Deadline,
 ) -> None:
     for worktree in sorted(

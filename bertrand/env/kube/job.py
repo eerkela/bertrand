@@ -90,7 +90,7 @@ async def _job_pods(
         raise OSError(msg)
     pods = await Pod.list(
         kube,
-        namespaces=(namespace,),
+        namespace=namespace,
         labels={"batch.kubernetes.io/job-name": name},
         deadline=deadline,
     )
@@ -98,7 +98,7 @@ async def _job_pods(
         return pods
     return await Pod.list(
         kube,
-        namespaces=(namespace,),
+        namespace=namespace,
         labels={"job-name": name},
         deadline=deadline,
     )
@@ -228,7 +228,6 @@ class JobManifest:
 
 @namespaced_resource(
     api=kubernetes.client.BatchV1Api,
-    payload=kubernetes.client.V1Job,
     read=kubernetes.client.BatchV1Api.read_namespaced_job,
     list=kubernetes.client.BatchV1Api.list_namespaced_job,
     list_all=kubernetes.client.BatchV1Api.list_job_for_all_namespaces,

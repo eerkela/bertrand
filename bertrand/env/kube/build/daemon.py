@@ -422,7 +422,7 @@ async def _buildkit_pool_inventory(
         Pod.list(
             kube,
             deadline=deadline,
-            namespaces=(BERTRAND_NAMESPACE,),
+            namespace=BERTRAND_NAMESPACE,
             labels=_BUILDKIT_POOL_SELECTOR,
         ),
     )

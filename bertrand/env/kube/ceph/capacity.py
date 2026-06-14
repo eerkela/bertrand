@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import uuid
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -26,8 +25,10 @@ from bertrand.env.git import (
 )
 from bertrand.env.kube.ceph.api import parse_size_bytes
 from bertrand.env.kube.custom_object import (
+    CustomObjectManifest,
     CustomObjectMetadata,
-    CustomObjectResource,
+    CustomResource,
+    custom_resource,
 )
 
 if TYPE_CHECKING:
@@ -289,47 +290,6 @@ class _CephStoragePolicySpec(BaseModel):
         return self
 
 
-@dataclass(frozen=True)
-class CephStorageStateManifest:
-    """Push-side manifest for the singleton CephStorageState resource.
-
-    Parameters
-    ----------
-    spec : _CephStoragePolicySpec
-        Desired Ceph storage policy.
-    """
-
-    spec: _CephStoragePolicySpec
-
-    @property
-    def namespace(self) -> str:
-        """Return the namespace that owns CephStorageState."""
-        return BERTRAND_NAMESPACE
-
-    @property
-    def name(self) -> str:
-        """Return the singleton CephStorageState name."""
-        return STORAGE_STATE_NAME
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes CephStorageState manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": f"{CEPH_CAPACITY_GROUP}/{CEPH_CAPACITY_VERSION}",
-            "kind": STORAGE_STATE_KIND,
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-            },
-            "spec": self.spec.model_dump(mode="json"),
-        }
-
-
 class CephStoragePolicyStatus(BaseModel):
     """Observed status emitted by the Ceph capacity controller."""
 
@@ -413,45 +373,6 @@ class CephStorageActionSpec(BaseModel):
         return self
 
 
-@dataclass(frozen=True)
-class CephStorageActionManifest:
-    """Push-side manifest for one CephStorageAction resource.
-
-    Parameters
-    ----------
-    name : str
-        Kubernetes action object name.
-    spec : CephStorageActionSpec
-        Desired node-local storage action.
-    """
-
-    name: str
-    spec: CephStorageActionSpec
-
-    @property
-    def namespace(self) -> str:
-        """Return the namespace that owns CephStorageAction objects."""
-        return BERTRAND_NAMESPACE
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes CephStorageAction manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        return {
-            "apiVersion": f"{CEPH_CAPACITY_GROUP}/{CEPH_CAPACITY_VERSION}",
-            "kind": STORAGE_ACTION_KIND,
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-            },
-            "spec": self.spec.model_dump(mode="json"),
-        }
-
-
 class _CephStorageActionStatus(BaseModel):
     """Observed lifecycle state for one node-local storage action."""
 
@@ -471,20 +392,29 @@ class _CephStorageActionStatus(BaseModel):
     provisioned_bytes: Annotated[int, Field(ge=0)] | None = None
 
 
-class CephStorageActionRecord(BaseModel):
-    """Validated `CephStorageAction` custom-resource payload."""
+class CephStorageActionManifest(CustomObjectManifest):
+    """Push-side manifest for one CephStorageAction resource.
 
-    model_config = ConfigDict(extra="forbid")
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["CephStorageAction"]
-    metadata: CustomObjectMetadata
+    Parameters
+    ----------
+    name : str
+        Kubernetes action object name.
+    spec : CephStorageActionSpec
+        Desired node-local storage action.
+    """
+
+    api_version: str = Field(
+        default=f"{CEPH_CAPACITY_GROUP}/{CEPH_CAPACITY_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = STORAGE_ACTION_KIND
     spec: CephStorageActionSpec
     status: _CephStorageActionStatus = Field(default_factory=_CephStorageActionStatus)
 
     @property
-    def name(self) -> str:
-        """Return the Kubernetes action object name."""
-        return self.metadata.name
+    def namespace(self) -> str:
+        """Return the namespace that owns CephStorageAction objects."""
+        return self.metadata.namespace or BERTRAND_NAMESPACE
 
 
 class CephStorageReservation(BaseModel):
@@ -620,20 +550,26 @@ class CephStorageStateStatus(BaseModel):
     osds: dict[str, CephStorageOSD] = Field(default_factory=dict)
 
 
-class CephStorageStateRecord(BaseModel):
-    """Validated `CephStorageState` custom-resource payload."""
+class CephStorageStateManifest(CustomObjectManifest):
+    """Push/pull manifest for the singleton CephStorageState resource."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-    api_version: str = Field(alias="apiVersion")
-    kind: Literal["CephStorageState"]
-    metadata: CustomObjectMetadata
+    api_version: str = Field(
+        default=f"{CEPH_CAPACITY_GROUP}/{CEPH_CAPACITY_VERSION}",
+        alias="apiVersion",
+    )
+    kind: str = STORAGE_STATE_KIND
     spec: _CephStoragePolicySpec = Field(default_factory=_CephStoragePolicySpec)
     status: CephStorageStateStatus = Field(default_factory=CephStorageStateStatus)
 
     @property
     def name(self) -> str:
         """Return the Kubernetes storage state object name."""
-        return self.metadata.name
+        return self.metadata.name or STORAGE_STATE_NAME
+
+    @property
+    def namespace(self) -> str:
+        """Return the namespace that owns CephStorageState."""
+        return self.metadata.namespace or BERTRAND_NAMESPACE
 
     @property
     def generation(self) -> int:
@@ -646,7 +582,8 @@ class CephStorageStateRecord(BaseModel):
         return self.status.policy
 
 
-STORAGE_STATE_RESOURCE = CustomObjectResource[CephStorageStateRecord](
+@custom_resource(
+    manifest=CephStorageStateManifest,
     group=CEPH_CAPACITY_GROUP,
     version=CEPH_CAPACITY_VERSION,
     kind=STORAGE_STATE_KIND,
@@ -654,13 +591,34 @@ STORAGE_STATE_RESOURCE = CustomObjectResource[CephStorageStateRecord](
     labels=STORAGE_CONTROLLER_LABELS,
     singular="cephstoragestate",
     short_names=("csstate",),
-    payload_parser=CephStorageStateRecord.model_validate,
-    payload_error_context=f"{STORAGE_STATE_KIND} custom object",
-    spec_model=_CephStoragePolicySpec,
     spec_schema_include_defaults=True,
-    status_model=CephStorageStateStatus,
 )
-STORAGE_ACTION_RESOURCE = CustomObjectResource[CephStorageActionRecord](
+class CephStorageState(CustomResource[CephStorageStateManifest]):
+    """Wrapper around the singleton CephStorageState custom object."""
+
+    @property
+    def spec(self) -> _CephStoragePolicySpec:
+        """Return the validated Ceph storage policy spec."""
+        return self.payload.spec
+
+    @property
+    def status(self) -> CephStorageStateStatus:
+        """Return the validated Ceph storage status."""
+        return self.payload.status
+
+    @property
+    def generation(self) -> int:
+        """Return the Kubernetes metadata generation."""
+        return self.payload.generation
+
+    @property
+    def policy_status(self) -> CephStoragePolicyStatus | None:
+        """Return the latest controller policy summary."""
+        return self.payload.policy_status
+
+
+@custom_resource(
+    manifest=CephStorageActionManifest,
     group=CEPH_CAPACITY_GROUP,
     version=CEPH_CAPACITY_VERSION,
     kind=STORAGE_ACTION_KIND,
@@ -668,10 +626,6 @@ STORAGE_ACTION_RESOURCE = CustomObjectResource[CephStorageActionRecord](
     labels=STORAGE_CONTROLLER_LABELS,
     singular="cephstorageaction",
     short_names=("csact",),
-    payload_parser=CephStorageActionRecord.model_validate,
-    payload_error_context=f"{STORAGE_ACTION_KIND} custom object",
-    spec_model=CephStorageActionSpec,
-    status_model=_CephStorageActionStatus,
     status_schema_overrides={
         "properties": {
             "started_at": {"type": "string", "format": "date-time"},
@@ -687,9 +641,23 @@ STORAGE_ACTION_RESOURCE = CustomObjectResource[CephStorageActionRecord](
         },
     },
 )
-_STORAGE_RESOURCES: tuple[CustomObjectResource[Any], ...] = (
-    STORAGE_STATE_RESOURCE,
-    STORAGE_ACTION_RESOURCE,
+class CephStorageAction(CustomResource[CephStorageActionManifest]):
+    """Wrapper around one CephStorageAction custom object."""
+
+    @property
+    def spec(self) -> CephStorageActionSpec:
+        """Return the validated storage action spec."""
+        return self.payload.spec
+
+    @property
+    def status(self) -> _CephStorageActionStatus:
+        """Return the validated storage action status."""
+        return self.payload.status
+
+
+_STORAGE_RESOURCES: tuple[type[CustomResource[Any]], ...] = (
+    CephStorageState,
+    CephStorageAction,
 )
 
 
@@ -718,16 +686,20 @@ async def ensure_default_storage_policy(kube: Kube, *, deadline: Deadline) -> No
     deadline : Deadline
         Maximum convergence budget in seconds.
     """
-    await STORAGE_STATE_RESOURCE.upsert(
+    await CephStorageState.upsert(
         kube,
-        intent=CephStorageStateManifest(spec=_CephStoragePolicySpec()),
+        intent=CephStorageStateManifest(
+            metadata=CustomObjectMetadata(
+                namespace=BERTRAND_NAMESPACE,
+                name=STORAGE_STATE_NAME,
+            ),
+            spec=_CephStoragePolicySpec(),
+        ),
         deadline=deadline,
     )
 
 
-async def read_storage_state(
-    kube: Kube, *, deadline: Deadline
-) -> CephStorageStateRecord:
+async def read_storage_state(kube: Kube, *, deadline: Deadline) -> CephStorageState:
     """Read and validate the singleton collapsed storage state.
 
     Parameters
@@ -739,7 +711,7 @@ async def read_storage_state(
 
     Returns
     -------
-    CephStorageStateRecord
+    CephStorageState
         Validated singleton storage state.
 
     Raises
@@ -747,7 +719,7 @@ async def read_storage_state(
     OSError
         If the singleton storage state resource does not exist.
     """
-    record = await STORAGE_STATE_RESOURCE.get(
+    record = await CephStorageState.get(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=STORAGE_STATE_NAME,
@@ -797,7 +769,7 @@ async def upsert_storage_reservation(
         observed_free_bytes=0,
         last_error="",
     )
-    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
+    refreshed = await CephStorageState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=STORAGE_STATE_NAME,
@@ -832,7 +804,7 @@ async def patch_storage_reservation_status(
         {**reservation.model_dump(mode="python"), **dict(status)}
     )
     state = await read_storage_state(kube, deadline=deadline)
-    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
+    refreshed = await CephStorageState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=STORAGE_STATE_NAME,
@@ -983,10 +955,13 @@ async def create_storage_actions(
         Maximum creation budget in seconds.
     """
     for action in actions:
-        await STORAGE_ACTION_RESOURCE.create(
+        await CephStorageAction.create(
             kube,
             intent=CephStorageActionManifest(
-                name=f"{STORAGE_STATE_NAME}-{uuid.uuid4().hex[:12]}",
+                metadata=CustomObjectMetadata(
+                    namespace=BERTRAND_NAMESPACE,
+                    name=f"{STORAGE_STATE_NAME}-{uuid.uuid4().hex[:12]}",
+                ),
                 spec=action,
             ),
             deadline=deadline,
@@ -1067,7 +1042,7 @@ async def upsert_storage_osd(
             "last_error": "",
         }
     )
-    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
+    refreshed = await CephStorageState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=STORAGE_STATE_NAME,
@@ -1107,7 +1082,7 @@ async def patch_storage_osd_status(
         {**osd.model_dump(mode="python"), **payload}
     )
     state = await read_storage_state(kube, deadline=deadline)
-    refreshed = await STORAGE_STATE_RESOURCE.patch_status(
+    refreshed = await CephStorageState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=STORAGE_STATE_NAME,
@@ -1147,7 +1122,7 @@ async def upsert_storage_node_report(
     entry = CephStorageNodeReport.model_validate(
         {"name": name, "node_name": node_name, "host_id": host_id, **dict(status)}
     )
-    await STORAGE_STATE_RESOURCE.patch_status(
+    await CephStorageState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=STORAGE_STATE_NAME,
@@ -1163,7 +1138,7 @@ async def pending_storage_actions(
     *,
     node_name: str,
     deadline: Deadline,
-) -> list[CephStorageActionRecord]:
+) -> list[CephStorageAction]:
     """List pending storage actions assigned to one node.
 
     Parameters
@@ -1177,10 +1152,10 @@ async def pending_storage_actions(
 
     Returns
     -------
-    list[CephStorageActionRecord]
+    list[CephStorageAction]
         Pending actions for the node.
     """
-    actions = await STORAGE_ACTION_RESOURCE.list(
+    actions = await CephStorageAction.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         deadline=deadline,
@@ -1197,7 +1172,7 @@ async def pending_storage_actions(
 async def patch_storage_action_status(
     kube: Kube,
     *,
-    action: CephStorageActionRecord,
+    action: CephStorageAction,
     status: Mapping[str, object],
     deadline: Deadline,
 ) -> None:
@@ -1207,14 +1182,14 @@ async def patch_storage_action_status(
     ----------
     kube : Kube
         Active Kubernetes API context.
-    action : CephStorageActionRecord
+    action : CephStorageAction
         Storage action to patch.
     status : Mapping[str, object]
         Status fields to apply.
     deadline : Deadline
         Maximum patch budget in seconds.
     """
-    await STORAGE_ACTION_RESOURCE.patch_status(
+    await CephStorageAction.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=action.name,

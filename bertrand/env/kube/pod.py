@@ -143,7 +143,6 @@ class PodManifest:
 
 @namespaced_resource(
     api=kubernetes.client.CoreV1Api,
-    payload=kubernetes.client.V1Pod,
     read=kubernetes.client.CoreV1Api.read_namespaced_pod,
     list=kubernetes.client.CoreV1Api.list_namespaced_pod,
     list_all=kubernetes.client.CoreV1Api.list_pod_for_all_namespaces,

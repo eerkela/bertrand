@@ -47,7 +47,6 @@ class ServiceAccountManifest:
 
 @namespaced_resource(
     api=kube_client.CoreV1Api,
-    payload=kube_client.V1ServiceAccount,
     read=kube_client.CoreV1Api.read_namespaced_service_account,
     list=kube_client.CoreV1Api.list_namespaced_service_account,
     list_all=kube_client.CoreV1Api.list_service_account_for_all_namespaces,

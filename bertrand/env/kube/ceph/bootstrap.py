@@ -7,13 +7,25 @@ import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline, until
+from pydantic import Field
+
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    EMPTY_MAPPING,
+    Deadline,
+    until,
+)
 from bertrand.env.kube.api.client import kubectl
 from bertrand.env.kube.ceph.csi import CSI_DRIVER_NAME
 from bertrand.env.kube.crd import (
     CustomResourceDefinition,
 )
-from bertrand.env.kube.custom_object import CustomObject, CustomObjectResource
+from bertrand.env.kube.custom_object import (
+    CustomObjectManifest,
+    CustomResource,
+    custom_resource,
+)
 from bertrand.env.kube.deployment import Deployment
 from bertrand.env.kube.namespace import Namespace, NamespaceManifest
 from bertrand.env.kube.volume import StorageClass
@@ -50,13 +62,27 @@ ROOK_LABELS = {
     BERTRAND_LABEL: BERTRAND_LABEL_MANAGED,
     ROOK_MANAGED_LABEL: ROOK_MANAGED_VALUE,
 }
-ROOK_CEPH_CLUSTER_RESOURCE: CustomObjectResource[CustomObject] = CustomObjectResource(
+
+
+class RookCephClusterManifest(CustomObjectManifest):
+    """Pull-side manifest for one Rook CephCluster."""
+
+    api_version: str = Field(default="ceph.rook.io/v1", alias="apiVersion")
+    kind: str = "CephCluster"
+    spec: Mapping[str, object] = EMPTY_MAPPING
+    status: Mapping[str, object] = EMPTY_MAPPING
+
+
+@custom_resource(
+    manifest=RookCephClusterManifest,
     group="ceph.rook.io",
     version="v1",
     kind="CephCluster",
     plural="cephclusters",
     default_namespace=ROOK_NAMESPACE,
 )
+class RookCephCluster(CustomResource[RookCephClusterManifest]):
+    """Wrapper around one Rook CephCluster custom object."""
 
 
 async def ensure_rook_ceph_base(kube: Kube, *, deadline: Deadline) -> None:
@@ -356,12 +382,10 @@ async def _ensure_rook_cluster(*, deadline: Deadline) -> None:
 
 async def _wait_ceph_cluster_ready(kube: Kube, *, deadline: Deadline) -> None:
     async def ready(attempt_deadline: Deadline) -> None:
-        obj = await ROOK_CEPH_CLUSTER_RESOURCE.get(
+        obj = await RookCephCluster.get(
             kube,
             name=ROOK_CLUSTER_NAME,
             deadline=attempt_deadline,
-            context=f"failed to read Rook CephCluster {ROOK_NAMESPACE}/"
-            f"{ROOK_CLUSTER_NAME}",
         )
         if obj is None:
             msg = "Rook CephCluster payload is malformed"

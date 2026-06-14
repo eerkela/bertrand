@@ -24,9 +24,8 @@ from bertrand.env.git import (
 )
 from bertrand.env.kube.api.client import Kube
 from bertrand.env.kube.dev.mailbox import (
-    CODE_OPEN_RESOURCE,
     CodeOpenManifest,
-    CodeOpenRecord,
+    CodeOpenRequest,
     CodeOpenSpec,
     wait_code_open_request,
 )
@@ -74,7 +73,7 @@ async def send_code_open_request(
         raise TimeoutError(msg)
     request_deadline = Deadline(remaining)
     with Kube.internal() as kube:
-        record = await CODE_OPEN_RESOURCE.create(
+        record = await CodeOpenRequest.create(
             kube,
             intent=CodeOpenManifest(spec=spec, host_id=host_id),
             deadline=request_deadline,
@@ -179,7 +178,7 @@ def _request_prereqs(editor: Editor) -> None:
             )
 
 
-def _raise_if_unsuccessful(record: CodeOpenRecord) -> None:
+def _raise_if_unsuccessful(record: CodeOpenRequest) -> None:
     if record.status.phase == "Succeeded":
         return
     detail = record.status.message or f"editor request ended in {record.status.phase}"

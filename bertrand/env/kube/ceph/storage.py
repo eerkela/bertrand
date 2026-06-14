@@ -29,22 +29,20 @@ from bertrand.env.kube.ceph.capacity import (
     CEPH_CAPACITY_GROUP,
     STORAGE_ACTION_PHASES,
     STORAGE_ACTION_PLURAL,
-    STORAGE_ACTION_RESOURCE,
     STORAGE_ACTION_STALE_SECONDS,
     STORAGE_CONTROLLER_LABELS,
     STORAGE_NODE_REPORT_MAX_AGE_SECONDS,
     STORAGE_OSD_IN_FLIGHT_PHASES,
     STORAGE_OSD_STALE_PHASE_SECONDS,
     STORAGE_STATE_PLURAL,
-    STORAGE_STATE_RESOURCE,
     STORAGE_TARGET_RETRY_COOLDOWN_SECONDS,
-    CephStorageActionRecord,
+    CephStorageAction,
     CephStorageActionSpec,
     CephStorageNodeReport,
     CephStorageOSD,
     CephStoragePolicyStatus,
     CephStorageReservation,
-    CephStorageStateRecord,
+    CephStorageState,
     StorageActionOperation,
     create_storage_actions,
     ensure_ceph_capacity_crds,
@@ -67,7 +65,7 @@ from bertrand.env.kube.ceph.snapshot import (
 )
 from bertrand.env.kube.ceph.volume import (
     REPOSITORY_STATE_PLURAL,
-    REPOSITORY_STATE_RESOURCE,
+    CephRepositoryState,
     gc_repository_volumes,
     next_repository_volume_gc_time,
 )
@@ -87,7 +85,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
 
     from bertrand.env.kube.api.manifest import PolicyRuleManifest
-    from bertrand.env.kube.custom_object import CustomObjectResource
+    from bertrand.env.kube.custom_object import CustomResource
 
 STORAGE_CONTROLLER_SERVICE_ACCOUNT = "bertrand-ceph-storage-controller"
 STORAGE_CONTROLLER_NAME = "bertrand-ceph-storage-controller"
@@ -396,7 +394,7 @@ async def ensure_ceph_storage_controller(
         kube,
         deadline=deadline,
     )
-    await REPOSITORY_STATE_RESOURCE.ensure_crd(
+    await CephRepositoryState.ensure_crd(
         kube,
         deadline=deadline,
     )
@@ -421,7 +419,7 @@ async def ensure_ceph_storage_controller(
 async def _watch_storage_resource(
     kube: Kube,
     *,
-    client: CustomObjectResource[Any],
+    client: type[CustomResource[Any]],
     wake: asyncio.Event,
     deadline: Deadline,
     context: str,
@@ -487,7 +485,7 @@ class _ShrinkPlan:
 
 
 def _storage_action_counts(
-    actions: Collection[CephStorageActionRecord],
+    actions: Collection[CephStorageAction],
 ) -> dict[str, int]:
     counts: dict[str, int] = dict.fromkeys(STORAGE_ACTION_PHASES, 0)
     for action in actions:
@@ -495,7 +493,7 @@ def _storage_action_counts(
     return counts
 
 
-def _storage_actions_in_flight(actions: Collection[CephStorageActionRecord]) -> int:
+def _storage_actions_in_flight(actions: Collection[CephStorageAction]) -> int:
     counts = _storage_action_counts(actions)
     return counts["Pending"] + counts["Running"]
 
@@ -509,7 +507,7 @@ def _storage_utc(value: datetime | None) -> datetime | None:
 
 
 def _last_storage_shrink_at(
-    actions: Collection[CephStorageActionRecord],
+    actions: Collection[CephStorageAction],
 ) -> datetime | None:
     timestamps = [
         _storage_utc(action.status.finished_at or action.status.started_at)
@@ -571,7 +569,7 @@ def _storage_osd_bytes(record: CephStorageOSD) -> int:
 
 def _storage_growth_status(
     *,
-    policy: CephStorageStateRecord,
+    policy: CephStorageState,
     capacity: CephCapacitySnapshot,
     reservations: Collection[CephStorageReservation],
     now: datetime,
@@ -643,7 +641,7 @@ def _round_up(value: int, step: int) -> int:
 async def _mark_stale_actions_failed(
     kube: Kube,
     *,
-    actions: Collection[CephStorageActionRecord],
+    actions: Collection[CephStorageAction],
     deadline: Deadline,
 ) -> bool:
     now = datetime.now(UTC)
@@ -835,7 +833,7 @@ async def _reconcile_reservations(
 
 def _blocked_storage_targets(
     *,
-    actions: Collection[CephStorageActionRecord],
+    actions: Collection[CephStorageAction],
     osd_records: Collection[CephStorageOSD],
     now: datetime,
 ) -> set[str]:
@@ -999,7 +997,7 @@ def _storage_target_action(
 
 def _plan_growth_actions(
     *,
-    policy: CephStorageStateRecord,
+    policy: CephStorageState,
     capacity: CephCapacitySnapshot,
     growth: CephStoragePolicyStatus,
     eligible_targets: Collection[_StorageTarget],
@@ -1063,7 +1061,7 @@ def _plan_growth_actions(
 
 def _plan_lvm_coverage_actions(
     *,
-    policy: CephStorageStateRecord,
+    policy: CephStorageState,
     capacity: CephCapacitySnapshot,
     lvm_targets: Collection[_StorageTarget],
     in_flight: int,
@@ -1112,8 +1110,8 @@ def _empty_shrink_plan(loop_offload_offset: int) -> _ShrinkPlan:
 
 async def _plan_shrink_actions(
     *,
-    policy: CephStorageStateRecord,
-    actions: Collection[CephStorageActionRecord],
+    policy: CephStorageState,
+    actions: Collection[CephStorageAction],
     osd_records: Collection[CephStorageOSD],
     lvm_targets: Sequence[_StorageTarget],
     capacity: CephCapacitySnapshot,
@@ -1327,8 +1325,8 @@ async def _plan_shrink_actions(
 async def _plan_storage_actions(
     kube: Kube,
     *,
-    policy: CephStorageStateRecord,
-    actions: Collection[CephStorageActionRecord],
+    policy: CephStorageState,
+    actions: Collection[CephStorageAction],
     reports: Collection[CephStorageNodeReport],
     osd_records: Collection[CephStorageOSD],
     capacity: CephCapacitySnapshot,
@@ -1411,7 +1409,7 @@ async def _plan_storage_actions(
 def _storage_policy_status(
     *,
     capacity: CephCapacitySnapshot,
-    actions: Collection[CephStorageActionRecord],
+    actions: Collection[CephStorageAction],
     osd_records: Collection[CephStorageOSD],
     growth: CephStoragePolicyStatus,
     missing_lvm_osd_pvs: int,
@@ -1469,7 +1467,7 @@ async def _reconcile_storage_controller(
     loop_offload_offset: int,
 ) -> tuple[float, int]:
     policy = await read_storage_state(kube, deadline=deadline)
-    actions = await STORAGE_ACTION_RESOURCE.list(
+    actions = await CephStorageAction.list(
         kube,
         namespace=BERTRAND_NAMESPACE,
         deadline=deadline,
@@ -1486,7 +1484,7 @@ async def _reconcile_storage_controller(
         actions=actions,
         deadline=deadline,
     ):
-        actions = await STORAGE_ACTION_RESOURCE.list(
+        actions = await CephStorageAction.list(
             kube,
             namespace=BERTRAND_NAMESPACE,
             deadline=deadline,
@@ -1556,7 +1554,7 @@ async def _reconcile_storage_controller(
             actions=planned,
             deadline=deadline,
         )
-        actions = await STORAGE_ACTION_RESOURCE.list(
+        actions = await CephStorageAction.list(
             kube,
             namespace=BERTRAND_NAMESPACE,
             deadline=deadline,
@@ -1583,7 +1581,7 @@ async def _reconcile_storage_controller(
         )
 
     storage = await read_storage_state(kube, deadline=deadline)
-    await STORAGE_STATE_RESOURCE.patch_status(
+    await CephStorageState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=storage.name,
@@ -1710,7 +1708,7 @@ async def _patch_storage_controller_error(
             "last_error": error,
         }
     )
-    await STORAGE_STATE_RESOURCE.patch_status(
+    await CephStorageState.patch_status(
         kube,
         namespace=BERTRAND_NAMESPACE,
         name=storage.name,
@@ -1742,8 +1740,8 @@ async def run_ceph_storage_controller(*, deadline: Deadline = NO_DEADLINE) -> No
     with Kube.internal() as kube:
         async with asyncio.TaskGroup() as group:
             for client, context in (
-                (STORAGE_STATE_RESOURCE, STORAGE_STATE_PLURAL),
-                (STORAGE_ACTION_RESOURCE, STORAGE_ACTION_PLURAL),
+                (CephStorageState, STORAGE_STATE_PLURAL),
+                (CephStorageAction, STORAGE_ACTION_PLURAL),
             ):
                 group.create_task(
                     _watch_storage_resource(

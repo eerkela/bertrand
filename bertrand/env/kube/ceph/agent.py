@@ -26,8 +26,7 @@ from bertrand.env.kube.ceph.api import (
     purge_ceph_osd,
 )
 from bertrand.env.kube.ceph.capacity import (
-    STORAGE_ACTION_RESOURCE,
-    CephStorageActionRecord,
+    CephStorageAction,
     CephStorageOSD,
     StorageOSDOrigin,
     StorageOSDPhase,
@@ -96,7 +95,7 @@ class CephStorageAgent:
         wake: asyncio.Event,
         deadline: Deadline,
     ) -> None:
-        action_client = STORAGE_ACTION_RESOURCE
+        action_client = CephStorageAction
         while True:
             try:
                 for action in await action_client.list(
@@ -245,12 +244,12 @@ class CephStorageAgent:
 
     async def _pending_actions(
         self, kube: Kube, *, deadline: Deadline
-    ) -> list[CephStorageActionRecord]:
+    ) -> list[CephStorageAction]:
         """List pending actions assigned to this node.
 
         Returns
         -------
-        list[CephStorageActionRecord]
+        list[CephStorageAction]
             Pending actions targeting this agent's node.
         """
         return [
@@ -264,21 +263,21 @@ class CephStorageAgent:
         ]
 
     @staticmethod
-    def _shrink_osd_id(action: CephStorageActionRecord) -> int:
+    def _shrink_osd_id(action: CephStorageAction) -> int:
         if action.spec.osd_id is None:
             msg = "retire-loop action is missing osd_id"
             raise ValueError(msg)
         return action.spec.osd_id
 
     @staticmethod
-    def _target_bytes(action: CephStorageActionRecord) -> int:
+    def _target_bytes(action: CephStorageAction) -> int:
         if action.spec.target_bytes is None:
             msg = f"{action.spec.operation} action is missing target_bytes"
             raise ValueError(msg)
         return action.spec.target_bytes
 
     @staticmethod
-    def _lvm_pv_name(action: CephStorageActionRecord) -> str:
+    def _lvm_pv_name(action: CephStorageAction) -> str:
         pv_name = (action.spec.pv_name or "").strip()
         if not pv_name:
             msg = "expand-lvm action is missing pv_name"
@@ -286,7 +285,7 @@ class CephStorageAgent:
         return pv_name
 
     @staticmethod
-    def _storage_osd_name(action: CephStorageActionRecord) -> str:
+    def _storage_osd_name(action: CephStorageAction) -> str:
         name = (action.spec.storage_osd_name or "").strip()
         if name:
             return name
@@ -297,7 +296,7 @@ class CephStorageAgent:
         self,
         kube: Kube,
         *,
-        action: CephStorageActionRecord,
+        action: CephStorageAction,
         deadline: Deadline,
     ) -> None:
         await patch_storage_action_status(
@@ -316,7 +315,7 @@ class CephStorageAgent:
         self,
         kube: Kube,
         *,
-        action: CephStorageActionRecord,
+        action: CephStorageAction,
         status: Mapping[str, object],
         deadline: Deadline,
     ) -> None:
@@ -336,7 +335,7 @@ class CephStorageAgent:
         self,
         kube: Kube,
         *,
-        action: CephStorageActionRecord,
+        action: CephStorageAction,
         error: BaseException,
         deadline: Deadline,
     ) -> None:
@@ -463,7 +462,7 @@ class CephStorageAgent:
         self,
         kube: Kube,
         *,
-        action: CephStorageActionRecord,
+        action: CephStorageAction,
         error: BaseException,
         deadline: Deadline,
     ) -> None:
@@ -487,7 +486,7 @@ class CephStorageAgent:
         self,
         kube: Kube,
         *,
-        action: CephStorageActionRecord,
+        action: CephStorageAction,
         deadline: Deadline,
     ) -> None:
         pv_name = self._lvm_pv_name(action)
@@ -535,7 +534,7 @@ class CephStorageAgent:
         self,
         kube: Kube,
         *,
-        action: CephStorageActionRecord,
+        action: CephStorageAction,
         deadline: Deadline,
     ) -> None:
         name = self._storage_osd_name(action)
@@ -578,7 +577,7 @@ class CephStorageAgent:
         self,
         kube: Kube,
         *,
-        action: CephStorageActionRecord,
+        action: CephStorageAction,
         deadline: Deadline,
     ) -> None:
         name = self._storage_osd_name(action)
@@ -673,7 +672,7 @@ class CephStorageAgent:
         self,
         kube: Kube,
         *,
-        action: CephStorageActionRecord,
+        action: CephStorageAction,
         deadline: Deadline,
     ) -> None:
         osd_id = self._shrink_osd_id(action)
@@ -730,7 +729,7 @@ class CephStorageAgent:
         )
 
     async def _execute_action(
-        self, kube: Kube, *, action: CephStorageActionRecord, deadline: Deadline
+        self, kube: Kube, *, action: CephStorageAction, deadline: Deadline
     ) -> None:
         """Claim and execute one pending action on this node.
 

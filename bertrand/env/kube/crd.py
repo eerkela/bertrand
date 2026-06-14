@@ -106,7 +106,6 @@ class CustomResourceDefinitionManifest:
 
 @cluster_resource(
     api=kube_client.ApiextensionsV1Api,
-    payload=kube_client.V1CustomResourceDefinition,
     read=kube_client.ApiextensionsV1Api.read_custom_resource_definition,
     list=kube_client.ApiextensionsV1Api.list_custom_resource_definition,
     create=kube_client.ApiextensionsV1Api.create_custom_resource_definition,

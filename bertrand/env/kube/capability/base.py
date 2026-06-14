@@ -276,7 +276,7 @@ async def list_capability_secrets(
 
     secrets = await Secret.list(
         kube,
-        namespaces=(BERTRAND_NAMESPACE,),
+        namespace=BERTRAND_NAMESPACE,
         labels=labels,
         deadline=deadline,
     )

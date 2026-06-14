@@ -837,7 +837,7 @@ async def _active_workload_jobs(
 ) -> tuple[Job, ...]:
     jobs = await Job.list(
         kube,
-        namespaces=(BERTRAND_NAMESPACE,),
+        namespace=BERTRAND_NAMESPACE,
         labels=identity.managed_selector,
         deadline=deadline,
     )
@@ -855,7 +855,7 @@ async def _active_workload_pods(
 ) -> tuple[Pod, ...]:
     pods = await Pod.list(
         kube,
-        namespaces=(BERTRAND_NAMESPACE,),
+        namespace=BERTRAND_NAMESPACE,
         labels=identity.managed_selector,
         deadline=deadline,
     )

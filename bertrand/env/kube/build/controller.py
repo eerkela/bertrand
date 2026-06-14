@@ -29,9 +29,8 @@ from bertrand.env.kube.build.request import (
     BUILDKIT_BUILD_LABEL_VALUE,
     BUILDKIT_BUILD_LABELS,
     BUILDKIT_BUILD_PLURAL,
-    BUILDKIT_BUILD_RESOURCE,
     BUILDKIT_IMAGE_GC_GRACE_SECONDS,
-    BuildKitBuildRecord,
+    BuildKitBuild,
     gc_project_images,
     next_project_image_gc_time,
     patch_buildkit_build_status,
@@ -100,7 +99,7 @@ def _warn(message: str) -> None:
 async def _reconcile_build(
     kube: Kube,
     *,
-    request: BuildKitBuildRecord,
+    request: BuildKitBuild,
     deadline: Deadline,
     project_image_gc: MaintenanceClock,
 ) -> None:
@@ -179,7 +178,7 @@ async def _reconcile_build(
 async def _publish_platforms(
     kube: Kube,
     *,
-    request: BuildKitBuildRecord,
+    request: BuildKitBuild,
     deadline: Deadline,
 ) -> dict[str, str]:
     spec = request.spec
@@ -209,7 +208,7 @@ async def _publish_platforms(
 async def _publish_manifest(
     kube: Kube,
     *,
-    request: BuildKitBuildRecord,
+    request: BuildKitBuild,
     platform_refs: Mapping[str, str],
     deadline: Deadline,
 ) -> tuple[str, str | None, dict[str, str]]:
@@ -240,7 +239,7 @@ async def _publish_manifest(
 async def _maybe_gc(
     kube: Kube,
     *,
-    requests: Collection[BuildKitBuildRecord] | None,
+    requests: Collection[BuildKitBuild] | None,
     deadline: Deadline,
     project_image_gc: MaintenanceClock,
     registry_storage_gc: MaintenanceClock,
@@ -358,7 +357,7 @@ async def _maybe_registry_storage_gc(
 
         async def buildkit_idle(attempt_deadline: Deadline) -> bool:
             try:
-                records = await BUILDKIT_BUILD_RESOURCE.list(
+                records = await BuildKitBuild.list(
                     kube,
                     deadline=attempt_deadline,
                 )
@@ -459,7 +458,7 @@ async def _restore_registry_writable(kube: Kube, *, deadline: Deadline) -> None:
 async def _maybe_build_source_gc(
     kube: Kube,
     *,
-    requests: Collection[BuildKitBuildRecord] | None,
+    requests: Collection[BuildKitBuild] | None,
     deadline: Deadline,
     build_source_gc: MaintenanceClock,
 ) -> None:
@@ -525,7 +524,7 @@ async def ensure_buildkit_build_controller(
         msg = "BuildKit build controller image cannot be empty"
         raise ValueError(msg)
     await asyncio.gather(
-        BUILDKIT_BUILD_RESOURCE.ensure_crd(kube, deadline=deadline),
+        BuildKitBuild.ensure_crd(kube, deadline=deadline),
         ServiceAccount.upsert(
             kube,
             intent=ServiceAccountManifest(
@@ -618,9 +617,9 @@ async def run_buildkit_build_controller(*, deadline: Deadline = NO_DEADLINE) -> 
     with Kube.internal() as kube:
         await _restore_registry_writable(kube, deadline=deadline)
         while deadline.remaining > 0:
-            requests: list[BuildKitBuildRecord] | None = None
+            requests: list[BuildKitBuild] | None = None
             try:
-                requests = await BUILDKIT_BUILD_RESOURCE.list(
+                requests = await BuildKitBuild.list(
                     kube,
                     deadline=deadline,
                 )

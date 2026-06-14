@@ -69,7 +69,6 @@ class TaintView:
 
 @cluster_resource(
     api=kubernetes.client.CoreV1Api,
-    payload=kubernetes.client.V1Node,
     read=kubernetes.client.CoreV1Api.read_node,
     list=kubernetes.client.CoreV1Api.list_node,
     create=None,
@@ -685,7 +684,6 @@ async def _node_pods(
     *,
     deadline: Deadline,
     labels: Mapping[str, str] = EMPTY_MAPPING,
-    namespaces: Collection[str] | None = None,
 ) -> builtins.list[Pod]:
     node_name = node.name
     if not node_name:
@@ -694,7 +692,6 @@ async def _node_pods(
     return await Pod.list(
         kube,
         deadline=deadline,
-        namespaces=namespaces,
         labels=labels,
         field_selector=(f"spec.nodeName={node_name}",),
     )

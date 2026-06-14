@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, cast
 
-from bertrand.env.git import BERTRAND_LABEL, BERTRAND_LABEL_MANAGED, Deadline, until
+from pydantic import Field
+
+from bertrand.env.git import (
+    BERTRAND_LABEL,
+    BERTRAND_LABEL_MANAGED,
+    EMPTY_MAPPING,
+    Deadline,
+    until,
+)
 from bertrand.env.kube.api.client import kubectl
 from bertrand.env.kube.crd import (
     CustomResourceDefinition,
 )
 from bertrand.env.kube.custom_object import (
-    CustomObject,
-    CustomObjectResource,
+    CustomObjectManifest,
+    CustomObjectMetadata,
+    CustomResource,
+    custom_resource,
 )
 from bertrand.env.kube.daemonset import DaemonSet
 from bertrand.env.kube.deployment import Deployment
@@ -62,80 +71,7 @@ METALLB_CRDS = (
 METALLB_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 
-class _MetalLBManifest(Protocol):
-    @property
-    def name(self) -> str:
-        """Return the MetalLB object name."""
-        ...
-
-    @property
-    def namespace(self) -> str | None:
-        """Return the MetalLB object namespace."""
-        ...
-
-    def manifest(self) -> Mapping[str, object]:
-        """Render the Kubernetes custom-object manifest.
-
-        Returns
-        -------
-        Mapping[str, object]
-            Complete Kubernetes custom-object manifest.
-        """
-        ...
-
-
-_IP_ADDRESS_POOL_RESOURCE = CustomObjectResource[CustomObject](
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="IPAddressPool",
-    plural="ipaddresspools",
-    default_namespace=METALLB_NAMESPACE,
-)
-_L2_ADVERTISEMENT_RESOURCE = CustomObjectResource[CustomObject](
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="L2Advertisement",
-    plural="l2advertisements",
-    default_namespace=METALLB_NAMESPACE,
-)
-_BGP_PEER_RESOURCE = CustomObjectResource[CustomObject](
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA2,
-    kind="BGPPeer",
-    plural="bgppeers",
-    default_namespace=METALLB_NAMESPACE,
-)
-_BGP_ADVERTISEMENT_RESOURCE = CustomObjectResource[CustomObject](
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="BGPAdvertisement",
-    plural="bgpadvertisements",
-    default_namespace=METALLB_NAMESPACE,
-)
-_CONFIGURATION_STATE_RESOURCE: CustomObjectResource[CustomObject] = (
-    CustomObjectResource(
-        group=METALLB_GROUP,
-        version=METALLB_V1BETA1,
-        kind="ConfigurationState",
-        plural="configurationstates",
-    )
-)
-_SERVICE_L2_STATUS_RESOURCE: CustomObjectResource[CustomObject] = CustomObjectResource(
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="ServiceL2Status",
-    plural="servicel2statuses",
-)
-_SERVICE_BGP_STATUS_RESOURCE: CustomObjectResource[CustomObject] = CustomObjectResource(
-    group=METALLB_GROUP,
-    version=METALLB_V1BETA1,
-    kind="ServiceBGPStatus",
-    plural="servicebgpstatuses",
-)
-
-
-@dataclass(frozen=True)
-class IPAddressPoolManifest:
+class IPAddressPoolManifest(CustomObjectManifest):
     """Push-side manifest for one MetalLB IPAddressPool.
 
     Parameters
@@ -148,14 +84,14 @@ class IPAddressPoolManifest:
         Whether MetalLB may automatically allocate from this pool.
     """
 
-    name: str
+    api_version: str = Field(
+        default=f"{METALLB_GROUP}/{METALLB_V1BETA1}",
+        alias="apiVersion",
+    )
+    kind: str = "IPAddressPool"
     addresses: Sequence[str]
     auto_assign: bool
-
-    @property
-    def namespace(self) -> str:
-        """Return the MetalLB namespace."""
-        return METALLB_NAMESPACE
+    status: Mapping[str, object] = EMPTY_MAPPING
 
     def manifest(self) -> Mapping[str, object]:
         """Render the Kubernetes IPAddressPool manifest.
@@ -168,11 +104,7 @@ class IPAddressPoolManifest:
         return {
             "apiVersion": f"{METALLB_GROUP}/{METALLB_V1BETA1}",
             "kind": "IPAddressPool",
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": METALLB_LABELS,
-            },
+            "metadata": self.metadata.manifest(),
             "spec": {
                 "addresses": list(self.addresses),
                 "autoAssign": self.auto_assign,
@@ -180,8 +112,19 @@ class IPAddressPoolManifest:
         }
 
 
-@dataclass(frozen=True)
-class L2AdvertisementManifest:
+@custom_resource(
+    manifest=IPAddressPoolManifest,
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="IPAddressPool",
+    plural="ipaddresspools",
+    default_namespace=METALLB_NAMESPACE,
+)
+class IPAddressPool(CustomResource[IPAddressPoolManifest]):
+    """Wrapper around one MetalLB IPAddressPool custom object."""
+
+
+class L2AdvertisementManifest(CustomObjectManifest):
     """Push-side manifest for one MetalLB L2Advertisement.
 
     Parameters
@@ -194,14 +137,14 @@ class L2AdvertisementManifest:
         Optional interface names to advertise from.
     """
 
-    name: str
+    api_version: str = Field(
+        default=f"{METALLB_GROUP}/{METALLB_V1BETA1}",
+        alias="apiVersion",
+    )
+    kind: str = "L2Advertisement"
     pool: str
     interfaces: Sequence[str]
-
-    @property
-    def namespace(self) -> str:
-        """Return the MetalLB namespace."""
-        return METALLB_NAMESPACE
+    status: Mapping[str, object] = EMPTY_MAPPING
 
     def manifest(self) -> Mapping[str, object]:
         """Render the Kubernetes L2Advertisement manifest.
@@ -217,17 +160,24 @@ class L2AdvertisementManifest:
         return {
             "apiVersion": f"{METALLB_GROUP}/{METALLB_V1BETA1}",
             "kind": "L2Advertisement",
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": METALLB_LABELS,
-            },
+            "metadata": self.metadata.manifest(),
             "spec": spec,
         }
 
 
-@dataclass(frozen=True)
-class BGPPeerManifest:
+@custom_resource(
+    manifest=L2AdvertisementManifest,
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="L2Advertisement",
+    plural="l2advertisements",
+    default_namespace=METALLB_NAMESPACE,
+)
+class L2Advertisement(CustomResource[L2AdvertisementManifest]):
+    """Wrapper around one MetalLB L2Advertisement custom object."""
+
+
+class BGPPeerManifest(CustomObjectManifest):
     """Push-side manifest for one MetalLB BGPPeer.
 
     Parameters
@@ -248,7 +198,11 @@ class BGPPeerManifest:
         Optional same-namespace basic-auth Secret for TCP MD5.
     """
 
-    name: str
+    api_version: str = Field(
+        default=f"{METALLB_GROUP}/{METALLB_V1BETA2}",
+        alias="apiVersion",
+    )
+    kind: str = "BGPPeer"
     peer_address: str
     peer_asn: int
     local_asn: int
@@ -256,10 +210,7 @@ class BGPPeerManifest:
     source_address: str | None
     password_secret: str | None
 
-    @property
-    def namespace(self) -> str:
-        """Return the MetalLB namespace."""
-        return METALLB_NAMESPACE
+    status: Mapping[str, object] = EMPTY_MAPPING
 
     def manifest(self) -> Mapping[str, object]:
         """Render the Kubernetes BGPPeer manifest.
@@ -283,17 +234,24 @@ class BGPPeerManifest:
         return {
             "apiVersion": f"{METALLB_GROUP}/{METALLB_V1BETA2}",
             "kind": "BGPPeer",
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": METALLB_LABELS,
-            },
+            "metadata": self.metadata.manifest(),
             "spec": spec,
         }
 
 
-@dataclass(frozen=True)
-class BGPAdvertisementManifest:
+@custom_resource(
+    manifest=BGPPeerManifest,
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA2,
+    kind="BGPPeer",
+    plural="bgppeers",
+    default_namespace=METALLB_NAMESPACE,
+)
+class BGPPeer(CustomResource[BGPPeerManifest]):
+    """Wrapper around one MetalLB BGPPeer custom object."""
+
+
+class BGPAdvertisementManifest(CustomObjectManifest):
     """Push-side manifest for one MetalLB BGPAdvertisement.
 
     Parameters
@@ -310,16 +268,17 @@ class BGPAdvertisementManifest:
         Optional BGP communities to attach.
     """
 
-    name: str
+    api_version: str = Field(
+        default=f"{METALLB_GROUP}/{METALLB_V1BETA1}",
+        alias="apiVersion",
+    )
+    kind: str = "BGPAdvertisement"
     pool: str
     peers: Sequence[str]
     local_pref: int | None
     communities: Sequence[str]
 
-    @property
-    def namespace(self) -> str:
-        """Return the MetalLB namespace."""
-        return METALLB_NAMESPACE
+    status: Mapping[str, object] = EMPTY_MAPPING
 
     def manifest(self) -> Mapping[str, object]:
         """Render the Kubernetes BGPAdvertisement manifest.
@@ -339,13 +298,90 @@ class BGPAdvertisementManifest:
         return {
             "apiVersion": f"{METALLB_GROUP}/{METALLB_V1BETA1}",
             "kind": "BGPAdvertisement",
-            "metadata": {
-                "namespace": self.namespace,
-                "name": self.name,
-                "labels": METALLB_LABELS,
-            },
+            "metadata": self.metadata.manifest(),
             "spec": spec,
         }
+
+
+@custom_resource(
+    manifest=BGPAdvertisementManifest,
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="BGPAdvertisement",
+    plural="bgpadvertisements",
+    default_namespace=METALLB_NAMESPACE,
+)
+class BGPAdvertisement(CustomResource[BGPAdvertisementManifest]):
+    """Wrapper around one MetalLB BGPAdvertisement custom object."""
+
+
+class ConfigurationStateManifest(CustomObjectManifest):
+    """Pull-side manifest for one MetalLB ConfigurationState."""
+
+    api_version: str = Field(
+        default=f"{METALLB_GROUP}/{METALLB_V1BETA1}",
+        alias="apiVersion",
+    )
+    kind: str = "ConfigurationState"
+    spec: Mapping[str, object] = EMPTY_MAPPING
+    status: Mapping[str, object] = EMPTY_MAPPING
+
+
+@custom_resource(
+    manifest=ConfigurationStateManifest,
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="ConfigurationState",
+    plural="configurationstates",
+)
+class ConfigurationState(CustomResource[ConfigurationStateManifest]):
+    """Wrapper around one MetalLB ConfigurationState custom object."""
+
+
+class ServiceL2StatusManifest(CustomObjectManifest):
+    """Pull-side manifest for one MetalLB ServiceL2Status."""
+
+    api_version: str = Field(
+        default=f"{METALLB_GROUP}/{METALLB_V1BETA1}",
+        alias="apiVersion",
+    )
+    kind: str = "ServiceL2Status"
+    spec: Mapping[str, object] = EMPTY_MAPPING
+    status: Mapping[str, object] = EMPTY_MAPPING
+
+
+@custom_resource(
+    manifest=ServiceL2StatusManifest,
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="ServiceL2Status",
+    plural="servicel2statuses",
+)
+class ServiceL2Status(CustomResource[ServiceL2StatusManifest]):
+    """Wrapper around one MetalLB ServiceL2Status custom object."""
+
+
+class ServiceBGPStatusManifest(CustomObjectManifest):
+    """Pull-side manifest for one MetalLB ServiceBGPStatus."""
+
+    api_version: str = Field(
+        default=f"{METALLB_GROUP}/{METALLB_V1BETA1}",
+        alias="apiVersion",
+    )
+    kind: str = "ServiceBGPStatus"
+    spec: Mapping[str, object] = EMPTY_MAPPING
+    status: Mapping[str, object] = EMPTY_MAPPING
+
+
+@custom_resource(
+    manifest=ServiceBGPStatusManifest,
+    group=METALLB_GROUP,
+    version=METALLB_V1BETA1,
+    kind="ServiceBGPStatus",
+    plural="servicebgpstatuses",
+)
+class ServiceBGPStatus(CustomResource[ServiceBGPStatusManifest]):
+    """Wrapper around one MetalLB ServiceBGPStatus custom object."""
 
 
 async def upsert_ip_address_pool(
@@ -355,7 +391,7 @@ async def upsert_ip_address_pool(
     addresses: Sequence[str],
     auto_assign: bool,
     deadline: Deadline,
-) -> CustomObject:
+) -> IPAddressPool:
     """Create or patch one Bertrand-managed MetalLB IPAddressPool.
 
     Parameters
@@ -373,17 +409,21 @@ async def upsert_ip_address_pool(
 
     Returns
     -------
-    CustomObject
+    IPAddressPool
         Created or patched IPAddressPool object.
     """
     name = _required_name(name, kind="IPAddressPool")
     normalized = _required_values(addresses, kind="IPAddressPool addresses")
     return await _managed_upsert(
-        _IP_ADDRESS_POOL_RESOURCE,
+        IPAddressPool,
         kube,
         kind="IPAddressPool",
         intent=IPAddressPoolManifest(
-            name=name,
+            metadata=CustomObjectMetadata(
+                namespace=METALLB_NAMESPACE,
+                name=name,
+                labels=METALLB_LABELS,
+            ),
             addresses=normalized,
             auto_assign=auto_assign,
         ),
@@ -398,7 +438,7 @@ async def upsert_l2_advertisement(
     pool: str,
     interfaces: Sequence[str],
     deadline: Deadline,
-) -> CustomObject:
+) -> L2Advertisement:
     """Create or patch one Bertrand-managed MetalLB L2Advertisement.
 
     Parameters
@@ -416,18 +456,22 @@ async def upsert_l2_advertisement(
 
     Returns
     -------
-    CustomObject
+    L2Advertisement
         Created or patched L2Advertisement object.
     """
     name = _required_name(name, kind="L2Advertisement")
     pool = _required_name(pool, kind="IPAddressPool")
     normalized_interfaces = _string_tuple(interfaces)
     return await _managed_upsert(
-        _L2_ADVERTISEMENT_RESOURCE,
+        L2Advertisement,
         kube,
         kind="L2Advertisement",
         intent=L2AdvertisementManifest(
-            name=name,
+            metadata=CustomObjectMetadata(
+                namespace=METALLB_NAMESPACE,
+                name=name,
+                labels=METALLB_LABELS,
+            ),
             pool=pool,
             interfaces=normalized_interfaces,
         ),
@@ -446,7 +490,7 @@ async def upsert_bgp_peer(
     source_address: str | None,
     password_secret: str | None,
     deadline: Deadline,
-) -> CustomObject:
+) -> BGPPeer:
     """Create or patch one Bertrand-managed MetalLB BGPPeer.
 
     Parameters
@@ -472,17 +516,21 @@ async def upsert_bgp_peer(
 
     Returns
     -------
-    CustomObject
+    BGPPeer
         Created or patched BGPPeer object.
     """
     name = _required_name(name, kind="BGPPeer")
     peer_address = _required_name(peer_address, kind="peer address")
     return await _managed_upsert(
-        _BGP_PEER_RESOURCE,
+        BGPPeer,
         kube,
         kind="BGPPeer",
         intent=BGPPeerManifest(
-            name=name,
+            metadata=CustomObjectMetadata(
+                namespace=METALLB_NAMESPACE,
+                name=name,
+                labels=METALLB_LABELS,
+            ),
             peer_address=peer_address,
             peer_asn=peer_asn,
             local_asn=local_asn,
@@ -503,7 +551,7 @@ async def upsert_bgp_advertisement(
     local_pref: int | None,
     communities: Sequence[str],
     deadline: Deadline,
-) -> CustomObject:
+) -> BGPAdvertisement:
     """Create or patch one Bertrand-managed MetalLB BGPAdvertisement.
 
     Parameters
@@ -525,7 +573,7 @@ async def upsert_bgp_advertisement(
 
     Returns
     -------
-    CustomObject
+    BGPAdvertisement
         Created or patched BGPAdvertisement object.
     """
     name = _required_name(name, kind="BGPAdvertisement")
@@ -533,11 +581,15 @@ async def upsert_bgp_advertisement(
     normalized_peers = _string_tuple(peers)
     normalized_communities = _string_tuple(communities)
     return await _managed_upsert(
-        _BGP_ADVERTISEMENT_RESOURCE,
+        BGPAdvertisement,
         kube,
         kind="BGPAdvertisement",
         intent=BGPAdvertisementManifest(
-            name=name,
+            metadata=CustomObjectMetadata(
+                namespace=METALLB_NAMESPACE,
+                name=name,
+                labels=METALLB_LABELS,
+            ),
             pool=pool,
             peers=normalized_peers,
             local_pref=local_pref,
@@ -609,41 +661,48 @@ async def metallb_status(kube: Kube, *, deadline: Deadline) -> dict[str, object]
     crds = await _crd_status(kube, deadline=deadline)
     pools, l2, peers, bgp, config_states, l2_status, bgp_status = await asyncio.gather(
         _safe_resource_list(
-            _IP_ADDRESS_POOL_RESOURCE,
+            IPAddressPool,
             kube,
             deadline=deadline,
         ),
         _safe_resource_list(
-            _L2_ADVERTISEMENT_RESOURCE,
+            L2Advertisement,
             kube,
             deadline=deadline,
         ),
         _safe_resource_list(
-            _BGP_PEER_RESOURCE,
+            BGPPeer,
             kube,
             deadline=deadline,
         ),
         _safe_resource_list(
-            _BGP_ADVERTISEMENT_RESOURCE,
+            BGPAdvertisement,
             kube,
             deadline=deadline,
         ),
         _safe_resource_list(
-            _CONFIGURATION_STATE_RESOURCE,
+            ConfigurationState,
             kube,
             deadline=deadline,
         ),
         _safe_resource_list(
-            _SERVICE_L2_STATUS_RESOURCE,
+            ServiceL2Status,
             kube,
             deadline=deadline,
         ),
         _safe_resource_list(
-            _SERVICE_BGP_STATUS_RESOURCE,
+            ServiceBGPStatus,
             kube,
             deadline=deadline,
         ),
     )
+    pools = cast("list[IPAddressPool]", pools)
+    l2 = cast("list[L2Advertisement]", l2)
+    peers = cast("list[BGPPeer]", peers)
+    bgp = cast("list[BGPAdvertisement]", bgp)
+    config_states = cast("list[ConfigurationState]", config_states)
+    l2_status = cast("list[ServiceL2Status]", l2_status)
+    bgp_status = cast("list[ServiceBGPStatus]", bgp_status)
     managed = _labels_managed(namespace.labels) if namespace is not None else False
     ready = (
         namespace is not None
@@ -841,12 +900,12 @@ async def _crd_status(kube: Kube, *, deadline: Deadline) -> dict[str, bool]:
     }
 
 
-async def _managed_upsert[T](
-    resource: CustomObjectResource[T],
+async def _managed_upsert[T: CustomResource[Any]](
+    resource: type[T],
     kube: Kube,
     *,
     kind: str,
-    intent: _MetalLBManifest,
+    intent: CustomObjectManifest,
     deadline: Deadline,
 ) -> T:
     await _require_managed_metallb_namespace(kube, deadline=deadline)
@@ -864,8 +923,8 @@ async def _managed_upsert[T](
     )
 
 
-async def _safe_resource_list[T](
-    resource: CustomObjectResource[T],
+async def _safe_resource_list[T: CustomResource[Any]](
+    resource: type[T],
     kube: Kube,
     *,
     deadline: Deadline,
@@ -876,14 +935,15 @@ async def _safe_resource_list[T](
         return []
 
 
-def _assert_managed(resource: object | None, *, kind: str) -> None:
+def _assert_managed(resource: CustomResource[Any] | None, *, kind: str) -> None:
     if resource is None:
         return
-    labels = getattr(resource, "labels", {})
-    if _labels_managed(labels):
+    if _labels_managed(resource.labels):
         return
-    name = getattr(resource, "name", "")
-    msg = f"{kind} {METALLB_NAMESPACE}/{name} exists but is not managed by Bertrand"
+    msg = (
+        f"{kind} {METALLB_NAMESPACE}/{resource.name} exists but is not managed by "
+        "Bertrand"
+    )
     raise OSError(msg)
 
 
@@ -928,7 +988,7 @@ def _int_status(status: Mapping[str, object], key: str) -> int:
         return 0
 
 
-def _pool_status(pool: CustomObject) -> dict[str, object]:
+def _pool_status(pool: IPAddressPool) -> dict[str, object]:
     return {
         "name": pool.name,
         "managed": _labels_managed(pool.labels),
@@ -939,7 +999,7 @@ def _pool_status(pool: CustomObject) -> dict[str, object]:
     }
 
 
-def _bgp_peer_status(peer: CustomObject) -> dict[str, object]:
+def _bgp_peer_status(peer: BGPPeer) -> dict[str, object]:
     return {
         "name": peer.name,
         "managed": _labels_managed(peer.labels),
@@ -947,7 +1007,7 @@ def _bgp_peer_status(peer: CustomObject) -> dict[str, object]:
     }
 
 
-def _object_summary(resource: CustomObject) -> dict[str, object]:
+def _object_summary(resource: CustomResource[Any]) -> dict[str, object]:
     return {
         "name": resource.name,
         "managed": _labels_managed(resource.labels),
@@ -955,14 +1015,14 @@ def _object_summary(resource: CustomObject) -> dict[str, object]:
     }
 
 
-def _custom_status_summary(resource: CustomObject) -> dict[str, object]:
+def _custom_status_summary(resource: CustomResource[Any]) -> dict[str, object]:
     return {
         "name": resource.name,
         "status": dict(resource.status),
     }
 
 
-def _configuration_errors(resources: Sequence[CustomObject]) -> list[str]:
+def _configuration_errors(resources: Sequence[ConfigurationState]) -> list[str]:
     errors: list[str] = []
     for resource in resources:
         status = resource.status

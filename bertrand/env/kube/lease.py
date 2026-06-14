@@ -160,7 +160,6 @@ def _lease_manifest(
 
 @namespaced_resource(
     api=kube_client.CoordinationV1Api,
-    payload=kube_client.V1Lease,
     read=kube_client.CoordinationV1Api.read_namespaced_lease,
     list=kube_client.CoordinationV1Api.list_namespaced_lease,
     list_all=kube_client.CoordinationV1Api.list_lease_for_all_namespaces,

@@ -84,7 +84,6 @@ class ServiceManifest:
 
 @namespaced_resource(
     api=kubernetes.client.CoreV1Api,
-    payload=kubernetes.client.V1Service,
     read=kubernetes.client.CoreV1Api.read_namespaced_service,
     list=kubernetes.client.CoreV1Api.list_namespaced_service,
     list_all=kubernetes.client.CoreV1Api.list_service_for_all_namespaces,

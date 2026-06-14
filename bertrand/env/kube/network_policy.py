@@ -92,7 +92,6 @@ class NetworkPolicyManifest:
 
 @namespaced_resource(
     api=kubernetes.client.NetworkingV1Api,
-    payload=kubernetes.client.V1NetworkPolicy,
     read=kubernetes.client.NetworkingV1Api.read_namespaced_network_policy,
     list=kubernetes.client.NetworkingV1Api.list_namespaced_network_policy,
     list_all=kubernetes.client.NetworkingV1Api.list_network_policy_for_all_namespaces,

@@ -3,7 +3,7 @@
 from bertrand.env.kube.dev.bridge import code_open_bridge
 from bertrand.env.kube.dev.code import send_code_open_request
 from bertrand.env.kube.dev.mailbox import (
-    CodeOpenRecord,
+    CodeOpenRequest,
 )
 from bertrand.env.kube.dev.session import (
     create_project_dev_session,
@@ -15,7 +15,7 @@ from bertrand.env.kube.dev.session import (
 from bertrand.env.kube.node_identity import current_host_id
 
 __all__ = [
-    "CodeOpenRecord",
+    "CodeOpenRequest",
     "code_open_bridge",
     "create_project_dev_session",
     "current_host_id",
